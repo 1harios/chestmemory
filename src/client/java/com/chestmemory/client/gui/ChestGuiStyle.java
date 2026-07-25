@@ -141,6 +141,51 @@ public final class ChestGuiStyle {
 		graphics.fill(x + 1, y + height - 2, x + width - 1, y + height - 1, withAlpha(0x000000, 0.25F));
 	}
 
+	/**
+	 * Progress bar in the panel's wood palette.
+	 * Used by the clan screen, where "delivered 340/1200" reads much faster as a bar
+	 * than as a number buried in a status line.
+	 */
+	public static void drawProgressBar(
+		GuiGraphicsExtractor graphics,
+		int x,
+		int y,
+		int width,
+		int height,
+		float fraction
+	) {
+		float f = Math.max(0F, Math.min(1F, fraction));
+		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF241708);
+		int fill = (int) ((width - 2) * f);
+		if (fill > 0) {
+			// Amber while gathering, green once everything is in.
+			int colour = f >= 1F ? 0xFF5FD068 : 0xFFE0A83C;
+			graphics.fill(x + 1, y + 1, x + 1 + fill, y + height - 1, colour);
+			// Top highlight so the bar reads as raised, matching the row style.
+			graphics.fill(x + 1, y + 1, x + 1 + fill, y + 2, withAlpha(0xFFFFFF, 0.25F));
+		}
+	}
+
+	/** Big monospace-ish session code, drawn as a plate the host can read out loud. */
+	public static void drawCodePlate(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		String code,
+		int centerX,
+		int y,
+		int minWidth
+	) {
+		int textW = font.width(code);
+		int w = Math.max(minWidth, textW + 24);
+		int x = centerX - w / 2;
+		graphics.fill(x, y, x + w, y + 20, WOOD_DARK);
+		graphics.fill(x + 1, y + 1, x + w - 1, y + 19, 0xFF3A2414);
+		graphics.fill(x + 1, y + 1, x + w - 1, y + 2, withAlpha(0xFFFFFF, 0.18F));
+		graphics.text(font, code, centerX - textW / 2 + 1, y + 7, 0xFF000000, false);
+		graphics.text(font, code, centerX - textW / 2, y + 6, TEXT_GOLD, false);
+	}
+
 	public static void drawCountBadge(GuiGraphicsExtractor graphics, Font font, String text, int right, int y) {
 		int w = Math.max(28, font.width(text) + 10);
 		int x = right - w;

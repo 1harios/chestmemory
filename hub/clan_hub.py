@@ -23,9 +23,14 @@ from typing import Any
 from urllib.parse import unquote
 
 import clan_auth
+import clan_ratelimit
 
 PORT = int(os.environ.get("PORT", "8787"))
 HOST = os.environ.get("HOST", "0.0.0.0")
+#: Optional. Rate limiting (clan_ratelimit) is what protects session codes now, and
+#: identity comes from Mojang (clan_auth), so a shared secret is no longer needed —
+#: leave it empty and members only ever type a code. Set it if you additionally want
+#: the hub invisible to anyone without it.
 CLAN_TOKEN = os.environ.get("CLAN_TOKEN", "").strip()
 #: When true, every mutating request must carry a verified X-Clan-Session.
 #: Leave off for one upgrade window so members on the old mod keep working, then
@@ -151,6 +156,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
 
+    def _client_addr(self) -> str:
+        """Client address, honouring a reverse proxy's X-Forwarded-For."""
+        fwd = self.headers.get("X-Forwarded-For", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else "?"
+
+    def _rate_ok(self, kind: str) -> bool:
+        """Enforce the per-address limit; sends 429 itself when exceeded."""
+        retry = clan_ratelimit.check(kind, self._client_addr())
+        if retry is None:
+            return True
+        self.send_response(429)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Retry-After", str(retry))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(b'{"error":"rate limited"}')
+        return False
+
     def _identity(self) -> dict[str, str] | None:
         """
         Verified player behind this request, or None when unauthenticated.
@@ -219,6 +244,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = unquote(self.path.split("?", 1)[0])
         if path == "/v1/auth/challenge":
+            if not self._rate_ok("auth"):
+                return
             nonce = clan_auth.new_challenge()
             if nonce is None:
                 self._send(503, {"error": "auth busy"})
@@ -237,6 +264,9 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         if path.startswith("/v1/sessions/"):
+            # Guessing codes happens here, so this is the tight bucket.
+            if not self._rate_ok("lookup"):
+                return
             code = _normalize_code(path[len("/v1/sessions/") :].split("/")[0])
             with _lock:
                 _purge_old()
@@ -260,11 +290,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/auth/verify":
+            if not self._rate_ok("auth"):
+                return
             result = clan_auth.verify(str(body.get("name") or ""), str(body.get("nonce") or ""))
             if result is None:
                 self._send(401, {"error": "auth failed"})
                 return
             self._send(200, result)
+            return
+
+        # Joining by code is a guessing surface like the GET above; everything else
+        # is a member acting inside a session they already have, so it gets the
+        # generous bucket (polling is legitimate and frequent).
+        if not self._rate_ok("lookup" if path.endswith("/join") else "action"):
             return
 
         # Mutating endpoints act on behalf of a player, so they need a verified one.

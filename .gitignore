@@ -43,6 +43,10 @@ hub/lt.url
 # temp exploration artifacts
 tmp-fab/
 
+# python bytecode from the hub scripts
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store
 Thumbs.db

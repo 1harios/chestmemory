@@ -73,6 +73,8 @@
 	"screen.chestmemory.clan.copied": "Copied: %s",
 	"screen.chestmemory.clan.status_need_hub": "Set hub URL (VDS) and save",
 	"screen.chestmemory.clan.status_ready": "Create gather or enter CM-XXXX",
+	"screen.chestmemory.clan.progress": "Delivered %s / %s  (%s%%)",
+	"screen.chestmemory.clan.more_members": "…and %s more",
 	"screen.chestmemory.clan.status_in": "%s · %s players · %s/%s (%s%%)",
 	"screen.chestmemory.tooltip.clan_claim_me": "§eClan: claimed by you§r",
 	"screen.chestmemory.tooltip.clan_claim_other": "§dClan: claimed by %s§r (don't take)",

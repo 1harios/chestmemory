@@ -69,12 +69,9 @@ public class ClanGatherScreen extends Screen {
 			this.addRenderableWidget(this.hubBox);
 			y += rowH + gap;
 
-			this.tokenBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.token"));
-			this.tokenBox.setMaxLength(128);
-			this.tokenBox.setHint(Component.translatable("screen.chestmemory.clan.token_hint"));
-			this.tokenBox.setValue(ModSettings.get().clanToken());
-			this.addRenderableWidget(this.tokenBox);
-			y += rowH + gap;
+			// No token field: the hub is protected by rate limiting and Mojang identity,
+			// so members never paste a shared secret. A hub that still wants one can have
+			// it baked in via -Pclan_hub_token.
 
 			this.addRenderableWidget(new SettingRowButton(
 				left, y, w, rowH,
@@ -214,38 +211,83 @@ public class ClanGatherScreen extends Screen {
 		);
 
 		int left = this.panelLeft + 12;
-		int y = this.panelTop + this.panelH - 48;
-		String line;
+		int centerX = this.panelLeft + this.panelW / 2;
+		int contentW = this.panelW - 24;
+
 		if (ClanSessionManager.isInSession()) {
 			ClanSession s = ClanSessionManager.session();
 			if (s != null) {
+				// The code is the one thing the host reads out loud, so it gets a plate
+				// of its own instead of being buried in a status sentence.
+				ChestGuiStyle.drawCodePlate(graphics, this.font, s.code, centerX, this.panelTop + 22, 90);
+
 				int need = s.totalNeed();
-				int del = s.totalDelivered();
-				int pct = need > 0 ? (int) (100L * del / need) : 0;
-				int members = s.members != null ? s.members.size() : 0;
-				line = Component.translatable(
-					"screen.chestmemory.clan.status_in",
-					s.code, members, del, need, pct
+				int delivered = s.totalDelivered();
+				float f = need > 0 ? delivered / (float) need : 0F;
+				int barY = this.panelTop + this.panelH - 62;
+
+				ChestGuiStyle.drawProgressBar(graphics, left, barY, contentW, 8, f);
+				String amount = Component.translatable(
+					"screen.chestmemory.clan.progress",
+					delivered, need, need > 0 ? (int) (f * 100) : 0
 				).getString();
-			} else {
-				line = "";
+				ChestGuiStyle.drawCentered(
+					graphics, this.font, amount, centerX, barY + 11, ChestGuiStyle.TEXT_LIGHT
+				);
+
+				// Roster: who is here, and what each one is carrying to the build.
+				int rosterY = barY + 22;
+				int shown = 0;
+				if (s.members != null) {
+					for (ClanSession.ClanMember m : s.members) {
+						if (shown >= 3) {
+							break;
+						}
+						boolean host = m.uuid != null && m.uuid.equalsIgnoreCase(s.hostUuid);
+						String label = (host ? "★ " : "· ") + (m.name == null ? "?" : m.name);
+						graphics.text(
+							this.font,
+							ChestGuiStyle.ellipsize(this.font, label, contentW),
+							left, rosterY + shown * 10,
+							host ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
+							false
+						);
+						shown++;
+					}
+					int rest = s.members.size() - shown;
+					if (rest > 0) {
+						graphics.text(
+							this.font,
+							Component.translatable("screen.chestmemory.clan.more_members", rest).getString(),
+							left, rosterY + shown * 10,
+							ChestGuiStyle.TEXT_MUTED,
+							false
+						);
+					}
+				}
 			}
+		}
+
+		// Status line last, so a fresh message always wins over the standing hints.
+		String line;
+		if (!this.status.isBlank()) {
+			line = this.status;
+		} else if (ClanSessionManager.isInSession()) {
+			line = "";
 		} else if (!ClanSessionManager.isConfigured()) {
-			// isConfigured() already accounts for the baked hub, so this only fires when
-			// there is genuinely nowhere to connect.
 			line = Component.translatable("screen.chestmemory.clan.status_need_hub").getString();
 		} else {
 			line = Component.translatable("screen.chestmemory.clan.status_ready").getString();
 		}
-		if (!this.status.isBlank()) {
-			line = this.status;
+		if (!line.isEmpty()) {
+			ChestGuiStyle.drawCentered(
+				graphics,
+				this.font,
+				ChestGuiStyle.ellipsize(this.font, line, contentW),
+				centerX,
+				this.panelTop + this.panelH - 42,
+				ChestGuiStyle.TEXT_MUTED
+			);
 		}
-		graphics.text(
-			this.font,
-			ChestGuiStyle.ellipsize(this.font, line, this.panelW - 24),
-			left, y,
-			ChestGuiStyle.TEXT_MUTED,
-			false
-		);
 	}
 }
