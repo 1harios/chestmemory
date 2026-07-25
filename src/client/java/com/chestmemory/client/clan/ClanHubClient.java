@@ -87,7 +87,7 @@ public final class ClanHubClient {
 			if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
 				return Result.ok(resp.body());
 			}
-			return Result.err("HTTP " + resp.statusCode());
+			return Result.err("HTTP " + resp.statusCode(), resp.statusCode());
 		} catch (Exception e) {
 			return Result.err(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
 		}
@@ -155,26 +155,38 @@ public final class ClanHubClient {
 		if (msg == null || msg.isBlank()) {
 			msg = "HTTP " + code;
 		}
-		return Result.err(msg);
+		return Result.err(msg, code);
 	}
 
 	public static final class Result<T> {
 		public final boolean ok;
 		public final @Nullable T value;
 		public final @Nullable String error;
+		/** HTTP status, or 0 when the request never produced a response (network error). */
+		public final int status;
 
-		private Result(boolean ok, @Nullable T value, @Nullable String error) {
+		private Result(boolean ok, @Nullable T value, @Nullable String error, int status) {
 			this.ok = ok;
 			this.value = value;
 			this.error = error;
+			this.status = status;
 		}
 
 		public static <T> Result<T> ok(T v) {
-			return new Result<>(true, v, null);
+			return new Result<>(true, v, null, 200);
 		}
 
 		public static <T> Result<T> err(String e) {
-			return new Result<>(false, null, e);
+			return new Result<>(false, null, e, 0);
+		}
+
+		public static <T> Result<T> err(String e, int status) {
+			return new Result<>(false, null, e, status);
+		}
+
+		/** The hub authoritatively reported that this session no longer exists. */
+		public boolean isNotFound() {
+			return status == 404;
 		}
 	}
 

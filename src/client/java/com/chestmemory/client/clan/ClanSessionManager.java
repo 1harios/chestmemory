@@ -496,7 +496,10 @@ public final class ClanSessionManager {
 						// Tell player when someone else claimed / released items
 						announceClaimDiffs(mc, prev, session, false);
 					});
-				} else if (res.error != null && res.error.toLowerCase().contains("not found")) {
+				} else if (res.isNotFound()) {
+					// Only a real 404 ends the session. Matching on the words "not found"
+					// anywhere in the error also fired on proxy/tunnel HTML error pages, so a
+					// transient gateway hiccup silently dropped everyone out of the session.
 					mc.execute(() -> {
 						session = null;
 						chat(mc, Component.translatable("message.chestmemory.clan_ended"));
