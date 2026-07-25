@@ -30,6 +30,19 @@ screen-sources.jar
 jar-list.txt
 jar-list-src.txt
 
+# secrets — never commit
+hub/public/config.php
+hub/.clan_token
+hub/PUBLIC.txt
+hub/lt.url
+*.token
+
+# AI assistant local settings
+.claude/
+
+# temp exploration artifacts
+tmp-fab/
+
 # OS
 .DS_Store
 Thumbs.db
