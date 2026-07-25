@@ -55,6 +55,18 @@ processResources {
 	filesMatching("fabric.mod.json") {
 		expand "version": version
 	}
+
+	// Bake the clan hub into the jar so members only type a session code.
+	// Set clan_hub_url / clan_hub_token in gradle.properties, or pass
+	//   ./gradlew build -Pclan_hub_url=https://my.hub -Pclan_hub_token=secret
+	// Left empty in a public build: the mod then shows the manual fields as before.
+	def hubUrl = project.findProperty("clan_hub_url") ?: ""
+	def hubToken = project.findProperty("clan_hub_token") ?: ""
+	inputs.property "clanHubUrl", hubUrl
+	inputs.property "clanHubToken", hubToken
+	filesMatching("assets/chestmemory/clan_hub.json") {
+		expand "clan_hub_url": hubUrl, "clan_hub_token": hubToken
+	}
 }
 
 tasks.withType(JavaCompile).configureEach {

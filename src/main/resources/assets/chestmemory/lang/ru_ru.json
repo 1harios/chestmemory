@@ -55,6 +55,7 @@
 	"screen.chestmemory.clan.btn_short_in": "Клан●",
 	"screen.chestmemory.clan.hub": "URL хаба",
 	"screen.chestmemory.clan.hub_hint": "http://IP:8787",
+	"screen.chestmemory.clan.hub_builtin": "Хаб: уже в сборке",
 	"screen.chestmemory.clan.token": "Токен (если есть)",
 	"screen.chestmemory.clan.token_hint": "необязательно",
 	"screen.chestmemory.clan.save_hub": "Сохранить URL / токен",

@@ -1,0 +1,5 @@
+{
+	"_comment": "Baked clan hub. Set clan_hub_url / clan_hub_token in gradle.properties (or -Pclan_hub_url=...) and rebuild; members then only type a session code. Leave as-is for a public build — the settings screen keeps the manual fields.",
+	"url": "${clan_hub_url}",
+	"token": "${clan_hub_token}"
+}

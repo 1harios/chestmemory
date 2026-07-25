@@ -1,6 +1,7 @@
 package com.chestmemory.client.gui;
 
 import com.chestmemory.client.clan.ClanCodes;
+import com.chestmemory.client.clan.ClanDefaults;
 import com.chestmemory.client.clan.ClanSession;
 import com.chestmemory.client.clan.ClanSessionManager;
 import com.chestmemory.client.data.ModSettings;
@@ -43,32 +44,49 @@ public class ClanGatherScreen extends Screen {
 		int rowH = 18;
 		int gap = 4;
 
-		// Hub URL
-		this.hubBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.hub"));
-		this.hubBox.setMaxLength(256);
-		this.hubBox.setHint(Component.translatable("screen.chestmemory.clan.hub_hint"));
-		this.hubBox.setValue(ModSettings.get().clanHubUrl());
-		this.addRenderableWidget(this.hubBox);
-		y += rowH + gap;
+		// When the build ships the clan's hub, members only ever type a session code —
+		// no URL, no token. The manual fields appear only for a build without one.
+		this.hubBox = null;
+		this.tokenBox = null;
+		if (ClanDefaults.hasBakedHub()) {
+			this.addRenderableWidget(new SettingRowButton(
+				left, y, w, rowH,
+				Component.translatable("screen.chestmemory.clan.hub_builtin"),
+				() -> {
+				}
+			) {
+				@Override
+				public void onClick(net.minecraft.client.input.MouseButtonEvent e, boolean d) {
+					// Informational row, not a button.
+				}
+			});
+			y += rowH + gap + 2;
+		} else {
+			this.hubBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.hub"));
+			this.hubBox.setMaxLength(256);
+			this.hubBox.setHint(Component.translatable("screen.chestmemory.clan.hub_hint"));
+			this.hubBox.setValue(ModSettings.get().clanHubUrl());
+			this.addRenderableWidget(this.hubBox);
+			y += rowH + gap;
 
-		// Token (optional)
-		this.tokenBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.token"));
-		this.tokenBox.setMaxLength(128);
-		this.tokenBox.setHint(Component.translatable("screen.chestmemory.clan.token_hint"));
-		this.tokenBox.setValue(ModSettings.get().clanToken());
-		this.addRenderableWidget(this.tokenBox);
-		y += rowH + gap;
+			this.tokenBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.token"));
+			this.tokenBox.setMaxLength(128);
+			this.tokenBox.setHint(Component.translatable("screen.chestmemory.clan.token_hint"));
+			this.tokenBox.setValue(ModSettings.get().clanToken());
+			this.addRenderableWidget(this.tokenBox);
+			y += rowH + gap;
 
-		this.addRenderableWidget(new SettingRowButton(
-			left, y, w, rowH,
-			Component.translatable("screen.chestmemory.clan.save_hub"),
-			() -> {
-				ModSettings.get().setClanHubUrl(this.hubBox.getValue());
-				ModSettings.get().setClanToken(this.tokenBox.getValue());
-				this.status = Component.translatable("screen.chestmemory.clan.hub_saved").getString();
-			}
-		));
-		y += rowH + gap + 2;
+			this.addRenderableWidget(new SettingRowButton(
+				left, y, w, rowH,
+				Component.translatable("screen.chestmemory.clan.save_hub"),
+				() -> {
+					ModSettings.get().setClanHubUrl(this.hubBox.getValue());
+					ModSettings.get().setClanToken(this.tokenBox.getValue());
+					this.status = Component.translatable("screen.chestmemory.clan.hub_saved").getString();
+				}
+			));
+			y += rowH + gap + 2;
+		}
 
 		boolean in = ClanSessionManager.isInSession();
 		int half = (w - gap) / 2;
@@ -212,7 +230,9 @@ public class ClanGatherScreen extends Screen {
 			} else {
 				line = "";
 			}
-		} else if (!ClanSessionManager.isConfigured() && (this.hubBox == null || this.hubBox.getValue().isBlank())) {
+		} else if (!ClanSessionManager.isConfigured()) {
+			// isConfigured() already accounts for the baked hub, so this only fires when
+			// there is genuinely nowhere to connect.
 			line = Component.translatable("screen.chestmemory.clan.status_need_hub").getString();
 		} else {
 			line = Component.translatable("screen.chestmemory.clan.status_ready").getString();

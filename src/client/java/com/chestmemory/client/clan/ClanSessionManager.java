@@ -60,7 +60,12 @@ public final class ClanSessionManager {
 
 	private static ClanHubClient client() {
 		ModSettings s = ModSettings.get();
-		return new ClanHubClient(s.clanHubUrl(), s.clanToken());
+		// A build can ship the clan's hub, so members only ever type a session code.
+		// An explicit setting still wins, for anyone pointing at a different hub.
+		return new ClanHubClient(
+			ClanDefaults.effectiveUrl(s.clanHubUrl()),
+			ClanDefaults.effectiveToken(s.clanToken())
+		);
 	}
 
 	public static String localUuid(Minecraft mc) {

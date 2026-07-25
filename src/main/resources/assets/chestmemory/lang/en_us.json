@@ -55,6 +55,7 @@
 	"screen.chestmemory.clan.btn_short_in": "Clan●",
 	"screen.chestmemory.clan.hub": "Hub URL",
 	"screen.chestmemory.clan.hub_hint": "http://IP:8787",
+	"screen.chestmemory.clan.hub_builtin": "Hub: built into this build",
 	"screen.chestmemory.clan.token": "Token (optional)",
 	"screen.chestmemory.clan.token_hint": "optional",
 	"screen.chestmemory.clan.save_hub": "Save URL / token",
