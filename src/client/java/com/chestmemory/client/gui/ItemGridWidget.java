@@ -43,6 +43,8 @@ public class ItemGridWidget extends AbstractWidget {
 	 */
 	private final Map<String, ItemStack> iconCache = new HashMap<>();
 	private int scrollRow;
+	/** True while the scrollbar is being dragged. */
+	private boolean draggingScrollbar;
 	private int hoveredIndex = -1;
 
 	public ItemGridWidget(Minecraft minecraft, int x, int y, int width, int height, Consumer<ItemSummary> onSelect) {
@@ -224,7 +226,20 @@ public class ItemGridWidget extends AbstractWidget {
 		if (hoveredIndex >= 0 && hoveredIndex < items.size()) {
 			ItemSummary s = items.get(hoveredIndex);
 			List<Component> lines = new ArrayList<>();
-			lines.add(Component.literal(com.chestmemory.client.data.ChestMemoryStorage.itemDisplayName(s.itemId())));
+			// Title: the renamed label stands on its own line in italics above the base
+			// item name, the way vanilla shows a renamed item.
+			String custom = com.chestmemory.client.data.ItemStackKeys.customNameOf(s.itemId());
+			if (custom != null) {
+				lines.add(Component.literal(custom)
+					.withStyle(net.minecraft.ChatFormatting.YELLOW, net.minecraft.ChatFormatting.ITALIC));
+				// Base item name: build a clean stack so the custom name is not reapplied.
+				lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
+					.copy().withStyle(net.minecraft.ChatFormatting.GRAY));
+			} else {
+				lines.add(Component.literal(
+					com.chestmemory.client.data.ChestMemoryStorage.itemDisplayName(s.itemId())
+				).withStyle(net.minecraft.ChatFormatting.WHITE));
+			}
 			if (s.isBuildNeed()) {
 				if (s.schematicTotal() > 0) {
 					lines.add(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal()));
@@ -255,21 +270,21 @@ public class ItemGridWidget extends AbstractWidget {
 					}
 				}
 			} else {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.total", s.totalCount()));
+				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.total", s.totalCount())));
 				// Use the item's real stack size — 16 for pearls, 1 for tools, not always 64.
 				int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
 				if (s.fullStacks(per) > 0) {
-					lines.add(Component.translatable(
+					lines.add(gray(Component.translatable(
 						"screen.chestmemory.tooltip.stacks",
 						s.fullStacks(per), per, s.remainder(per)
-					));
+					)));
 				} else {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.less_than_stack", s.totalCount()));
+					lines.add(gray(Component.translatable("screen.chestmemory.tooltip.less_than_stack", s.totalCount())));
 				}
 			}
-			lines.add(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount()));
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())));
 			if (s.hasDistance()) {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.nearest", (int) s.nearestDistance()));
+				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.nearest", (int) s.nearestDistance())));
 			}
 			if (s.isBuildNeed() && s.neededForBuild() > 0) {
 				lines.add(Component.translatable("screen.chestmemory.tooltip.build_click"));
@@ -295,12 +310,51 @@ public class ItemGridWidget extends AbstractWidget {
 		}
 	}
 
+	/** True when the pointer is over the scrollbar strip (with a little slack). */
+	private boolean isOverScrollbar(double mouseX) {
+		return maxScrollRow() > 0 && mouseX >= this.getX() + this.width - 8;
+	}
+
+	/** Map a pointer position on the track to a scroll row. */
+	private void scrollToPointer(double mouseY) {
+		int maxRow = maxScrollRow();
+		if (maxRow <= 0) {
+			return;
+		}
+		int barH = Math.max(10, this.height * rowsVisible() / (rowsVisible() + maxRow));
+		int trackH = Math.max(1, this.height - barH);
+		double rel = (mouseY - this.getY() - barH / 2.0) / trackH;
+		this.scrollRow = Mth.clamp((int) Math.round(rel * maxRow), 0, maxRow);
+	}
+
 	@Override
 	public void onClick(MouseButtonEvent event, boolean doubleClick) {
+		// Clicking the scrollbar jumps there instead of selecting whatever slot is behind.
+		if (isOverScrollbar(event.x())) {
+			this.draggingScrollbar = true;
+			scrollToPointer(event.y());
+			return;
+		}
 		int index = indexAt(event.x(), event.y());
 		if (index >= 0 && index < items.size()) {
 			this.onSelect.accept(items.get(index));
 		}
+	}
+
+	@Override
+	public void onRelease(MouseButtonEvent event) {
+		this.draggingScrollbar = false;
+		super.onRelease(event);
+	}
+
+	@Override
+	protected void onDrag(MouseButtonEvent event, double dragX, double dragY) {
+		// The bar was paint-only: the wheel scrolled but dragging it did nothing.
+		if (this.draggingScrollbar) {
+			scrollToPointer(event.y());
+			return;
+		}
+		super.onDrag(event, dragX, dragY);
 	}
 
 	@Override
@@ -383,6 +437,11 @@ public class ItemGridWidget extends AbstractWidget {
 			return String.format("%.1fk", k);
 		}
 		return String.valueOf(count);
+	}
+
+	/** Muted tone for the tooltip's secondary lines, so the title stands out. */
+	private static Component gray(Component c) {
+		return c.copy().withStyle(net.minecraft.ChatFormatting.GRAY);
 	}
 
 	private ItemStack resolveStack(String itemId) {

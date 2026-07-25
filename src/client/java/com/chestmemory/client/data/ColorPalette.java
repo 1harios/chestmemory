@@ -25,6 +25,12 @@ public final class ColorPalette {
 		new Swatch(0x00FFC8, "color.chestmemory.mint"),
 		new Swatch(0xE8E8E8, "color.chestmemory.white"),
 		new Swatch(0xA0A0A0, "color.chestmemory.gray"),
+		// Defaults that were not in the palette before, so the settings row fell back to
+		// showing a raw hex code (#28DC50) next to rows that showed a proper name.
+		new Swatch(0x28DC50, "color.chestmemory.emerald"),
+		new Swatch(0x80FFA0, "color.chestmemory.lime"),
+		new Swatch(0xC8A040, "color.chestmemory.bronze"),
+		new Swatch(0xE8C060, "color.chestmemory.amber"),
 	};
 
 	// Defaults matching previous hardcoded look

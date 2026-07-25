@@ -317,7 +317,9 @@ public class ChestMemoryScreen extends Screen {
 		this.searchBox = new EditBox(this.font, left, y, w - clanBtnW - gap, rowH, Component.translatable("screen.chestmemory.search"));
 		this.searchBox.setMaxLength(128);
 		this.searchBox.setHint(Component.translatable("screen.chestmemory.search_hint"));
-		this.searchBox.setTextColor(ChestGuiStyle.TEXT_BODY);
+		// The box paints a black background, so the dark TEXT_BODY was nearly invisible.
+		// Typed text is white; the "Поиск…" hint keeps the muted tone until you type.
+		this.searchBox.setTextColor(0xFFFFFFFF);
 		this.searchBox.setTextColorUneditable(ChestGuiStyle.TEXT_MUTED);
 		this.searchBox.setValue(this.lastQuery);
 		this.searchBox.setResponder(this::onSearchChanged);

@@ -82,11 +82,52 @@ public final class ItemStackKeys {
 		List<String> parts = new ArrayList<>();
 		appendEnchantParts(parts, "s", stack.getOrDefault(DataComponents.STORED_ENCHANTMENTS, ItemEnchantments.EMPTY));
 		appendEnchantParts(parts, "e", stack.getOrDefault(DataComponents.ENCHANTMENTS, ItemEnchantments.EMPTY));
+		// An anvil-renamed item is a distinct thing to the player — "Sorted Glass" should
+		// not be pooled with plain glass in the list. Encoded as n:<escaped name>.
+		String custom = customName(stack);
+		if (custom != null) {
+			parts.add("n:" + escapeNamePart(custom));
+		}
 		if (parts.isEmpty()) {
 			return base;
 		}
 		Collections.sort(parts);
 		return base + "#" + String.join("+", parts);
+	}
+
+	/** Anvil / data-pack custom name, or null when the item uses its default name. */
+	private static @Nullable String customName(ItemStack stack) {
+		Component name = stack.get(DataComponents.CUSTOM_NAME);
+		if (name == null) {
+			return null;
+		}
+		String text = name.getString().trim();
+		if (text.isEmpty() || text.length() > 64) {
+			return text.isEmpty() ? null : text.substring(0, 64);
+		}
+		return text;
+	}
+
+	/** Keep the key parseable: '+' separates parts and '=' splits enchant level. */
+	private static String escapeNamePart(String raw) {
+		return raw.replace("\\", "\\\\").replace("+", "\\p").replace("=", "\\e").replace("#", "\\h");
+	}
+
+	private static String unescapeNamePart(String raw) {
+		return raw.replace("\\h", "#").replace("\\e", "=").replace("\\p", "+").replace("\\\\", "\\");
+	}
+
+	/** Custom name encoded in the key, or null. */
+	public static @Nullable String customNameOf(String key) {
+		if (!hasEnchantData(key)) {
+			return null;
+		}
+		for (String part : key.substring(key.indexOf('#') + 1).split("\\+")) {
+			if (part.startsWith("n:")) {
+				return unescapeNamePart(part.substring(2));
+			}
+		}
+		return null;
 	}
 
 	/** Registry id only (before {@code #}). */
@@ -127,9 +168,14 @@ public final class ItemStackKeys {
 		if (!hasEnchantData(key)) {
 			return stack;
 		}
+		String customName = customNameOf(key);
+		if (customName != null) {
+			stack.set(DataComponents.CUSTOM_NAME, Component.literal(customName));
+		}
 
 		HolderLookup.RegistryLookup<Enchantment> lookup = enchantmentLookup();
 		if (lookup == null) {
+			// Custom name is already applied above; only enchantments are unavailable.
 			return stack;
 		}
 
@@ -202,7 +248,12 @@ public final class ItemStackKeys {
 
 	private static String computeDisplayName(String key) {
 		ItemStack stack = toStack(key);
-		String base = stack.getHoverName().getString();
+		String custom = customNameOf(key);
+		// Renamed items are listed under their own name, which is how the player thinks
+		// of them; the base item name follows in parentheses so the type stays obvious.
+		String base = custom != null
+			? custom + " (" + new ItemStack(stack.getItem()).getHoverName().getString() + ")"
+			: stack.getHoverName().getString();
 		if (!hasEnchantData(key)) {
 			return base;
 		}

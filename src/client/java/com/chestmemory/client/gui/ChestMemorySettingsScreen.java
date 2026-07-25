@@ -33,6 +33,8 @@ public class ChestMemorySettingsScreen extends Screen {
 	/** Content scroll in pixels (positive = scrolled down). */
 	private int scrollY;
 	private int contentH;
+	/** True while the settings scrollbar is being dragged. */
+	private boolean draggingScrollbar;
 	private int viewTop;
 	private int viewBottom;
 	private int contentLeft;
@@ -483,7 +485,54 @@ public class ChestMemorySettingsScreen extends Screen {
 				return true;
 			}
 		}
+		// Grabbing the scrollbar must not fall through to the row behind it.
+		if (isOverScrollbar(event.x(), event.y())) {
+			this.draggingScrollbar = true;
+			scrollToPointer(event.y());
+			return true;
+		}
 		return super.mouseClicked(event, doubleClick);
+	}
+
+	private int maxScroll() {
+		return Math.max(0, this.contentH - (this.viewBottom - this.viewTop));
+	}
+
+	/** Pointer is on the scrollbar strip at the right edge of the view. */
+	private boolean isOverScrollbar(double mouseX, double mouseY) {
+		return maxScroll() > 0
+			&& mouseX >= this.panelLeft + this.panelW - 12
+			&& mouseX <= this.panelLeft + this.panelW - 2
+			&& mouseY >= this.viewTop && mouseY <= this.viewBottom;
+	}
+
+	private void scrollToPointer(double mouseY) {
+		int max = maxScroll();
+		if (max <= 0) {
+			return;
+		}
+		int viewH = this.viewBottom - this.viewTop;
+		int barH = Math.max(12, viewH * viewH / Math.max(1, this.contentH));
+		int trackH = Math.max(1, viewH - barH);
+		double rel = (mouseY - this.viewTop - barH / 2.0) / trackH;
+		this.scrollY = (int) Math.round(Math.max(0, Math.min(1, rel)) * max);
+		applyScroll();
+	}
+
+	@Override
+	public boolean mouseDragged(net.minecraft.client.input.MouseButtonEvent event, double dragX, double dragY) {
+		// Dragging the bar did nothing before — only the wheel scrolled.
+		if (this.draggingScrollbar) {
+			scrollToPointer(event.y());
+			return true;
+		}
+		return super.mouseDragged(event, dragX, dragY);
+	}
+
+	@Override
+	public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+		this.draggingScrollbar = false;
+		return super.mouseReleased(event);
 	}
 
 	@Override
@@ -607,6 +656,19 @@ public class ChestMemorySettingsScreen extends Screen {
 				0xFFFFD56A,
 				false
 			);
+		}
+
+		// Scrollbar: there was none at all, so the list scrolled blind and there was
+		// nothing to drag.
+		int max = maxScroll();
+		if (max > 0) {
+			int trackH = this.viewBottom - this.viewTop;
+			int barH = Math.max(12, trackH * trackH / Math.max(1, this.contentH));
+			int trackX = this.panelLeft + this.panelW - 10;
+			int barY = this.viewTop + (int) ((trackH - barH) * (this.scrollY / (float) max));
+			graphics.fill(trackX, this.viewTop, trackX + 4, this.viewBottom, 0x66000000);
+			graphics.fill(trackX, barY, trackX + 4, barY + barH,
+				this.draggingScrollbar ? 0xFFFFD56A : 0xFFC8A040);
 		}
 	}
 
