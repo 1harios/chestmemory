@@ -41,6 +41,8 @@ public final class ChestHighlighter {
 	private static @Nullable String highlightedItemId;
 	private static long highlightUntilMillis;
 	private static long highlightStartedMillis;
+	/** Monotonic timestamp when the game was paused, 0 when running. */
+	private static long pauseStartedMillis;
 	/** Optional route: pos → order number (1-based). */
 	private static final java.util.Map<BlockPos, Integer> routeOrder = new java.util.HashMap<>();
 	/** Which stop in the route is the current focus (1-based), 0 = auto nearest. */
@@ -61,7 +63,7 @@ public final class ChestHighlighter {
 
 	public static void highlightItem(String itemId, long durationMillis) {
 		highlightedItemId = itemId;
-		highlightStartedMillis = System.currentTimeMillis();
+		highlightStartedMillis = net.minecraft.util.Util.getMillis();
 		highlightUntilMillis = highlightStartedMillis + durationMillis;
 		routeOrder.clear();
 		routeFocusOrder = 0;
@@ -100,8 +102,8 @@ public final class ChestHighlighter {
 		routeFocusOrder++;
 		// Refresh timer a bit so glow doesn't expire mid-route
 		if (isActive()) {
-			highlightUntilMillis = System.currentTimeMillis()
-				+ Math.max(5000L, highlightUntilMillis - System.currentTimeMillis());
+			highlightUntilMillis = net.minecraft.util.Util.getMillis()
+				+ Math.max(5000L, highlightUntilMillis - net.minecraft.util.Util.getMillis());
 		}
 		return true;
 	}
@@ -118,6 +120,7 @@ public final class ChestHighlighter {
 		highlightedItemId = null;
 		highlightUntilMillis = 0;
 		highlightStartedMillis = 0;
+		pauseStartedMillis = 0;
 		routeOrder.clear();
 		routeFocusOrder = 0;
 		iconMarkers = List.of();
@@ -128,14 +131,14 @@ public final class ChestHighlighter {
 	}
 
 	public static boolean isActive() {
-		return highlightedItemId != null && System.currentTimeMillis() <= highlightUntilMillis;
+		return highlightedItemId != null && net.minecraft.util.Util.getMillis() <= highlightUntilMillis;
 	}
 
 	public static float remainingSeconds() {
 		if (!isActive()) {
 			return 0;
 		}
-		return Math.max(0, (highlightUntilMillis - System.currentTimeMillis()) / 1000.0F);
+		return Math.max(0, (highlightUntilMillis - net.minecraft.util.Util.getMillis()) / 1000.0F);
 	}
 
 	public static void tick(Minecraft client) {
@@ -147,11 +150,29 @@ public final class ChestHighlighter {
 			return;
 		}
 
+		// Singleplayer pause stops the game but not the clock, so opening the menu for
+		// half a minute used to silently burn the whole highlight. Push the deadline out
+		// by however long we were paused.
+		if (client.isPaused()) {
+			if (pauseStartedMillis == 0L) {
+				pauseStartedMillis = net.minecraft.util.Util.getMillis();
+			}
+			return;
+		}
+		if (pauseStartedMillis != 0L) {
+			long paused = net.minecraft.util.Util.getMillis() - pauseStartedMillis;
+			pauseStartedMillis = 0L;
+			if (paused > 0 && highlightedItemId != null) {
+				highlightUntilMillis += paused;
+				highlightStartedMillis += paused;
+			}
+		}
+
 		// Always draw build-site warehouse chests (clan drop-off) when enabled
 		drawStagingWarehouses(client, player);
 
 		if (!isActive()) {
-			if (highlightedItemId != null && System.currentTimeMillis() > highlightUntilMillis) {
+			if (highlightedItemId != null && net.minecraft.util.Util.getMillis() > highlightUntilMillis) {
 				highlightedItemId = null;
 				iconMarkers = List.of();
 			}
@@ -220,7 +241,7 @@ public final class ChestHighlighter {
 			}
 		}
 
-		long now = System.currentTimeMillis();
+		long now = net.minecraft.util.Util.getMillis();
 		float remain = (highlightUntilMillis - now) / 1000.0F;
 		// Soft pulse, not frantic
 		float pulse = 0.88F + 0.12F * (float) Math.sin(now / 400.0);
@@ -295,7 +316,7 @@ public final class ChestHighlighter {
 		if (highlightedItemId == null) {
 			return;
 		}
-		long now = System.currentTimeMillis();
+		long now = net.minecraft.util.Util.getMillis();
 		highlightStartedMillis = now;
 		highlightUntilMillis = now + Math.max(3000L, durationMillis);
 	}
@@ -323,7 +344,7 @@ public final class ChestHighlighter {
 
 		String playerDim = ChestMemoryStorage.dimensionId(client.level);
 		Vec3 eye = player.getEyePosition();
-		long now = System.currentTimeMillis();
+		long now = net.minecraft.util.Util.getMillis();
 		float pulse = 0.85F + 0.15F * (float) Math.sin(now / 350.0);
 		int rgb = ModSettings.get().warehouseColor();
 		int range = ModSettings.get().highlightRenderRange();
