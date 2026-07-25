@@ -64,6 +64,8 @@
 	"screen.chestmemory.clan.join": "Join by code",
 	"screen.chestmemory.clan.code": "Code",
 	"screen.chestmemory.clan.say_code": "Say in chat: %s",
+	"screen.chestmemory.clan.say_code_confirm": "Click again — everyone will see it",
+	"screen.chestmemory.clan.say_code_hint": "The whole server will see the code in public chat",
 	"screen.chestmemory.clan.copy_code": "Copy code",
 	"screen.chestmemory.clan.close_session": "Close session",
 	"screen.chestmemory.clan.leave": "Leave",

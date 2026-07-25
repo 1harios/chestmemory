@@ -64,6 +64,8 @@
 	"screen.chestmemory.clan.join": "Вступить по коду",
 	"screen.chestmemory.clan.code": "Код",
 	"screen.chestmemory.clan.say_code": "Сказать в чат: %s",
+	"screen.chestmemory.clan.say_code_confirm": "Нажми ещё раз — увидят все",
+	"screen.chestmemory.clan.say_code_hint": "Код в общем чате увидит весь сервер",
 	"screen.chestmemory.clan.copy_code": "Копировать код",
 	"screen.chestmemory.clan.close_session": "Закрыть сессию",
 	"screen.chestmemory.clan.leave": "Выйти",

@@ -21,6 +21,8 @@ public class ClanGatherScreen extends Screen {
 	private EditBox tokenBox;
 	private EditBox codeBox;
 	private String status = "";
+	/** Two-step guard for "say in chat": the code is readable by everyone on the server. */
+	private boolean sayCodeArmed;
 	private int panelLeft;
 	private int panelTop;
 	private int panelW;
@@ -132,13 +134,27 @@ public class ClanGatherScreen extends Screen {
 			String code = s != null ? s.code : "?";
 			this.addRenderableWidget(new SettingRowButton(
 				left, y, w, rowH,
-				Component.translatable("screen.chestmemory.clan.say_code", code),
+				this.sayCodeArmed
+					? Component.translatable("screen.chestmemory.clan.say_code_confirm")
+					: Component.translatable("screen.chestmemory.clan.say_code", code),
 				() -> {
-					if (this.minecraft != null && this.minecraft.player != null && s != null) {
-						// Prefer client-side system message + clipboard; chat send may be blocked
-						this.minecraft.player.connection.sendChat("ChestMemory сбор: " + s.code);
-						this.status = Component.translatable("screen.chestmemory.clan.code_sent").getString();
+					if (this.minecraft == null || this.minecraft.player == null || s == null) {
+						return;
 					}
+					// Public chat: anyone on the server can read the code and join the session,
+					// so require a second click instead of firing on the first one.
+					if (!this.sayCodeArmed) {
+						this.sayCodeArmed = true;
+						this.status = Component.translatable("screen.chestmemory.clan.say_code_hint").getString();
+						this.rebuildWidgets();
+						return;
+					}
+					this.sayCodeArmed = false;
+					this.minecraft.player.connection.sendChat(
+						Component.translatable("message.chestmemory.clan_code_line", s.code).getString()
+					);
+					this.status = Component.translatable("screen.chestmemory.clan.code_sent").getString();
+					this.rebuildWidgets();
 				}
 			));
 			y += rowH + gap;
