@@ -120,6 +120,10 @@ public final class ChestMemoryStorage {
 			}
 			return null;
 		}
+		return resolveMultiplayerWorldId(client);
+	}
+
+	private static @Nullable String resolveMultiplayerWorldId(Minecraft client) {
 
 		ServerData server = client.getCurrentServer();
 		if (server != null && server.ip != null && !server.ip.isBlank()) {
@@ -152,14 +156,47 @@ public final class ChestMemoryStorage {
 		return "Multiplayer";
 	}
 
+	/**
+	 * Filesystem-safe slug. ASCII-only by design (profile ids become file names), so any
+	 * non-latin name would collapse to the empty string on its own — "Новый мир" and
+	 * "Мой мир" would both map to the id {@code sp_}, sharing a single profile file.
+	 * A short hash of the original name is therefore always appended to keep distinct
+	 * worlds distinct, including two worlds that merely share a display name.
+	 */
 	private static String sanitize(String raw) {
+		String slug = raw.toLowerCase(Locale.ROOT)
+			.replaceAll("[^a-z0-9._-]+", "_")
+			.replaceAll("_+", "_")
+			.replaceAll("^_|_$", "");
+		String hash = shortHash(raw);
+		return slug.isEmpty() ? hash : slug + "_" + hash;
+	}
+
+	/** Stable 8-hex-digit fingerprint of the raw name (not security relevant). */
+	private static String shortHash(String raw) {
+		long h = 1125899906842597L; // FNV-ish seed
+		for (int i = 0; i < raw.length(); i++) {
+			h = 31 * h + raw.charAt(i);
+		}
+		return String.format(Locale.ROOT, "%08x", (int) (h ^ (h >>> 32)));
+	}
+
+	/**
+	 * Pre-hash profile id, used to migrate files written by earlier versions.
+	 * May be empty or collide across worlds — that was exactly the bug.
+	 */
+	private static String legacySanitize(String raw) {
 		return raw.toLowerCase(Locale.ROOT)
 			.replaceAll("[^a-z0-9._-]+", "_")
 			.replaceAll("_+", "_")
 			.replaceAll("^_|_$", "");
 	}
 
-	/** Keep host and port distinguishable: play.example.com:25565 → play_example_com_25565 */
+	/**
+	 * Keep host and port distinguishable: play.example.com:25565 → play_example_com_25565.
+	 * Server addresses are already ASCII, so no hash suffix is needed (and adding one
+	 * would orphan every existing multiplayer profile).
+	 */
 	private static String sanitizeAddress(String address) {
 		String a = address.trim().toLowerCase(Locale.ROOT);
 		// strip path junk
@@ -167,7 +204,7 @@ public final class ChestMemoryStorage {
 		if (slash >= 0) {
 			a = a.substring(0, slash);
 		}
-		return sanitize(a);
+		return legacySanitize(a);
 	}
 
 	public synchronized void ensureLoaded(Minecraft client) {
@@ -182,6 +219,7 @@ public final class ChestMemoryStorage {
 			return;
 		}
 		saveIfNeeded();
+		migrateLegacyProfile(client, worldId);
 		liveWorldId = worldId;
 		liveDisplayName = display;
 		liveContainers.clear();
@@ -273,6 +311,38 @@ public final class ChestMemoryStorage {
 
 	private Path worldFile(String worldId) {
 		return worldsDir().resolve(worldId + ".json");
+	}
+
+	/**
+	 * Singleplayer profile ids gained a hash suffix (see {@link #sanitize}). Rename the
+	 * pre-hash file to the new id once, so existing memory isn't orphaned by the upgrade.
+	 * Skipped when the new file already exists or the legacy slug was empty — an empty
+	 * slug means the old file was the shared {@code sp_.json} bucket that several worlds
+	 * may have written to, and silently claiming it for one world would be wrong.
+	 */
+	private void migrateLegacyProfile(Minecraft client, String worldId) {
+		if (!worldId.startsWith("sp_") || !client.isLocalServer()) {
+			return;
+		}
+		IntegratedServer server = client.getSingleplayerServer();
+		if (server == null) {
+			return;
+		}
+		String legacySlug = legacySanitize(server.getWorldData().getLevelName());
+		if (legacySlug.isEmpty()) {
+			return;
+		}
+		Path legacy = worldFile("sp_" + legacySlug);
+		Path target = worldFile(worldId);
+		if (legacy.equals(target) || !Files.isRegularFile(legacy) || Files.exists(target)) {
+			return;
+		}
+		try {
+			Files.move(legacy, target);
+			ChestMemoryMod.LOGGER.info("Migrated profile {} -> {}", legacy.getFileName(), target.getFileName());
+		} catch (IOException e) {
+			ChestMemoryMod.LOGGER.warn("Could not migrate profile {}: {}", legacy.getFileName(), e.toString());
+		}
 	}
 
 	private static final class WorldFile {
