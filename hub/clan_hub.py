@@ -438,7 +438,12 @@ class Handler(BaseHTTPRequestHandler):
             if not sess:
                 self._send(404, {"error": "not found"})
                 return
-            if uuid and str(sess.get("hostUuid") or "").lower() != uuid.lower():
+            # An absent uuid used to skip the host check entirely and fall through to
+            # the delete below, letting anyone drop any session by simply omitting it.
+            if not uuid:
+                self._send(403, {"error": "only host can close"})
+                return
+            if str(sess.get("hostUuid") or "").lower() != uuid.lower():
                 self._send(403, {"error": "only host can close"})
                 return
             _sessions.pop(code, None)

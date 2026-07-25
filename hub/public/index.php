@@ -390,7 +390,9 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
 
     if ($action === 'close') {
         $uuid = (string)($body['uuid'] ?? '');
-        if ($uuid !== '' && strcasecmp((string)($sess['hostUuid'] ?? ''), $uuid) !== 0) {
+        // An empty uuid used to short-circuit the host check and fall through to the
+        // delete below, letting anyone drop any session by simply omitting the field.
+        if ($uuid === '' || strcasecmp((string)($sess['hostUuid'] ?? ''), $uuid) !== 0) {
             respond(403, ['error' => 'only host can close']);
         }
         unset($sessions[$code]);
