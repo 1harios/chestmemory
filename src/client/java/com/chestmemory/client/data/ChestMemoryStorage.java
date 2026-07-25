@@ -1422,12 +1422,24 @@ public final class ChestMemoryStorage {
 		return s;
 	}
 
-	public synchronized Path exportCsv(ContainerFilter filter, String query) {
+	/**
+	 * Write the currently displayed list to config/chestmemory/exports/.
+	 *
+	 * @param items the rows the panel is showing, so the file matches the screen exactly
+	 *              (the panel filters by a set of types, not the single ContainerFilter
+	 *              this method used to take)
+	 * @param typeFilters same set, used for the per-container section
+	 * @return the written path, or null on failure
+	 */
+	public synchronized @Nullable Path exportCsv(
+		List<ItemSummary> items,
+		java.util.Collection<ContainerFilter> typeFilters,
+		String query
+	) {
 		String world = viewingWorldId == null ? "unknown" : viewingWorldId;
 		String fileName = "export_" + world + "_" + EXPORT_TIME.format(LocalDateTime.now()) + ".csv";
 		Path out = exportDir().resolve(fileName);
 
-		List<ItemSummary> items = listItems(query, filter);
 		StringBuilder sb = new StringBuilder();
 		sb.append("world_id,display_name\n");
 		sb.append(csvField(world)).append(',').append(csvField(viewingDisplayName())).append('\n').append('\n');
@@ -1443,7 +1455,7 @@ public final class ChestMemoryStorage {
 		sb.append("\n# containers\n");
 		sb.append("type,dimension,x,y,z,virtual_id,double_chest,item_id,count\n");
 		for (ContainerRecord record : activeView().values()) {
-			if (!filter.matches(record)) {
+			if (!ContainerFilter.matchesAny(record, typeFilters)) {
 				continue;
 			}
 			for (Map.Entry<String, Integer> e : record.items().entrySet()) {

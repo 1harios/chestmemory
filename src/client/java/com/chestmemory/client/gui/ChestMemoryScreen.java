@@ -127,6 +127,7 @@ public class ChestMemoryScreen extends Screen {
 		int gearX = this.panelLeft + this.panelW - iconSize - 6;
 		int gearY = this.panelTop + 11;
 		int clearX = gearX - iconSize - iconGap;
+		int exportX = clearX - iconSize - iconGap - 6;
 
 		this.clearMemoryIcon = new ClearMemoryIconButton(
 			clearX, gearY, iconSize,
@@ -138,6 +139,19 @@ public class ChestMemoryScreen extends Screen {
 		this.clearMemoryIcon.active = !this.litematicaBuildMode;
 		this.clearMemoryIcon.setConfirmMode(false);
 		this.addRenderableWidget(this.clearMemoryIcon);
+
+		// CSV export of the list as currently filtered. The storage side has always been
+		// there; nothing in the UI ever called it.
+		Button exportButton = Button.builder(
+			Component.translatable("screen.chestmemory.export"),
+			btn -> onExportCsv()
+		).bounds(exportX, gearY, iconSize + 6, iconSize).build();
+		exportButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+			Component.translatable("screen.chestmemory.export.tooltip")
+		));
+		exportButton.visible = !this.litematicaBuildMode;
+		exportButton.active = !this.litematicaBuildMode;
+		this.addRenderableWidget(exportButton);
 
 		this.addRenderableWidget(new SettingsIconButton(
 			gearX, gearY, iconSize,
@@ -713,6 +727,31 @@ public class ChestMemoryScreen extends Screen {
 		if (this.dimensionChoices.isEmpty()) {
 			this.dimensionChoices = List.of(DimensionChoice.ALL, DimensionChoice.CURRENT);
 		}
+	}
+
+	/** Export the list exactly as filtered on screen, then reveal the file. */
+	private void onExportCsv() {
+		List<ItemSummary> items = ChestMemoryStorage.get().listItems(
+			this.lastQuery,
+			this.typeFilters,
+			this.dimensionFilter,
+			this.scope == ListScope.NEARBY ? ListScope.NEARBY : ListScope.WORLD_TOTAL,
+			playerDimension(),
+			playerPos(),
+			rangeBlocks(),
+			this.sortMode
+		);
+		java.nio.file.Path out = ChestMemoryStorage.get().exportCsv(items, this.typeFilters, this.lastQuery);
+		if (out == null) {
+			this.statusLine = Component.translatable("screen.chestmemory.status.export_failed").getString();
+			return;
+		}
+		this.statusLine = Component.translatable(
+			"screen.chestmemory.status.exported",
+			out.getFileName().toString()
+		).getString();
+		// Open the folder so the file is actually findable without hunting through .minecraft
+		net.minecraft.util.Util.getPlatform().openPath(out.getParent());
 	}
 
 	private void onSearchChanged(String query) {

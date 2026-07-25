@@ -112,6 +112,7 @@
 	"screen.chestmemory.status.hud_on": "HUD сбора включён",
 	"screen.chestmemory.status.hud_off": "HUD сбора выключен",
 	"screen.chestmemory.export": "CSV",
+	"screen.chestmemory.export.tooltip": "Выгрузить текущий список в CSV",
 	"screen.chestmemory.litematica.btn_off": "Сбор",
 	"screen.chestmemory.litematica.btn_on": "Сбор: вкл",
 	"screen.chestmemory.litematica.btn_disabled": "Сбор",

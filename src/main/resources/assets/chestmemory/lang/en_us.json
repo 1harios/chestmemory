@@ -112,6 +112,7 @@
 	"screen.chestmemory.status.hud_on": "Gather HUD on",
 	"screen.chestmemory.status.hud_off": "Gather HUD off",
 	"screen.chestmemory.export": "CSV",
+	"screen.chestmemory.export.tooltip": "Export the current list to CSV",
 	"screen.chestmemory.litematica.btn_off": "Gather",
 	"screen.chestmemory.litematica.btn_on": "Gather: on",
 	"screen.chestmemory.litematica.btn_disabled": "Gather",
