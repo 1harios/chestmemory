@@ -49,6 +49,16 @@ public final class ContainerScanner {
 	 * Prevents warehouse pick from re-firing every client tick while the chest stays open.
 	 */
 	private static @Nullable String stagingHandledThisOpen;
+	/**
+	 * Menu instance currently being scanned, and whether it has ever reported contents.
+	 * <p>
+	 * A container menu exists before its ContainerSetContent packet arrives, so for the
+	 * first tick(s) every slot reads empty. Writing that straight to memory wiped a
+	 * chest's remembered contents whenever the player opened and closed it faster than
+	 * the server replied — common on a laggy server.
+	 */
+	private static @Nullable AbstractContainerMenu trackedMenu;
+	private static boolean trackedMenuHadContents;
 
 	private ContainerScanner() {
 	}
@@ -75,6 +85,8 @@ public final class ContainerScanner {
 			// No container open — sticky ender flag no longer needed
 			LastInteractTracker.clearEnderChestPending();
 			stagingHandledThisOpen = null;
+			trackedMenu = null;
+			trackedMenuHadContents = false;
 		}
 	}
 
@@ -104,7 +116,27 @@ public final class ContainerScanner {
 			return;
 		}
 
+		if (menu != trackedMenu) {
+			trackedMenu = menu;
+			trackedMenuHadContents = false;
+		}
+
 		Map<String, Integer> items = readSlots(menu, target.containerSlots());
+
+		if (!items.isEmpty()) {
+			trackedMenuHadContents = true;
+		} else if (!trackedMenuHadContents && menu.getStateId() == 0) {
+			// Empty, nothing seen yet, and the server has not synced this menu once
+			// (stateId is bumped on every sync and starts at 0): the ContainerSetContent
+			// packet has not arrived. Recording now would replace a real chest's contents
+			// with nothing, which is what happened when a laggy server was slower than
+			// the player's open/close.
+			//
+			// A genuinely empty chest still gets recorded, because its sync bumps stateId
+			// even with no items; emptying one by hand also works, since contents were
+			// seen earlier in the same menu.
+			return;
+		}
 
 		// Ender chest: single virtual entry for this server/world profile
 		if (target.virtual() && "ender_chest".equals(target.virtualId())) {
