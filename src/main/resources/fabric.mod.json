@@ -3,14 +3,18 @@
 	"id": "chestmemory",
 	"version": "${version}",
 	"name": "Chest Memory",
-	"description": "Remembers chest contents per world/server, search with Ё, highlights containers. Works on Fabric 26.1.2 and 26.2.",
+	"description": "Remembers chest contents per world/server, search with the grave key (Ё on a Russian layout), highlights containers. Works on Fabric 26.1.2 and 26.2.",
 	"authors": [
 		"Karandash"
 	],
-	"contact": {},
+	"contact": {
+		"homepage": "https://github.com/1harios/chestmemory",
+		"sources": "https://github.com/1harios/chestmemory",
+		"issues": "https://github.com/1harios/chestmemory/issues"
+	},
 	"license": "MIT",
 	"icon": "assets/chestmemory/icon.png",
-	"environment": "*",
+	"environment": "client",
 	"entrypoints": {
 		"main": [
 			"com.chestmemory.ChestMemoryMod"
@@ -23,7 +27,6 @@
 		]
 	},
 	"mixins": [
-		"chestmemory.mixins.json",
 		{
 			"config": "chestmemory.client.mixins.json",
 			"environment": "client"
@@ -36,7 +39,7 @@
 			"~26.2"
 		],
 		"java": ">=25",
-		"fabric-api": "*"
+		"fabric-api": ">=0.155.2"
 	},
 	"suggests": {
 		"jade": "*",
