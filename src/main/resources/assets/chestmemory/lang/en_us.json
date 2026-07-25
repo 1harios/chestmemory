@@ -266,6 +266,7 @@
 	"screen.chestmemory.settings.scope": "Default scope: %s",
 	"screen.chestmemory.settings.nearby": "Nearby radius: %s",
 	"screen.chestmemory.settings.sort": "Default sort: %s",
+	"screen.chestmemory.settings.export": "Export list to CSV",
 	"screen.chestmemory.settings.key_bound": "%s: [%s]",
 	"screen.chestmemory.settings.key_listening": "%s: > press a key <",
 	"screen.chestmemory.settings.key_wait": "Press a key… Esc cancel · Del unbind",

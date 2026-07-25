@@ -266,6 +266,7 @@
 	"screen.chestmemory.settings.scope": "Область по умолчанию: %s",
 	"screen.chestmemory.settings.nearby": "Радиус «рядом»: %s",
 	"screen.chestmemory.settings.sort": "Сортировка по умолчанию: %s",
+	"screen.chestmemory.settings.export": "Выгрузить список в CSV",
 	"screen.chestmemory.settings.key_bound": "%s: [%s]",
 	"screen.chestmemory.settings.key_listening": "%s: > нажми клавишу <",
 	"screen.chestmemory.settings.key_wait": "Нажми клавишу… Esc — отмена · Del — снять",

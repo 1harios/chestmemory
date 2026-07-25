@@ -16,7 +16,6 @@ import com.chestmemory.client.litematica.BuildGatherSession;
 import com.chestmemory.client.litematica.LitematicaAccess;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -62,13 +61,13 @@ public class ChestMemoryScreen extends Screen {
 	private boolean litematicaBuildMode = false;
 	/** Profile / scope / dim / sort filters — from settings, collapsed by default. */
 	private boolean filtersExpanded = com.chestmemory.client.data.ModSettings.get().filtersExpanded();
-	private Button filtersToggleButton;
-	private Button litematicaButton;
-	private Button leftBarButton;
-	private Button rightBarButton;
-	private Button buildFilterButton;
-	private Button stagingMarkButton;
-	private Button stagingClearButton;
+	private SettingRowButton filtersToggleButton;
+	private SettingRowButton litematicaButton;
+	private SettingRowButton leftBarButton;
+	private SettingRowButton rightBarButton;
+	private SettingRowButton buildFilterButton;
+	private SettingRowButton stagingMarkButton;
+	private SettingRowButton stagingClearButton;
 	private ClearMemoryIconButton clearMemoryIcon;
 
 	/** First click on Clear — wait for second confirm click. */
@@ -134,7 +133,6 @@ public class ChestMemoryScreen extends Screen {
 		int gearX = this.panelLeft + this.panelW - iconSize - 6;
 		int gearY = this.panelTop + 11;
 		int clearX = gearX - iconSize - iconGap;
-		int exportX = clearX - iconSize - iconGap - 6;
 
 		this.clearMemoryIcon = new ClearMemoryIconButton(
 			clearX, gearY, iconSize,
@@ -146,19 +144,6 @@ public class ChestMemoryScreen extends Screen {
 		this.clearMemoryIcon.active = !this.litematicaBuildMode;
 		this.clearMemoryIcon.setConfirmMode(false);
 		this.addRenderableWidget(this.clearMemoryIcon);
-
-		// CSV export of the list as currently filtered. The storage side has always been
-		// there; nothing in the UI ever called it.
-		Button exportButton = Button.builder(
-			Component.translatable("screen.chestmemory.export"),
-			btn -> onExportCsv()
-		).bounds(exportX, gearY, iconSize + 6, iconSize).build();
-		exportButton.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
-			Component.translatable("screen.chestmemory.export.tooltip")
-		));
-		exportButton.visible = !this.litematicaBuildMode;
-		exportButton.active = !this.litematicaBuildMode;
-		this.addRenderableWidget(exportButton);
 
 		this.addRenderableWidget(new SettingsIconButton(
 			gearX, gearY, iconSize,
@@ -199,14 +184,11 @@ public class ChestMemoryScreen extends Screen {
 		}
 
 		// One toggle: show/hide all profile & filter dropdowns
-		this.filtersToggleButton = Button.builder(
-			filtersToggleLabel(),
-			btn -> {
+		this.filtersToggleButton = new SettingRowButton(left, y, w, rowH, filtersToggleLabel(), () -> {
 				this.filtersExpanded = !this.filtersExpanded;
 				ModSettings.get().setFiltersExpanded(this.filtersExpanded);
 				this.rebuildWidgets();
-			}
-		).bounds(left, y, w, rowH).build();
+			});
 		this.addRenderableWidget(this.filtersToggleButton);
 		y += rowH + gap;
 
@@ -343,14 +325,11 @@ public class ChestMemoryScreen extends Screen {
 		String clanBtnText = com.chestmemory.client.clan.ClanSessionManager.isInSession()
 			? Component.translatable("screen.chestmemory.clan.btn_short_in").getString()
 			: Component.translatable("screen.chestmemory.clan.btn_short").getString();
-		this.addRenderableWidget(Button.builder(
-			Component.literal(clanBtnText),
-			btn -> {
+		this.addRenderableWidget(new SettingRowButton(left + w - clanBtnW, y, clanBtnW, rowH, Component.literal(clanBtnText), () -> {
 				if (this.minecraft != null) {
 					com.chestmemory.client.util.ClientScreens.set(this.minecraft, new ClanGatherScreen(this));
 				}
-			}
-		).bounds(left + w - clanBtnW, y, clanBtnW, rowH).build());
+			}));
 		y += rowH + gap;
 
 		// Scheme tools: one compact row (same panel height as normal Ё)
@@ -361,21 +340,16 @@ public class ChestMemoryScreen extends Screen {
 			// 4 columns: filter | warehouse | clear warehouse | clan
 			int colGap = gap;
 			int colW = (w - 3 * colGap) / 4;
-			this.buildFilterButton = Button.builder(
-				filterButtonLabel(),
-				btn -> {
+			this.buildFilterButton = new SettingRowButton(left, y, colW, rowH, filterButtonLabel(), () -> {
 					BuildGatherSession.cycleFilter();
-					btn.setMessage(filterButtonLabel());
+					this.buildFilterButton.setMessage(filterButtonLabel());
 					this.refreshList(this.searchBox != null ? this.searchBox.getValue() : "");
-				}
-			).bounds(left, y, colW, rowH).build();
+				});
 			this.addRenderableWidget(this.buildFilterButton);
 
-			this.stagingMarkButton = Button.builder(
-				stagingMarkLabel(),
-				btn -> {
+			this.stagingMarkButton = new SettingRowButton(left + colW + colGap, y, colW, rowH, stagingMarkLabel(), () -> {
 					com.chestmemory.client.data.StagingPickMode.toggle();
-					btn.setMessage(stagingMarkLabel());
+					this.stagingMarkButton.setMessage(stagingMarkLabel());
 					if (this.stagingClearButton != null) {
 						this.stagingClearButton.setMessage(stagingClearLabel());
 					}
@@ -388,23 +362,19 @@ public class ChestMemoryScreen extends Screen {
 							ChestMemoryStorage.get().stagingCount()
 						).getString();
 					}
-				}
-			).bounds(left + colW + colGap, y, colW, rowH).build();
+				});
 			this.addRenderableWidget(this.stagingMarkButton);
 
-			this.stagingClearButton = Button.builder(
-				stagingClearLabel(),
-				btn -> {
+			this.stagingClearButton = new SettingRowButton(left + 2 * (colW + colGap), y, colW, rowH, stagingClearLabel(), () -> {
 					com.chestmemory.client.data.StagingPickMode.stop(false);
 					ChestMemoryStorage.get().clearStaging();
 					this.statusLine = Component.translatable("screen.chestmemory.status.staging_cleared").getString();
-					btn.setMessage(stagingClearLabel());
+					this.stagingClearButton.setMessage(stagingClearLabel());
 					if (this.stagingMarkButton != null) {
 						this.stagingMarkButton.setMessage(stagingMarkLabel());
 					}
 					this.refreshList(this.searchBox != null ? this.searchBox.getValue() : "");
-				}
-			).bounds(left + 2 * (colW + colGap), y, colW, rowH).build();
+				});
 			this.addRenderableWidget(this.stagingClearButton);
 
 			String clanLabel = com.chestmemory.client.clan.ClanSessionManager.isInSession()
@@ -413,17 +383,14 @@ public class ChestMemoryScreen extends Screen {
 					com.chestmemory.client.clan.ClanSessionManager.code()
 				).getString()
 				: Component.translatable("screen.chestmemory.clan.btn").getString();
-			this.addRenderableWidget(Button.builder(
-				Component.literal(clanLabel),
-				btn -> {
+			this.addRenderableWidget(new SettingRowButton(left + 3 * (colW + colGap), y, colW, rowH, Component.literal(clanLabel), () -> {
 					if (this.minecraft != null) {
 						com.chestmemory.client.util.ClientScreens.set(
 							this.minecraft,
 							new ClanGatherScreen(this)
 						);
 					}
-				}
-			).bounds(left + 3 * (colW + colGap), y, colW, rowH).build());
+				}));
 			y += rowH + gap;
 		}
 
@@ -440,23 +407,14 @@ public class ChestMemoryScreen extends Screen {
 		// Bottom bar always 3 equal buttons:
 		// normal: «Снять свет» | «Сбор» | «Закрыть»
 		// gather materials: HUD | «Назад» | «Завершить»
-		this.leftBarButton = Button.builder(
-			leftBarLabel(),
-			btn -> this.onLeftBarClick()
-		).bounds(left, buttonY, bw, 18).build();
+		this.leftBarButton = new SettingRowButton(left, buttonY, bw, 18, leftBarLabel(), () -> this.onLeftBarClick());
 		this.addRenderableWidget(this.leftBarButton);
 
-		this.litematicaButton = Button.builder(
-			litematicaButtonLabel(),
-			btn -> this.onMiddleBarClick()
-		).bounds(left + bw + 4, buttonY, bw, 18).build();
+		this.litematicaButton = new SettingRowButton(left + bw + 4, buttonY, bw, 18, litematicaButtonLabel(), () -> this.onMiddleBarClick());
 		updateLitematicaButtonState();
 		this.addRenderableWidget(this.litematicaButton);
 
-		this.rightBarButton = Button.builder(
-			rightBarLabel(),
-			btn -> this.onRightBarClick()
-		).bounds(left + 2 * (bw + 4), buttonY, bw, 18).build();
+		this.rightBarButton = new SettingRowButton(left + 2 * (bw + 4), buttonY, bw, 18, rightBarLabel(), () -> this.onRightBarClick());
 		this.addRenderableWidget(this.rightBarButton);
 
 		// Dropdowns last among widgets = drawn later; open list still needs overlay pass
@@ -738,7 +696,7 @@ public class ChestMemoryScreen extends Screen {
 	}
 
 	/** Export the list exactly as filtered on screen, then reveal the file. */
-	private void onExportCsv() {
+	public void onExportCsv() {
 		List<ItemSummary> items = ChestMemoryStorage.get().listItems(
 			this.lastQuery,
 			this.typeFilters,

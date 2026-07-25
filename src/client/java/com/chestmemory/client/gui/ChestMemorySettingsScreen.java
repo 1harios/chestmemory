@@ -221,6 +221,19 @@ public class ChestMemorySettingsScreen extends Screen {
 				ModSettings.get().sortMode().label().getString()),
 			() -> ModSettings.get().cycleSortMode(),
 			null);
+		// CSV export lives here rather than as an icon on the panel: it is a rare action
+		// and the panel header is for things used constantly.
+		y = addToggle(y, rowH, gap,
+			() -> Component.translatable("screen.chestmemory.settings.export"),
+			() -> {
+				if (this.parent instanceof ChestMemoryScreen panel) {
+					panel.onExportCsv();
+					// Close settings so the panel's status line (and the opened folder)
+					// are actually visible.
+					this.onClose();
+				}
+			},
+			() -> this.parent instanceof ChestMemoryScreen);
 
 		// ── Keys ───────────────────────────────────────────────────────────
 		y = addSection(y + 4, "screen.chestmemory.settings.section.keys");
@@ -409,7 +422,9 @@ public class ChestMemorySettingsScreen extends Screen {
 			int base = contentBaseY.get(i);
 			int screenY = this.viewTop + base - this.scrollY;
 			w.setY(screenY);
-			boolean visible = screenY + w.getHeight() > this.viewTop && screenY < this.viewBottom;
+			// Fully inside the viewport only. Partial visibility let the top row ride over
+			// the header hint and the bottom row over the Done button.
+			boolean visible = screenY >= this.viewTop && screenY + w.getHeight() <= this.viewBottom;
 			w.visible = visible;
 			boolean depOk = i < contentEnabled.size() && contentEnabled.get(i).getAsBoolean();
 			if (this.listeningKey != null) {
@@ -521,7 +536,8 @@ public class ChestMemorySettingsScreen extends Screen {
 		// Section headers (scroll with content)
 		for (SectionMark m : sectionMarkers) {
 			int sy = this.viewTop + m.baseY() - this.scrollY;
-			if (sy + 10 < this.viewTop || sy > this.viewBottom) {
+			// Clip strictly: the tab spans sy-2..sy+11, so require the whole band inside.
+			if (sy - 2 < this.viewTop || sy + 11 > this.viewBottom) {
 				continue;
 			}
 			// Wooden tab + rule, matching the panel frame
@@ -536,7 +552,7 @@ public class ChestMemorySettingsScreen extends Screen {
 		}
 		for (SectionMark m : hintMarkers) {
 			int sy = this.viewTop + m.baseY() - this.scrollY;
-			if (sy + 10 < this.viewTop || sy > this.viewBottom) {
+			if (sy < this.viewTop || sy + 10 > this.viewBottom) {
 				continue;
 			}
 			String hint = Component.translatable(m.titleKey()).getString();
@@ -556,7 +572,9 @@ public class ChestMemorySettingsScreen extends Screen {
 			int sw = 12;
 			int sh = 12;
 			int sx = this.contentLeft + this.contentW - sw;
-			if (sy + sh < this.viewTop || sy > this.viewBottom) {
+			// Swatch spans sy+2..sy+5+sh; without the strict test the last one was drawn
+			// on top of the Done button.
+			if (sy + 2 < this.viewTop || sy + 5 + sh > this.viewBottom) {
 				continue;
 			}
 			int rgb = m.rgb().getAsInt();
