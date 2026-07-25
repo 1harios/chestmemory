@@ -12,7 +12,6 @@ import net.minecraft.client.gui.screens.inventory.MenuAccess;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.AbstractContainerMenu;
@@ -28,14 +27,15 @@ import net.minecraft.world.item.component.ItemContainerContents;
 import net.minecraft.world.level.block.BarrelBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.DispenserBlock;
 import net.minecraft.world.level.block.EnderChestBlock;
+import net.minecraft.world.level.block.HopperBlock;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.state.BlockState;
 
 import org.jspecify.annotations.Nullable;
 
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -131,6 +131,10 @@ public final class ContainerScanner {
 			pos = LastInteractTracker.getRecent(INTERACT_MAX_AGE_MS);
 		}
 		if (pos == null || client.level == null) {
+			return;
+		}
+		// Guard against binding a server-side GUI to whatever block was clicked last.
+		if (!isTrackedContainerBlock(client, pos)) {
 			return;
 		}
 
@@ -252,6 +256,30 @@ public final class ContainerScanner {
 		return items;
 	}
 
+	/**
+	 * True when the block really is a container we track.
+	 * <p>
+	 * The open menu is matched to a block by "last block right-clicked", which says
+	 * nothing about whether that click actually opened this menu. Servers routinely
+	 * open plain {@code ChestMenu}s for shops, kits and custom UIs, and those would
+	 * otherwise be written to memory as a chest standing at the last clicked block —
+	 * inventing containers on signs and doors, or overwriting a real chest's contents
+	 * with a shop's stock. An unloaded chunk reads as air and is rejected too, which is
+	 * the conservative outcome we want.
+	 */
+	private static boolean isTrackedContainerBlock(Minecraft client, BlockPos pos) {
+		if (client.level == null) {
+			return false;
+		}
+		Block block = client.level.getBlockState(pos).getBlock();
+		return block instanceof ChestBlock
+			|| block instanceof BarrelBlock
+			|| block instanceof ShulkerBoxBlock
+			|| block instanceof EnderChestBlock
+			|| block instanceof HopperBlock
+			|| block instanceof DispenserBlock;
+	}
+
 	private static String refineTypeFromBlock(Minecraft client, BlockPos pos, String fallback) {
 		if (client.level == null) {
 			return fallback;
@@ -273,19 +301,6 @@ public final class ContainerScanner {
 		return fallback;
 	}
 
-	private static boolean titleLooksLikeEnder(Screen screen) {
-		if (screen == null) {
-			return false;
-		}
-		Component title = screen.getTitle();
-		if (title == null) {
-			return false;
-		}
-		String s = title.getString().toLowerCase(Locale.ROOT);
-		// en: "Ender Chest", ru: "Эндер-сундук", etc.
-		return s.contains("ender") || s.contains("эндер") || s.contains("enderchest");
-	}
-
 	private static boolean isEnderBlock(Minecraft client, BlockPos pos) {
 		return pos != null && client.level != null
 			&& client.level.getBlockState(pos).getBlock() instanceof EnderChestBlock;
@@ -300,11 +315,15 @@ public final class ContainerScanner {
 			boolean enderByContainer = chest.getContainer() instanceof PlayerEnderChestContainer;
 			boolean enderBySticky = LastInteractTracker.isEnderChestPending();
 			boolean enderByBlock = isEnderBlock(client, last) || isEnderBlock(client, stickyEnder);
-			boolean enderByTitle = titleLooksLikeEnder(screen);
-			// Normal ender = 3 rows. Sticky/title are reliable on multiplayer (container is SimpleContainer).
+			// Normal ender = 3 rows. Sticky/block signals are reliable on multiplayer too
+			// (there the container is a plain SimpleContainer, so enderByContainer is false).
 			boolean threeRows = chest.getRowCount() == 3;
-			boolean ender = enderByContainer
-				|| (threeRows && (enderBySticky || enderByTitle || enderByBlock));
+			// The title alone is not proof: a server GUI called "Ender Upgrades", or a chest
+			// renamed "Ender stuff" on an anvil, would otherwise overwrite the profile's only
+			// ender-chest record (and delete the real block entry at that position). It now
+			// only reinforces a real signal — the clicked block or the sticky ender flag.
+			boolean enderByPosition = enderBySticky || enderByBlock;
+			boolean ender = enderByContainer || (threeRows && enderByPosition);
 
 			if (ender) {
 				BlockPos pos = stickyEnder != null ? stickyEnder : last;
