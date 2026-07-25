@@ -58,6 +58,9 @@ public final class ChestMemoryStorage {
 	private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 	/** Bumped when the on-disk profile schema changes in a non-backwards-compatible way. */
 	private static final int FORMAT_VERSION = 2;
+	/** Upper bounds for staging keys accepted from the clan hub (untrusted input). */
+	private static final int MAX_STAGING_KEYS = 4096;
+	private static final int MAX_STAGING_KEY_LENGTH = 256;
 
 	private static volatile ChestMemoryStorage instance;
 
@@ -738,19 +741,58 @@ public final class ChestMemoryStorage {
 			return 0;
 		}
 		int added = 0;
+		int rejected = 0;
 		for (String k : keys) {
-			if (k == null || k.isBlank()) {
+			if (liveStagingKeys.size() >= MAX_STAGING_KEYS) {
+				rejected += 1;
+				continue;
+			}
+			// These keys arrive from the clan hub, i.e. from outside this client. Anything
+			// that is not a well-formed "dimension|x,y,z" key would be written straight into
+			// the player's profile and then parsed back as garbage, so validate before use.
+			if (!isValidStagingKey(k)) {
+				rejected++;
 				continue;
 			}
 			if (liveStagingKeys.add(k)) {
 				added++;
 			}
 		}
+		if (rejected > 0) {
+			ChestMemoryMod.LOGGER.warn("Ignored {} malformed or excess staging key(s) from clan hub", rejected);
+		}
 		if (added > 0) {
 			liveDirty = true;
 			saveIfNeeded();
 		}
 		return added;
+	}
+
+	/** Strict check for a {@code dimension|x,y,z} key from an untrusted source. */
+	private static boolean isValidStagingKey(@Nullable String key) {
+		if (key == null || key.isBlank() || key.length() > MAX_STAGING_KEY_LENGTH) {
+			return false;
+		}
+		String[] parts = parseStagingKey(key);
+		if (parts == null) {
+			return false;
+		}
+		String dim = parts[0];
+		if (dim.isBlank() || dim.length() > 128) {
+			return false;
+		}
+		for (int i = 1; i <= 3; i++) {
+			try {
+				int v = Integer.parseInt(parts[i]);
+				// Y is checked loosely; X/Z against the vanilla world border.
+				if (v < -30_000_000 || v > 30_000_000) {
+					return false;
+				}
+			} catch (NumberFormatException e) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
