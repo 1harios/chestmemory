@@ -30,6 +30,8 @@ public class DropdownWidget<T> extends AbstractWidget {
 	private T selected;
 	private boolean open;
 	private int scroll;
+	/** Row highlighted by keyboard navigation while the list is open. */
+	private int keyboardIndex;
 	private final int maxVisible;
 	private final int rowH;
 
@@ -236,6 +238,10 @@ public class DropdownWidget<T> extends AbstractWidget {
 			int ry = top + i * rowH;
 			boolean hover = mouseX >= x0 && mouseX < x1 && mouseY >= ry && mouseY < ry + rowH;
 			boolean isSel = opt != null && opt.equals(selected);
+			// Keyboard highlight reads the same as hover, so arrow keys are not blind.
+			if (!hover && this.isFocused() && idx == keyboardIndex) {
+				hover = true;
+			}
 			if (hover) {
 				graphics.fill(x0 + 1, ry, x1 - 1, ry + rowH, 0xA0FFE08A);
 			} else if (isSel) {
@@ -301,18 +307,70 @@ public class DropdownWidget<T> extends AbstractWidget {
 
 		// Click a row → select and close
 		int row = (int) ((my - top) / rowH);
-		int idx = scroll + row;
-		if (idx >= 0 && idx < options.size()) {
-			this.playDownSound(Minecraft.getInstance().getSoundManager());
-			T value = options.get(idx);
-			this.selected = value;
-			this.open = false;
-			if (onChanged != null) {
-				onChanged.accept(value);
+		return selectIndex(scroll + row);
+	}
+
+	/** Apply the option at {@code idx}, close the list and notify. */
+	private boolean selectIndex(int idx) {
+		if (idx < 0 || idx >= options.size()) {
+			return false;
+		}
+		this.playDownSound(Minecraft.getInstance().getSoundManager());
+		T value = options.get(idx);
+		this.selected = value;
+		this.open = false;
+		if (onChanged != null) {
+			onChanged.accept(value);
+		}
+		return true;
+	}
+
+	/**
+	 * Keyboard control: the list was mouse-only, so Tab could focus the bar but nothing
+	 * could be opened or picked from the keyboard.
+	 * Enter/Space toggles, arrows move the highlight, Esc closes just the list.
+	 */
+	@Override
+	public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+		if (!this.active || !this.visible) {
+			return false;
+		}
+		int key = event.key();
+		if (key == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER
+			|| key == org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER
+			|| key == org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE) {
+			if (!open) {
+				this.open = true;
+				this.scroll = 0;
+				this.keyboardIndex = Math.max(0, options.indexOf(selected));
+				return true;
 			}
+			return selectIndex(keyboardIndex);
+		}
+		if (!open) {
+			return false;
+		}
+		if (key == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+			this.open = false;
 			return true;
 		}
-		return false;
+		int delta = switch (key) {
+			case org.lwjgl.glfw.GLFW.GLFW_KEY_DOWN -> 1;
+			case org.lwjgl.glfw.GLFW.GLFW_KEY_UP -> -1;
+			default -> 0;
+		};
+		if (delta == 0) {
+			return false;
+		}
+		keyboardIndex = Mth.clamp(keyboardIndex + delta, 0, Math.max(0, options.size() - 1));
+		// Keep the highlighted row inside the visible window
+		int visible = visibleRows();
+		if (keyboardIndex < scroll) {
+			scroll = keyboardIndex;
+		} else if (keyboardIndex >= scroll + visible) {
+			scroll = keyboardIndex - visible + 1;
+		}
+		return true;
 	}
 
 	public boolean isInExpandedArea(double mx, double my) {
