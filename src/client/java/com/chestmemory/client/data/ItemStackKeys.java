@@ -18,8 +18,11 @@ import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -31,7 +34,39 @@ import java.util.Optional;
  * where {@code e:} = applied enchantments, {@code s:} = stored (books).
  */
 public final class ItemStackKeys {
+	/**
+	 * Resolving a key to a display name builds an ItemStack and hits the item and
+	 * enchantment registries. That happened on every keystroke in the search box and on
+	 * every comparison during sorting, so it is memoised here.
+	 * <p>
+	 * Keyed by item key; invalidated when the language changes, since the cached strings
+	 * are localized. Access is confined to the client thread.
+	 */
+	private static final Map<String, String> DISPLAY_NAME_CACHE = new HashMap<>();
+	private static final Map<String, String> SEARCH_BLOB_CACHE = new HashMap<>();
+	private static @Nullable String cachedLanguage;
+
 	private ItemStackKeys() {
+	}
+
+	/** Drops memoised names when the active language changed. */
+	private static void ensureLanguageFresh() {
+		Minecraft mc = Minecraft.getInstance();
+		String lang = mc != null && mc.getLanguageManager() != null
+			? mc.getLanguageManager().getSelected()
+			: null;
+		if (!Objects.equals(lang, cachedLanguage)) {
+			cachedLanguage = lang;
+			DISPLAY_NAME_CACHE.clear();
+			SEARCH_BLOB_CACHE.clear();
+		}
+	}
+
+	/** Clears memoised display names (language change, resource reload). */
+	public static void clearNameCache() {
+		DISPLAY_NAME_CACHE.clear();
+		SEARCH_BLOB_CACHE.clear();
+		cachedLanguage = null;
 	}
 
 	/** Full identity key including enchantments. */
@@ -150,11 +185,22 @@ public final class ItemStackKeys {
 		return stack;
 	}
 
-	/** Human-readable name including enchantments. */
+	/** Human-readable name including enchantments. Memoised — see DISPLAY_NAME_CACHE. */
 	public static String displayName(String key) {
 		if (key == null || key.isBlank()) {
 			return "?";
 		}
+		ensureLanguageFresh();
+		String cached = DISPLAY_NAME_CACHE.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		String name = computeDisplayName(key);
+		DISPLAY_NAME_CACHE.put(key, name);
+		return name;
+	}
+
+	private static String computeDisplayName(String key) {
 		ItemStack stack = toStack(key);
 		String base = stack.getHoverName().getString();
 		if (!hasEnchantData(key)) {
@@ -167,9 +213,19 @@ public final class ItemStackKeys {
 		return base + " (" + String.join(", ", names) + ")";
 	}
 
-	/** For search matching. */
+	/** For search matching. Memoised — rebuilt on every keystroke otherwise. */
 	public static String searchBlob(String key) {
-		return (key + " " + displayName(key)).toLowerCase(Locale.ROOT);
+		if (key == null || key.isBlank()) {
+			return "";
+		}
+		ensureLanguageFresh();
+		String cached = SEARCH_BLOB_CACHE.get(key);
+		if (cached != null) {
+			return cached;
+		}
+		String blob = (key + " " + displayName(key)).toLowerCase(Locale.ROOT);
+		SEARCH_BLOB_CACHE.put(key, blob);
+		return blob;
 	}
 
 	private static List<String> enchantDisplayNames(String key) {

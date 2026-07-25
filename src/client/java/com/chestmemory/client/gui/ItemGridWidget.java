@@ -17,7 +17,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -34,6 +36,12 @@ public class ItemGridWidget extends AbstractWidget {
 	private final Minecraft minecraft;
 	private final Consumer<ItemSummary> onSelect;
 	private List<ItemSummary> items = List.of();
+	/**
+	 * Icons for the current list. Resolving a key builds an ItemStack and hits the item
+	 * (and, for enchanted keys, enchantment) registry — far too expensive to redo for
+	 * every visible slot on every frame.
+	 */
+	private final Map<String, ItemStack> iconCache = new HashMap<>();
 	private int scrollRow;
 	private int hoveredIndex = -1;
 
@@ -47,6 +55,10 @@ public class ItemGridWidget extends AbstractWidget {
 		this.items = items != null ? items : List.of();
 		this.scrollRow = 0;
 		this.hoveredIndex = -1;
+		this.iconCache.clear();
+		for (ItemSummary s : this.items) {
+			this.iconCache.computeIfAbsent(s.itemId(), com.chestmemory.client.data.ItemStackKeys::toStack);
+		}
 	}
 
 	/** How many columns fit without stretching slots. */
@@ -368,7 +380,14 @@ public class ItemGridWidget extends AbstractWidget {
 		return String.valueOf(count);
 	}
 
-	private static ItemStack resolveStack(String itemId) {
-		return com.chestmemory.client.data.ItemStackKeys.toStack(itemId);
+	private ItemStack resolveStack(String itemId) {
+		ItemStack cached = this.iconCache.get(itemId);
+		if (cached != null) {
+			return cached;
+		}
+		// Not in the current list (defensive) — resolve and remember.
+		ItemStack stack = com.chestmemory.client.data.ItemStackKeys.toStack(itemId);
+		this.iconCache.put(itemId, stack);
+		return stack;
 	}
 }

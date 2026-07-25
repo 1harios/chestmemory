@@ -22,6 +22,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -72,6 +73,16 @@ public class ChestMemoryScreen extends Screen {
 
 	/** First click on Clear — wait for second confirm click. */
 	private boolean clearConfirmPending;
+
+	/**
+	 * Pending search text, applied a few ticks after the last keystroke.
+	 * Rebuilding the list walks every container and re-sorts, so doing it per character
+	 * made fast typing stutter on large profiles.
+	 */
+	private @Nullable String pendingQuery;
+	private int searchDebounceTicks;
+	/** ~150 ms at 20 tps — below the threshold where the delay is noticeable. */
+	private static final int SEARCH_DEBOUNCE_TICKS = 3;
 
 	private int panelLeft;
 	private int panelTop;
@@ -710,7 +721,26 @@ public class ChestMemoryScreen extends Screen {
 		}
 		this.lastQuery = query;
 		ModSettings.get().setLastSearch(query);
-		this.refreshList(query);
+		// Defer the rebuild — see pendingQuery. Clearing the box applies at once so the
+		// full list comes back instantly.
+		if (query.isEmpty()) {
+			this.pendingQuery = null;
+			this.searchDebounceTicks = 0;
+			this.refreshList(query);
+			return;
+		}
+		this.pendingQuery = query;
+		this.searchDebounceTicks = SEARCH_DEBOUNCE_TICKS;
+	}
+
+	@Override
+	public void tick() {
+		super.tick();
+		if (this.pendingQuery != null && --this.searchDebounceTicks <= 0) {
+			String q = this.pendingQuery;
+			this.pendingQuery = null;
+			this.refreshList(q);
+		}
 	}
 
 	private String playerDimension() {
