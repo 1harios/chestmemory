@@ -162,11 +162,22 @@ function touch_sess(array &$sess): void
     $sess['revision'] = (int)($sess['revision'] ?? 0) + 1;
 }
 
+/** Hard cap on a request body: the whole store is read, modified and rewritten per
+ *  request, so unbounded input is both a memory and a disk-fill vector. */
+const MAX_BODY_BYTES = 512 * 1024;
+
 function read_body(): array
 {
-    $raw = file_get_contents('php://input');
+    $declared = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($declared > MAX_BODY_BYTES) {
+        respond(413, ['error' => 'body too large (max ' . MAX_BODY_BYTES . ' bytes)']);
+    }
+    $raw = file_get_contents('php://input', false, null, 0, MAX_BODY_BYTES + 1);
     if ($raw === false || $raw === '') {
         return [];
+    }
+    if (strlen($raw) > MAX_BODY_BYTES) {
+        respond(413, ['error' => 'body too large (max ' . MAX_BODY_BYTES . ' bytes)']);
     }
     $j = json_decode($raw, true);
     return is_array($j) ? $j : [];
@@ -190,6 +201,27 @@ function api_path(): string
 check_token($token);
 $path = api_path();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+/*
+ * Every request reads the whole store, mutates it and writes it back. Without a lock
+ * held across that whole cycle two concurrent requests both read the old state and the
+ * later write wins — so one player's claim silently disappears. save_sessions() locked
+ * only its own temp file, which protected nothing.
+ *
+ * Writers take an exclusive lock for the entire request; readers take a shared one so
+ * they never observe a half-applied state. respond() calls exit(), so the release is
+ * registered as a shutdown function rather than written after each branch.
+ */
+$isWrite = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
+$lockHandle = fopen($dataDir . '/sessions.lock', 'c');
+if ($lockHandle !== false) {
+    flock($lockHandle, $isWrite ? LOCK_EX : LOCK_SH);
+    register_shutdown_function(static function () use ($lockHandle) {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+    });
+}
+
 $sessions = load_sessions($sessionsFile);
 purge($sessions, $ttlMs);
 

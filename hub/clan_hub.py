@@ -30,6 +30,15 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent /
 SESSIONS_FILE = DATA_DIR / "sessions.json"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
+# Hard cap on a single request body. The store lives in memory and is rewritten in
+# full on every mutation, so unbounded input is both a RAM and a disk-fill vector.
+MAX_BODY_BYTES = 512 * 1024
+
+
+class _BodyTooLarge(Exception):
+    """Raised by _read_json when Content-Length exceeds MAX_BODY_BYTES."""
+
+
 _lock = threading.RLock()
 _sessions: dict[str, dict[str, Any]] = {}
 
@@ -154,7 +163,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _read_json(self) -> dict[str, Any]:
-        n = int(self.headers.get("Content-Length", "0") or "0")
+        try:
+            n = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            return {}
+        # Refuse oversized bodies outright: the whole session store is held in memory and
+        # rewritten to disk on every mutation, so an unbounded POST is an easy way to
+        # exhaust RAM or fill the disk.
+        if n > MAX_BODY_BYTES:
+            raise _BodyTooLarge(n)
         raw = self.rfile.read(n) if n > 0 else b"{}"
         try:
             o = json.loads(raw.decode("utf-8") or "{}")
@@ -198,7 +215,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "bad token"})
             return
         path = unquote(self.path.split("?", 1)[0])
-        body = self._read_json()
+        try:
+            body = self._read_json()
+        except _BodyTooLarge as e:
+            self._send(413, {"error": f"body too large ({e.args[0]} bytes, max {MAX_BODY_BYTES})"})
+            return
 
         if path == "/v1/sessions":
             self._create(body)
