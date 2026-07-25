@@ -142,6 +142,7 @@ public final class ModSettings {
 	}
 
 	/** @deprecated use {@link #typeFilters()} multi-select */
+	@Deprecated
 	public ContainerFilter typeFilter() {
 		var set = typeFilters();
 		if (set.contains(ContainerFilter.ALL) || set.size() != 1) {
