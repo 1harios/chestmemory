@@ -117,11 +117,34 @@ public class DropdownWidget<T> extends AbstractWidget {
 		return this.getY() + this.getHeight();
 	}
 
+	/**
+	 * Rows that actually fit below the bar without leaving the screen.
+	 * <p>
+	 * The list used to open at its full height regardless of where the bar sat, so on a
+	 * small window (or a large GUI scale) the bottom entries were drawn off-screen and
+	 * could be neither seen nor clicked. Never returns 0 while open — one row is always
+	 * shown, scrollable, rather than an invisible list.
+	 */
+	private int visibleRows() {
+		int wanted = Math.min(maxVisible, options.size());
+		if (wanted <= 0) {
+			return 0;
+		}
+		int screenH = this.minecraft != null && this.minecraft.getWindow() != null
+			? this.minecraft.getWindow().getGuiScaledHeight()
+			: Integer.MAX_VALUE;
+		int room = screenH - listTop() - 2;
+		if (room < rowH) {
+			return 1;
+		}
+		return Math.max(1, Math.min(wanted, room / rowH));
+	}
+
 	public int listHeight() {
 		if (!open) {
 			return 0;
 		}
-		return Math.min(maxVisible, options.size()) * rowH;
+		return visibleRows() * rowH;
 	}
 
 	public int expandedBottom() {
@@ -186,7 +209,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 		// Re-draw closed bar highlighted so it sits above other widgets
 		drawClosedBar(graphics, mouseX, mouseY, true);
 
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int top = listTop();
 		int listH = visible * rowH;
 		int x0 = this.getX();
@@ -266,7 +289,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 			return false;
 		}
 
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int top = listTop();
 
 		// Click outside list while open → close, don't consume if outside entirely
@@ -302,7 +325,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 		if (!open) {
 			return false;
 		}
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int top = listTop();
 		return my >= top && my < top + visible * rowH;
 	}
@@ -312,7 +335,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 		if (!open || !isInExpandedArea(x, y)) {
 			return false;
 		}
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int maxScroll = Math.max(0, options.size() - visible);
 		if (scrollY > 0) {
 			scroll = Math.max(0, scroll - 1);

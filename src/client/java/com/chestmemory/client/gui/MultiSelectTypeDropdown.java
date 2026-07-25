@@ -84,11 +84,31 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 		return this.getY() + this.getHeight();
 	}
 
+	/**
+	 * Rows that fit below the bar without running off the bottom of the screen.
+	 * Same reasoning as DropdownWidget.visibleRows: the list used to open at full height
+	 * regardless of position, hiding its last entries on small windows.
+	 */
+	private int visibleRows() {
+		int wanted = Math.min(maxVisible, options.size());
+		if (wanted <= 0) {
+			return 0;
+		}
+		int screenH = this.minecraft != null && this.minecraft.getWindow() != null
+			? this.minecraft.getWindow().getGuiScaledHeight()
+			: Integer.MAX_VALUE;
+		int room = screenH - listTop() - 2;
+		if (room < rowH) {
+			return 1;
+		}
+		return Math.max(1, Math.min(wanted, room / rowH));
+	}
+
 	public int listHeight() {
 		if (!open) {
 			return 0;
 		}
-		return Math.min(maxVisible, options.size()) * rowH;
+		return visibleRows() * rowH;
 	}
 
 	public boolean isInExpandedArea(double mx, double my) {
@@ -101,7 +121,7 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 		if (!open) {
 			return false;
 		}
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int top = listTop();
 		return my >= top && my < top + visible * rowH;
 	}
@@ -191,7 +211,7 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 		}
 		drawClosedBar(graphics, mouseX, mouseY, true);
 
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int top = listTop();
 		int listH = visible * rowH;
 		int x0 = this.getX();
@@ -313,7 +333,7 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 			return false;
 		}
 
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int top = listTop();
 
 		if (mx < this.getX() || mx >= this.getX() + this.width
@@ -338,7 +358,7 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 		if (!open || !isInExpandedArea(x, y)) {
 			return false;
 		}
-		int visible = Math.min(maxVisible, options.size());
+		int visible = visibleRows();
 		int maxScroll = Math.max(0, options.size() - visible);
 		if (scrollY > 0) {
 			scroll = Math.max(0, scroll - 1);
