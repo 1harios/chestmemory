@@ -455,6 +455,16 @@ public class ChestMemoryScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+		// Esc closes an open dropdown first; only a second Esc closes the panel.
+		if (event.key() == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE && isAnyDropdownOpen()) {
+			for (DropdownWidget<?> d : this.dropdowns) {
+				d.close();
+			}
+			if (this.typeDropdown != null) {
+				this.typeDropdown.close();
+			}
+			return true;
+		}
 		// Backspace / arrows in search even if focus drifted to a button
 		if (this.searchBox != null && !isAnyDropdownOpen()) {
 			int key = event.key();
@@ -1127,11 +1137,18 @@ public class ChestMemoryScreen extends Screen {
 		}
 
 		// Click outside any dropdown → close all
+		boolean wasAnyOpen = isAnyDropdownOpen();
 		for (DropdownWidget<?> d : dropdowns) {
 			d.close();
 		}
 		if (this.typeDropdown != null) {
 			this.typeDropdown.close();
+		}
+		if (wasAnyOpen) {
+			// Dismissing an open list is the whole action. Passing the click on would let
+			// it land on whatever the list was covering — usually the item grid, which
+			// starts a highlight and closes the panel.
+			return true;
 		}
 		return super.mouseClicked(event, doubleClick);
 	}
