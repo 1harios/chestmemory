@@ -129,7 +129,10 @@ public final class ClanSessionManager {
 
 		IO.execute(() -> {
 			try {
-				var res = client().create(body);
+				ClanHubClient c = client();
+				// Prove who we are before acting; the hub may require it.
+				ClanAuth.ensureAuthenticated(c, mc);
+				var res = c.create(body);
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -184,7 +187,9 @@ public final class ClanSessionManager {
 		body.addProperty("uuid", localUuid(mc));
 		IO.execute(() -> {
 			try {
-				var res = client().join(code, body);
+				ClanHubClient c = client();
+				ClanAuth.ensureAuthenticated(c, mc);
+				var res = c.join(code, body);
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -486,7 +491,8 @@ public final class ClanSessionManager {
 		lastPollMillis = now;
 		IO.execute(() -> {
 			try {
-				var res = client().get(code);
+				ClanHubClient c = client();
+				var res = c.get(code);
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
 						ClanSession prev = session;
@@ -496,6 +502,11 @@ public final class ClanSessionManager {
 						// Tell player when someone else claimed / released items
 						announceClaimDiffs(mc, prev, session, false);
 					});
+				} else if (res.status == 401) {
+					// Session token expired or the hub restarted: re-run the handshake once
+					// so a long build session does not silently stop syncing.
+					ClanAuth.clear();
+					ClanAuth.authenticate(c, mc);
 				} else if (res.isNotFound()) {
 					// Only a real 404 ends the session. Matching on the words "not found"
 					// anywhere in the error also fired on proxy/tunnel HTML error pages, so a
@@ -615,5 +626,6 @@ public final class ClanSessionManager {
 	public static void clearLocal() {
 		session = null;
 		lastError = null;
+		ClanAuth.clear();
 	}
 }

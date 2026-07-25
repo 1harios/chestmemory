@@ -10,7 +10,7 @@
 declare(strict_types=1);
 
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Headers: Content-Type, X-Clan-Token');
+header('Access-Control-Allow-Headers: Content-Type, X-Clan-Token, X-Clan-Session');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -30,6 +30,10 @@ if (!is_dir($dataDir)) {
     mkdir($dataDir, 0750, true);
 }
 $sessionsFile = $dataDir . '/sessions.json';
+require_once __DIR__ . '/clan_auth.php';
+clan_auth_init($dataDir);
+/** Require a verified session for mutating requests. See clan_auth.php. */
+$requireAuth = (bool)($config['require_auth'] ?? false);
 $token = (string)($config['token'] ?? '');
 $ttlMs = (int)($config['ttl_sec'] ?? 604800) * 1000;
 
@@ -198,6 +202,35 @@ function api_path(): string
     return $uri === '' ? '/' : $uri;
 }
 
+/**
+ * Verified player behind this request, or null when unauthenticated.
+ * Reads X-Clan-Session, handed out only after Mojang confirmed the account.
+ * Never trusts a uuid from the request body.
+ */
+function clan_identity(): ?array
+{
+    return clan_auth_resolve((string)($_SERVER['HTTP_X_CLAN_SESSION'] ?? ''));
+}
+
+/**
+ * [uuid, name] to act as. Prefers the verified session; falls back to the body
+ * only while require_auth is off, so a clan can upgrade the hub before every
+ * member has updated the mod.
+ *
+ * @return array{0: string, 1: string}
+ */
+function clan_actor(array $body): array
+{
+    $who = clan_identity();
+    if ($who !== null) {
+        return [$who['uuid'], $who['name']];
+    }
+    return [
+        (string)($body['uuid'] ?? $body['hostUuid'] ?? ''),
+        (string)($body['name'] ?? $body['hostName'] ?? '?'),
+    ];
+}
+
 check_token($token);
 $path = api_path();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -225,6 +258,23 @@ if ($lockHandle !== false) {
 $sessions = load_sessions($sessionsFile);
 purge($sessions, $ttlMs);
 
+if ($method === 'GET' && $path === '/v1/auth/challenge') {
+    $nonce = clan_auth_new_challenge();
+    if ($nonce === null) {
+        respond(503, ['error' => 'auth busy']);
+    }
+    respond(200, ['nonce' => $nonce]);
+}
+
+if ($method === 'POST' && $path === '/v1/auth/verify') {
+    $body = read_body();
+    $result = clan_auth_verify((string)($body['name'] ?? ''), (string)($body['nonce'] ?? ''));
+    if ($result === null) {
+        respond(401, ['error' => 'auth failed']);
+    }
+    respond(200, $result);
+}
+
 if ($method === 'GET' && ($path === '/' || $path === '/v1/health')) {
     respond(200, [
         'ok' => true,
@@ -243,6 +293,13 @@ if ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $m)) {
     respond(200, $sessions[$code]);
 }
 
+// Mutating endpoints act on behalf of a player, so they need a verified one.
+if ($requireAuth && $method === 'POST' && str_starts_with($path, '/v1/sessions')) {
+    if (clan_identity() === null) {
+        respond(401, ['error' => 'auth required']);
+    }
+}
+
 if ($method === 'POST' && $path === '/v1/sessions') {
     $body = read_body();
     $materialsIn = $body['materials'] ?? null;
@@ -250,7 +307,7 @@ if ($method === 'POST' && $path === '/v1/sessions') {
         respond(400, ['error' => 'materials required']);
     }
     $hostName = (string)($body['hostName'] ?? $body['name'] ?? 'Host');
-    $hostUuid = (string)($body['hostUuid'] ?? $body['uuid'] ?? '');
+    [$hostUuid, $actorName] = clan_actor($body);
     if ($hostUuid === '') {
         respond(400, ['error' => 'hostUuid required']);
     }
@@ -304,8 +361,8 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     $sess = &$sessions[$code];
 
     if ($action === 'join') {
-        $uuid = (string)($body['uuid'] ?? '');
-        $name = (string)($body['name'] ?? '?');
+        [$uuid, $actorName] = clan_actor($body);
+        $name = $actorName !== '?' ? $actorName : (string)($body['name'] ?? '?');
         if ($uuid === '') {
             respond(400, ['error' => 'uuid required']);
         }
@@ -316,8 +373,8 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'claim') {
-        $uuid = (string)($body['uuid'] ?? '');
-        $name = (string)($body['name'] ?? '?');
+        [$uuid, $actorName] = clan_actor($body);
+        $name = $actorName !== '?' ? $actorName : (string)($body['name'] ?? '?');
         $item = (string)($body['itemId'] ?? '');
         $unclaim = !empty($body['unclaim']);
         if ($uuid === '' || $item === '') {
@@ -347,8 +404,8 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'deliver') {
-        $uuid = (string)($body['uuid'] ?? '');
-        $name = (string)($body['name'] ?? '?');
+        [$uuid, $actorName] = clan_actor($body);
+        $name = $actorName !== '?' ? $actorName : (string)($body['name'] ?? '?');
         $item = (string)($body['itemId'] ?? '');
         $amount = (int)($body['amount'] ?? 0);
         if ($uuid === '' || $item === '' || $amount <= 0) {
@@ -368,8 +425,8 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'staging') {
-        $uuid = (string)($body['uuid'] ?? '');
-        $name = (string)($body['name'] ?? '?');
+        [$uuid, $actorName] = clan_actor($body);
+        $name = $actorName !== '?' ? $actorName : (string)($body['name'] ?? '?');
         $keysIn = $body['stagingKeys'] ?? [];
         $replace = !empty($body['replace']);
         if ($uuid === '') {
@@ -403,7 +460,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'leave') {
-        $uuid = (string)($body['uuid'] ?? '');
+        [$uuid, $actorName] = clan_actor($body);
         foreach ($sess['materials'] as &$mat) {
             if (strcasecmp((string)($mat['claimedBy'] ?? ''), $uuid) === 0) {
                 $mat['claimedBy'] = null;
@@ -421,7 +478,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'close') {
-        $uuid = (string)($body['uuid'] ?? '');
+        [$uuid, $actorName] = clan_actor($body);
         // An empty uuid used to short-circuit the host check and fall through to the
         // delete below, letting anyone drop any session by simply omitting the field.
         if ($uuid === '' || strcasecmp((string)($sess['hostUuid'] ?? ''), $uuid) !== 0) {

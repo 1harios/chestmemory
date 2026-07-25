@@ -22,9 +22,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+import clan_auth
+
 PORT = int(os.environ.get("PORT", "8787"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 CLAN_TOKEN = os.environ.get("CLAN_TOKEN", "").strip()
+#: When true, every mutating request must carry a verified X-Clan-Session.
+#: Leave off for one upgrade window so members on the old mod keep working, then
+#: turn it on — that is what actually closes the impersonation hole.
+REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes")
 SESSION_TTL_SEC = int(os.environ.get("SESSION_TTL_SEC", str(7 * 24 * 3600)))
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent / "data")))
 SESSIONS_FILE = DATA_DIR / "sessions.json"
@@ -145,6 +151,31 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
 
+    def _identity(self) -> dict[str, str] | None:
+        """
+        Verified player behind this request, or None when unauthenticated.
+
+        Reads X-Clan-Session, which is only handed out after Mojang confirmed the
+        account (see clan_auth). Never trusts a uuid from the request body.
+        """
+        return clan_auth.resolve(self.headers.get("X-Clan-Session", ""))
+
+    def _actor(self, body: dict[str, Any]) -> tuple[str, str]:
+        """
+        (uuid, name) to act as.
+
+        Prefers the verified session. Falls back to the body only while
+        REQUIRE_AUTH is off, so an existing clan can upgrade the hub before every
+        member has updated the mod. Turn REQUIRE_AUTH on once they have.
+        """
+        who = self._identity()
+        if who is not None:
+            return who["uuid"], who["name"]
+        return (
+            str(body.get("uuid") or body.get("hostUuid") or ""),
+            str(body.get("name") or body.get("hostName") or "?"),
+        )
+
     def _check_token(self) -> bool:
         if not CLAN_TOKEN:
             return True
@@ -157,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Clan-Token")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Clan-Token, X-Clan-Session")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
         self.wfile.write(data)
@@ -187,6 +218,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "bad token"})
             return
         path = unquote(self.path.split("?", 1)[0])
+        if path == "/v1/auth/challenge":
+            nonce = clan_auth.new_challenge()
+            if nonce is None:
+                self._send(503, {"error": "auth busy"})
+                return
+            self._send(200, {"nonce": nonce})
+            return
         if path in ("/", "/v1/health"):
             with _lock:
                 n = len(_sessions)
@@ -219,6 +257,19 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
         except _BodyTooLarge as e:
             self._send(413, {"error": f"body too large ({e.args[0]} bytes, max {MAX_BODY_BYTES})"})
+            return
+
+        if path == "/v1/auth/verify":
+            result = clan_auth.verify(str(body.get("name") or ""), str(body.get("nonce") or ""))
+            if result is None:
+                self._send(401, {"error": "auth failed"})
+                return
+            self._send(200, result)
+            return
+
+        # Mutating endpoints act on behalf of a player, so they need a verified one.
+        if REQUIRE_AUTH and self._identity() is None:
+            self._send(401, {"error": "auth required"})
             return
 
         if path == "/v1/sessions":
@@ -256,8 +307,9 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(materials_in, dict) or not materials_in:
             self._send(400, {"error": "materials required"})
             return
-        host_name = str(body.get("hostName") or body.get("name") or "Host")
-        host_uuid = str(body.get("hostUuid") or body.get("uuid") or "")
+        host_uuid, host_name = self._actor(body)
+        if host_name == "?":
+            host_name = str(body.get("hostName") or body.get("name") or "Host")
         if not host_uuid:
             self._send(400, {"error": "hostUuid required"})
             return
@@ -315,8 +367,10 @@ class Handler(BaseHTTPRequestHandler):
         if not _ok_code(code):
             self._send(400, {"error": "bad code"})
             return
-        uuid = str(body.get("uuid") or "")
-        name = str(body.get("name") or "?")
+        uuid, actor_name = self._actor(body)
+        # Display name comes from the verified identity too, otherwise a member could
+        # show up in the roster under someone else's name.
+        name = actor_name if actor_name != "?" else str(body.get("name") or "?")
         if not uuid:
             self._send(400, {"error": "uuid required"})
             return
@@ -331,8 +385,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, sess)
 
     def _claim(self, code: str, body: dict[str, Any]) -> None:
-        uuid = str(body.get("uuid") or "")
-        name = str(body.get("name") or "?")
+        uuid, actor_name = self._actor(body)
+        # Display name comes from the verified identity too, otherwise a member could
+        # show up in the roster under someone else's name.
+        name = actor_name if actor_name != "?" else str(body.get("name") or "?")
         item = str(body.get("itemId") or "")
         unclaim = bool(body.get("unclaim"))
         if not uuid or not item:
@@ -368,8 +424,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, sess)
 
     def _deliver(self, code: str, body: dict[str, Any]) -> None:
-        uuid = str(body.get("uuid") or "")
-        name = str(body.get("name") or "?")
+        uuid, actor_name = self._actor(body)
+        # Display name comes from the verified identity too, otherwise a member could
+        # show up in the roster under someone else's name.
+        name = actor_name if actor_name != "?" else str(body.get("name") or "?")
         item = str(body.get("itemId") or "")
         try:
             amount = int(body.get("amount") or 0)
@@ -398,8 +456,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, sess)
 
     def _staging(self, code: str, body: dict[str, Any]) -> None:
-        uuid = str(body.get("uuid") or "")
-        name = str(body.get("name") or "?")
+        uuid, actor_name = self._actor(body)
+        # Display name comes from the verified identity too, otherwise a member could
+        # show up in the roster under someone else's name.
+        name = actor_name if actor_name != "?" else str(body.get("name") or "?")
         keys_in = body.get("stagingKeys") or []
         replace = bool(body.get("replace"))
         if not uuid:
@@ -432,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, sess)
 
     def _leave(self, code: str, body: dict[str, Any]) -> None:
-        uuid = str(body.get("uuid") or "")
+        uuid, actor_name = self._actor(body)
         with _lock:
             sess = _sessions.get(code)
             if not sess:
@@ -453,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, sess)
 
     def _close(self, code: str, body: dict[str, Any]) -> None:
-        uuid = str(body.get("uuid") or "")
+        uuid, actor_name = self._actor(body)
         with _lock:
             sess = _sessions.get(code)
             if not sess:

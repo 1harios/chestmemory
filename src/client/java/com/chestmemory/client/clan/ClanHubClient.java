@@ -77,6 +77,74 @@ public final class ClanHubClient {
 		return post("/v1/sessions/" + enc(code) + "/staging", body);
 	}
 
+	/** Ask for a nonce to sign via Mojang joinServer. Returns the nonce. */
+	public Result<String> authChallenge() {
+		Result<JsonObject> res = rawGet("/v1/auth/challenge");
+		if (!res.ok || res.value == null) {
+			return Result.err(res.error != null ? res.error : "no challenge", res.status);
+		}
+		String nonce = res.value.has("nonce") ? res.value.get("nonce").getAsString() : "";
+		return nonce.isBlank() ? Result.err("empty nonce") : Result.ok(nonce);
+	}
+
+	/** Exchange a signed nonce for a session token. Returns the token. */
+	public Result<String> authVerify(JsonObject body) {
+		Result<JsonObject> res = rawPost("/v1/auth/verify", body);
+		if (!res.ok || res.value == null) {
+			return Result.err(res.error != null ? res.error : "verify failed", res.status);
+		}
+		String token = res.value.has("token") ? res.value.get("token").getAsString() : "";
+		return token.isBlank() ? Result.err("empty token") : Result.ok(token);
+	}
+
+	/** Raw JSON GET, used by the auth handshake (no ClanSession parsing). */
+	private Result<JsonObject> rawGet(String path) {
+		try {
+			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
+				.timeout(Duration.ofSeconds(10))
+				.GET();
+			auth(b);
+			return rawParse(HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)));
+		} catch (Exception e) {
+			return Result.err(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+		}
+	}
+
+	private Result<JsonObject> rawPost(String path, JsonObject body) {
+		try {
+			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
+				.timeout(Duration.ofSeconds(12))
+				.header("Content-Type", "application/json")
+				.POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8));
+			auth(b);
+			return rawParse(HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)));
+		} catch (Exception e) {
+			return Result.err(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+		}
+	}
+
+	private Result<JsonObject> rawParse(HttpResponse<String> resp) {
+		int code = resp.statusCode();
+		String body = resp.body() == null ? "" : resp.body();
+		if (code >= 200 && code < 300) {
+			try {
+				JsonObject o = GSON.fromJson(body, JsonObject.class);
+				return o == null ? Result.err("bad response", code) : Result.ok(o);
+			} catch (Exception e) {
+				return Result.err("parse error", code);
+			}
+		}
+		String msg = "HTTP " + code;
+		try {
+			JsonObject o = GSON.fromJson(body, JsonObject.class);
+			if (o != null && o.has("error")) {
+				msg = o.get("error").getAsString();
+			}
+		} catch (Exception ignored) {
+		}
+		return Result.err(msg, code);
+	}
+
 	public Result<String> health() {
 		try {
 			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + "/v1/health"))
@@ -122,6 +190,12 @@ public final class ClanHubClient {
 	private void auth(HttpRequest.Builder b) {
 		if (!token.isEmpty()) {
 			b.header("X-Clan-Token", token);
+		}
+		// Identity, as opposed to the shared invite token above. Absent until the
+		// Mojang handshake has run; the hub then knows which player is acting.
+		String session = ClanAuth.sessionToken(baseUrl);
+		if (session != null) {
+			b.header("X-Clan-Session", session);
 		}
 	}
 
