@@ -28,9 +28,11 @@ import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -54,6 +56,8 @@ public final class ChestMemoryStorage {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 	private static final Type MAP_TYPE = new TypeToken<Map<String, ContainerRecord>>() {}.getType();
 	private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
+	/** Bumped when the on-disk profile schema changes in a non-backwards-compatible way. */
+	private static final int FORMAT_VERSION = 2;
 
 	private static volatile ChestMemoryStorage instance;
 
@@ -69,6 +73,11 @@ public final class ChestMemoryStorage {
 	 */
 	private final Set<String> liveStagingKeys = new LinkedHashSet<>();
 	private boolean liveDirty;
+	/**
+	 * Set when the live profile could not be parsed from disk. While true, saving is
+	 * suppressed so a single parse error can't wipe an otherwise recoverable profile.
+	 */
+	private boolean liveLoadFailed;
 	/**
 	 * Cached immutable snapshot of {@link #liveContainers} values.
 	 * Rebuilt lazily; invalidated on every mutation of the live map so per-tick
@@ -181,6 +190,7 @@ public final class ChestMemoryStorage {
 		liveStagingKeys.clear();
 		liveDirty = false;
 		WorldFile file = loadFromDisk(worldId);
+		liveLoadFailed = file.loadFailed;
 		if (file.containers != null) {
 			liveContainers.putAll(file.containers);
 		}
@@ -219,6 +229,7 @@ public final class ChestMemoryStorage {
 		liveWorldId = null;
 		liveDisplayName = "";
 		liveDirty = false;
+		liveLoadFailed = false;
 		viewingWorldId = null;
 		viewingDisplayName = "";
 		viewingContainers = liveContainers;
@@ -269,6 +280,12 @@ public final class ChestMemoryStorage {
 		Map<String, ContainerRecord> containers = new LinkedHashMap<>();
 		List<String> knownDimensions = new ArrayList<>();
 		List<String> stagingKeys = new ArrayList<>();
+		/**
+		 * True when the profile file exists but could not be parsed. Callers must never
+		 * save over a profile in this state — doing so replaces recoverable data with an
+		 * empty file.
+		 */
+		boolean loadFailed;
 	}
 
 	private WorldFile loadFromDisk(String worldId) {
@@ -320,7 +337,14 @@ public final class ChestMemoryStorage {
 				result.containers = new LinkedHashMap<>();
 			}
 		} catch (Exception e) {
-			ChestMemoryMod.LOGGER.error("Failed to load chest memory for {}", worldId, e);
+			// Parse failure: keep the file on disk untouched and refuse to overwrite it.
+			result.loadFailed = true;
+			result.containers = new LinkedHashMap<>();
+			ChestMemoryMod.LOGGER.error(
+				"Failed to load chest memory for {} — the profile will NOT be overwritten. "
+					+ "Fix or remove {} to start fresh.",
+				worldId, file, e
+			);
 		}
 		return result;
 	}
@@ -329,21 +353,54 @@ public final class ChestMemoryStorage {
 		if (!liveDirty || liveWorldId == null) {
 			return;
 		}
+		if (liveLoadFailed) {
+			// The on-disk profile could not be parsed. Writing now would replace data that
+			// is very likely still recoverable by hand with whatever little we have in memory.
+			return;
+		}
 		Path file = worldFile(liveWorldId);
-		try (Writer writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
+		Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+		try {
 			JsonObject root = new JsonObject();
 			JsonObject meta = new JsonObject();
 			meta.addProperty("displayName", liveDisplayName);
 			meta.addProperty("id", liveWorldId);
 			meta.addProperty("kind", liveWorldId.startsWith("mp_") ? "multiplayer" : "singleplayer");
+			meta.addProperty("formatVersion", String.valueOf(FORMAT_VERSION));
 			root.add("meta", meta);
 			root.add("containers", GSON.toJsonTree(liveContainers, MAP_TYPE));
 			root.add("knownDimensions", GSON.toJsonTree(new ArrayList<>(liveKnownDimensions)));
 			root.add("stagingKeys", GSON.toJsonTree(new ArrayList<>(liveStagingKeys)));
-			GSON.toJson(root, writer);
+
+			// Serialize fully before touching the destination: a crash mid-write must never
+			// leave a truncated profile behind.
+			try (Writer writer = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
+				GSON.toJson(root, writer);
+			}
+			// Keep one generation of backup, then swap the new file in atomically.
+			if (Files.isRegularFile(file)) {
+				Path backup = file.resolveSibling(file.getFileName() + ".bak");
+				try {
+					Files.move(file, backup, StandardCopyOption.REPLACE_EXISTING);
+				} catch (IOException e) {
+					ChestMemoryMod.LOGGER.warn("Could not refresh backup for {}: {}", liveWorldId, e.toString());
+				}
+			}
+			try {
+				Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			} catch (AtomicMoveNotSupportedException e) {
+				Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+			}
 			liveDirty = false;
-		} catch (IOException e) {
+		} catch (Exception e) {
+			// Catch Exception, not IOException: Gson throws unchecked JsonIOException, which
+			// would otherwise escape the client tick and crash the game.
 			ChestMemoryMod.LOGGER.error("Failed to save chest memory for {}", liveWorldId, e);
+			try {
+				Files.deleteIfExists(tmp);
+			} catch (IOException ignored) {
+				// best effort
+			}
 		}
 	}
 

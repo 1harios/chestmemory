@@ -9,8 +9,10 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 
 /**
  * Persistent client settings — panel filters + highlight / display / gather options.
@@ -602,15 +604,30 @@ public final class ModSettings {
 		if (!dirty) {
 			return;
 		}
-		dirty = false;
 		Path path = file();
+		Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
 		try {
 			Files.createDirectories(path.getParent());
-			try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+			// Write to a temp file first: a crash mid-write must not truncate settings.json,
+			// because load() silently falls back to defaults on a parse error.
+			try (Writer writer = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
 				GSON.toJson(this, writer);
 			}
-		} catch (IOException e) {
+			try {
+				Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			} catch (AtomicMoveNotSupportedException e) {
+				Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
+			}
+			// Only clear the flag once the bytes are actually on disk, otherwise a failed
+			// write silently discards the user's changes with no retry.
+			dirty = false;
+		} catch (Exception e) {
 			ChestMemoryMod.LOGGER.error("Failed to save settings", e);
+			try {
+				Files.deleteIfExists(tmp);
+			} catch (IOException ignored) {
+				// best effort
+			}
 		}
 	}
 }
