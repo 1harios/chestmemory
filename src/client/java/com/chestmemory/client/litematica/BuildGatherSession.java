@@ -28,6 +28,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -69,6 +70,8 @@ public final class BuildGatherSession {
 	/** Rebuilt on tick, read by the HUD render path — volatile publish of an immutable snapshot. */
 	private static volatile List<HudLine> hudLines = List.of();
 	private static @Nullable String listName;
+	/** Material list the current queueMissing snapshot belongs to. */
+	private static @Nullable String snapshotListName;
 	private static int tickCounter;
 	private static long lastAdvanceMillis;
 	private static boolean highlightPaused;
@@ -136,6 +139,7 @@ public final class BuildGatherSession {
 		routeChestIndex = 0;
 		hudLines = List.of();
 		listName = null;
+		snapshotListName = null;
 		lastAdvanceMillis = 0;
 		highlightPaused = false;
 		phase = GatherPhase.CHESTS;
@@ -518,6 +522,15 @@ public final class BuildGatherSession {
 	}
 
 	private static void snapshotTotals() {
+		// Entries are only ever added here, so switching Litematica to a different
+		// schematic without ending the session left the previous build's materials in the
+		// queue — mixing two material lists with stale totals. Reset when the list changes.
+		String active = LitematicaAccess.activeListName();
+		if (!Objects.equals(active, snapshotListName)) {
+			snapshotListName = active;
+			queueMissing.clear();
+			skipped.clear();
+		}
 		for (LitematicaCompat.MaterialNeed n : LitematicaAccess.missingMaterials()) {
 			if (n.total() > 0) {
 				queueMissing.put(n.itemId(), n.total());

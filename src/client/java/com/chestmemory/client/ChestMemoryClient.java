@@ -69,9 +69,26 @@ public class ChestMemoryClient implements ClientModInitializer {
 		// P toggles warehouse pick mode (open chests to mark), not look-at
 
 		ClientTickEvents.END_CLIENT_TICK.register(ChestMemoryClient::onEndTick);
-		// Flush deferred settings on quit so no change is lost
+		// Flush deferred settings AND chest memory on quit. onEndTick only persists once
+		// client.player has become null, which takes one more tick after the disconnect —
+		// quitting straight from a world (Quit Game / Alt+F4) never gets that tick, so up
+		// to a full autosave interval of scans was lost.
 		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
-			.register(client -> ModSettings.flushPending());
+			.register(client -> {
+				ModSettings.flushPending();
+				ChestMemoryStorage.get().saveIfNeeded();
+			});
+		// Same reasoning when leaving a world/server: persist while the profile is still
+		// loaded, and drop the stale interact position so a quick reconnect to a different
+		// server cannot bind a menu to a block clicked on the previous one.
+		net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT
+			.register((handler, client) -> {
+				ChestMemoryStorage.get().saveIfNeeded();
+				com.chestmemory.client.scan.LastInteractTracker.clear();
+				// A gather queue belongs to the world it was started in. Carrying it over
+				// showed the previous world's materials against the new world's chests.
+				BuildGatherSession.clear();
+			});
 		EnderChestTooltip.register();
 		BuildGatherHud.register();
 		ChestItemIconOverlay.register();
