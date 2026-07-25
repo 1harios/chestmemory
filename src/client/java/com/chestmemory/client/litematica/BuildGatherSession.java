@@ -66,7 +66,8 @@ public final class BuildGatherSession {
 	private static @Nullable String currentItemId;
 	private static List<ChestRoute.Stop> currentRoute = List.of();
 	private static int routeChestIndex;
-	private static List<HudLine> hudLines = List.of();
+	/** Rebuilt on tick, read by the HUD render path — volatile publish of an immutable snapshot. */
+	private static volatile List<HudLine> hudLines = List.of();
 	private static @Nullable String listName;
 	private static int tickCounter;
 	private static long lastAdvanceMillis;
@@ -464,8 +465,8 @@ public final class BuildGatherSession {
 		highlightPaused = false;
 		lastAdvanceMillis = System.currentTimeMillis();
 		if (currentItemId != null) {
-			// soft: don't add to skipped, just leave if done
-			if (remainingNeed(currentItemId, client.player) > 0) {
+			// Only completed items leave the queue; items still needed stay pickable.
+			if (remainingNeed(currentItemId, client.player) <= 0) {
 				skipped.add(currentItemId);
 			}
 			currentItemId = null;
@@ -862,7 +863,7 @@ public final class BuildGatherSession {
 			}
 		}
 
-		hudLines = lines;
+		hudLines = List.copyOf(lines);
 	}
 
 	private static void addHudLine(

@@ -17,7 +17,7 @@ import java.nio.file.Path;
  */
 public final class ModSettings {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-	private static ModSettings instance;
+	private static volatile ModSettings instance;
 
 	private int nearbyRange = 64;
 	private String scope = ListScope.NEARBY.name();
@@ -73,14 +73,27 @@ public final class ModSettings {
 	/** Optional shared clan token (header X-Clan-Token). */
 	private String clanToken = "";
 
+	// --- Deferred save (transient: never serialized by Gson) ---
+	/** Pending unsaved changes. */
+	private transient volatile boolean dirty;
+	/** Ticks to wait before flushing (batches bursts of changes). */
+	private transient volatile int saveDelayTicks;
+
 	private ModSettings() {
 	}
 
 	public static ModSettings get() {
-		if (instance == null) {
-			instance = load();
+		ModSettings local = instance;
+		if (local == null) {
+			synchronized (ModSettings.class) {
+				local = instance;
+				if (local == null) {
+					local = load();
+					instance = local;
+				}
+			}
 		}
-		return instance;
+		return local;
 	}
 
 	public int nearbyRange() {
@@ -554,7 +567,42 @@ public final class ModSettings {
 		}
 	}
 
+	/**
+	 * Mark settings changed. The actual disk write happens one client tick later
+	 * (see {@link #tick()}), so a burst of changes produces a single write.
+	 */
 	public void save() {
+		this.saveDelayTicks = 1;
+		this.dirty = true;
+	}
+
+	/** Call once per client tick — flushes pending changes after the 1-tick delay. */
+	public static void tick() {
+		ModSettings s = instance;
+		if (s == null || !s.dirty) {
+			return;
+		}
+		if (s.saveDelayTicks > 0) {
+			s.saveDelayTicks--;
+			return;
+		}
+		s.flushNow();
+	}
+
+	/** Flush pending changes if settings were ever loaded (shutdown hook). */
+	public static void flushPending() {
+		ModSettings s = instance;
+		if (s != null) {
+			s.flushNow();
+		}
+	}
+
+	/** Write to disk immediately if there are unsaved changes (also used on shutdown). */
+	public synchronized void flushNow() {
+		if (!dirty) {
+			return;
+		}
+		dirty = false;
 		Path path = file();
 		try {
 			Files.createDirectories(path.getParent());

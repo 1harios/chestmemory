@@ -65,8 +65,6 @@ public final class ChestHighlighter {
 		highlightUntilMillis = highlightStartedMillis + durationMillis;
 		routeOrder.clear();
 		routeFocusOrder = 0;
-		// Waypoints are owned by this highlighter now (distance labels only)
-		WaypointManager.clear();
 	}
 
 	/**
@@ -123,7 +121,6 @@ public final class ChestHighlighter {
 		routeOrder.clear();
 		routeFocusOrder = 0;
 		iconMarkers = List.of();
-		WaypointManager.clear();
 	}
 
 	public static @Nullable String getHighlightedItemId() {
@@ -157,7 +154,6 @@ public final class ChestHighlighter {
 			if (highlightedItemId != null && System.currentTimeMillis() > highlightUntilMillis) {
 				highlightedItemId = null;
 				iconMarkers = List.of();
-				WaypointManager.clear();
 			}
 			return;
 		}

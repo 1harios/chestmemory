@@ -28,7 +28,8 @@ public final class ClanSessionManager {
 		return t;
 	});
 
-	private static @Nullable ClanSession session;
+	/** Written on the client thread, read from render/IO paths — must be volatile. */
+	private static volatile @Nullable ClanSession session;
 	private static @Nullable String lastError;
 	private static long lastPollMillis;
 	private static final AtomicBoolean busy = new AtomicBoolean(false);

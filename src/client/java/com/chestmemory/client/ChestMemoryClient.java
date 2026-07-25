@@ -7,7 +7,7 @@ import com.chestmemory.client.gui.ChestMemoryScreen;
 import com.chestmemory.client.highlight.ChestHighlighter;
 import com.chestmemory.client.highlight.ChestItemIconOverlay;
 import com.chestmemory.client.highlight.SlotHighlighter;
-import com.chestmemory.client.highlight.WaypointManager;
+import com.chestmemory.client.data.ModSettings;
 import com.chestmemory.client.litematica.BuildGatherHud;
 import com.chestmemory.client.litematica.BuildGatherSession;
 import com.chestmemory.client.scan.ContainerScanner;
@@ -69,6 +69,9 @@ public class ChestMemoryClient implements ClientModInitializer {
 		// P toggles warehouse pick mode (open chests to mark), not look-at
 
 		ClientTickEvents.END_CLIENT_TICK.register(ChestMemoryClient::onEndTick);
+		// Flush deferred settings on quit so no change is lost
+		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
+			.register(client -> ModSettings.flushPending());
 		EnderChestTooltip.register();
 		BuildGatherHud.register();
 		ChestItemIconOverlay.register();
@@ -89,6 +92,9 @@ public class ChestMemoryClient implements ClientModInitializer {
 	}
 
 	private static void onEndTick(Minecraft client) {
+		// Deferred settings write (runs in menus too, so pending changes always land)
+		ModSettings.tick();
+
 		if (client.player == null || client.level == null) {
 			if (ChestMemoryStorage.get().liveWorldId() != null) {
 				ChestMemoryStorage.get().unload();
@@ -101,7 +107,6 @@ public class ChestMemoryClient implements ClientModInitializer {
 		MultiworldTracker.tick(client);
 		ContainerScanner.tick(client);
 		ChestHighlighter.tick(client);
-		WaypointManager.tick(client);
 		BuildGatherSession.tick(client);
 		com.chestmemory.client.clan.ClanSessionManager.tick(client);
 

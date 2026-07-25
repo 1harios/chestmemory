@@ -11,7 +11,6 @@ import com.chestmemory.client.data.NearbyRange;
 import com.chestmemory.client.data.SortMode;
 import com.chestmemory.client.data.WorldTab;
 import com.chestmemory.client.highlight.ChestHighlighter;
-import com.chestmemory.client.highlight.WaypointManager;
 import com.chestmemory.client.litematica.BuildFilter;
 import com.chestmemory.client.litematica.BuildGatherSession;
 import com.chestmemory.client.litematica.LitematicaAccess;
@@ -1028,13 +1027,6 @@ public class ChestMemoryScreen extends Screen {
 		List<ContainerRecord> virtualMatches = matches.stream()
 			.filter(r -> r.isVirtual() && !r.hasHighlightPos())
 			.toList();
-
-		WaypointManager.clear();
-		List<ContainerRecord> waypointSources = worldMatches.stream().filter(ContainerRecord::isWorldBlock).toList();
-		WaypointManager.addForContainers(summary.itemId(), waypointSources, duration);
-		if (!waypointSources.isEmpty()) {
-			WaypointManager.addNearest(summary.itemId(), waypointSources.getFirst(), duration);
-		}
 
 		if (!worldMatches.isEmpty()) {
 			ContainerRecord nearest = worldMatches.getFirst();

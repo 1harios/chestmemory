@@ -24,6 +24,12 @@ public class ClearMemoryIconButton extends AbstractWidget {
 
 	public void setConfirmMode(boolean confirm) {
 		this.confirmMode = confirm;
+		// Visible state change on first click: red plate (render), "Confirm?" label + tooltip
+		this.setMessage(Component.translatable(
+			confirm
+				? "screen.chestmemory.clear_world_confirm"
+				: "screen.chestmemory.clear_world"
+		));
 		this.setTooltip(Tooltip.create(Component.translatable(
 			confirm
 				? "screen.chestmemory.clear_memory.tooltip_confirm"

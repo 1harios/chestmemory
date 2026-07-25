@@ -55,7 +55,7 @@ public final class ChestMemoryStorage {
 	private static final Type MAP_TYPE = new TypeToken<Map<String, ContainerRecord>>() {}.getType();
 	private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
-	private static ChestMemoryStorage instance;
+	private static volatile ChestMemoryStorage instance;
 
 	/** Profile currently connected to (writes always go here). */
 	private String liveWorldId;
@@ -69,6 +69,12 @@ public final class ChestMemoryStorage {
 	 */
 	private final Set<String> liveStagingKeys = new LinkedHashSet<>();
 	private boolean liveDirty;
+	/**
+	 * Cached immutable snapshot of {@link #liveContainers} values.
+	 * Rebuilt lazily; invalidated on every mutation of the live map so per-tick
+	 * consumers (highlighter, Jade) don't copy the whole list each call.
+	 */
+	private @Nullable List<ContainerRecord> liveSnapshotCache;
 
 	/** Profile shown in the Ё panel (may differ from live). */
 	private String viewingWorldId;
@@ -80,10 +86,17 @@ public final class ChestMemoryStorage {
 	}
 
 	public static ChestMemoryStorage get() {
-		if (instance == null) {
-			instance = new ChestMemoryStorage();
+		ChestMemoryStorage local = instance;
+		if (local == null) {
+			synchronized (ChestMemoryStorage.class) {
+				local = instance;
+				if (local == null) {
+					local = new ChestMemoryStorage();
+					instance = local;
+				}
+			}
 		}
-		return instance;
+		return local;
 	}
 
 	/**
@@ -163,6 +176,7 @@ public final class ChestMemoryStorage {
 		liveWorldId = worldId;
 		liveDisplayName = display;
 		liveContainers.clear();
+		liveSnapshotCache = null;
 		liveKnownDimensions.clear();
 		liveStagingKeys.clear();
 		liveDirty = false;
@@ -199,6 +213,7 @@ public final class ChestMemoryStorage {
 	public synchronized void unload() {
 		saveIfNeeded();
 		liveContainers.clear();
+		liveSnapshotCache = null;
 		liveKnownDimensions.clear();
 		liveStagingKeys.clear();
 		liveWorldId = null;
@@ -338,11 +353,13 @@ public final class ChestMemoryStorage {
 			return;
 		}
 		liveContainers.put(record.positionKey(), record);
+		liveSnapshotCache = null;
 		liveDirty = true;
 	}
 
 	public synchronized void forget(String key) {
 		if (liveContainers.remove(key) != null) {
+			liveSnapshotCache = null;
 			liveDirty = true;
 		}
 	}
@@ -458,6 +475,7 @@ public final class ChestMemoryStorage {
 		// Clear currently viewed profile if live; only live can be cleared for safety
 		if (viewingContainers == liveContainers && !liveContainers.isEmpty()) {
 			liveContainers.clear();
+			liveSnapshotCache = null;
 			liveStagingKeys.clear();
 			liveDirty = true;
 			saveIfNeeded();
@@ -1208,7 +1226,12 @@ public final class ChestMemoryStorage {
 	}
 
 	public synchronized List<ContainerRecord> liveContainersSnapshot() {
-		return new ArrayList<>(liveContainers.values());
+		List<ContainerRecord> cached = liveSnapshotCache;
+		if (cached == null) {
+			cached = List.copyOf(liveContainers.values());
+			liveSnapshotCache = cached;
+		}
+		return cached;
 	}
 
 	public synchronized @Nullable ContainerRecord findLiveByKey(String key) {
@@ -1216,6 +1239,18 @@ public final class ChestMemoryStorage {
 			return null;
 		}
 		return liveContainers.get(key);
+	}
+
+	/**
+	 * RFC 4180 field escaping: quote when the value contains a comma, quote or
+	 * line break; inner quotes are doubled ({@code "} → {@code ""}).
+	 */
+	private static String csvField(@Nullable Object value) {
+		String s = value == null ? "" : String.valueOf(value);
+		if (s.contains("\"") || s.contains(",") || s.contains("\n") || s.contains("\r")) {
+			return '"' + s.replace("\"", "\"\"") + '"';
+		}
+		return s;
 	}
 
 	public synchronized Path exportCsv(ContainerFilter filter, String query) {
@@ -1226,12 +1261,11 @@ public final class ChestMemoryStorage {
 		List<ItemSummary> items = listItems(query, filter);
 		StringBuilder sb = new StringBuilder();
 		sb.append("world_id,display_name\n");
-		sb.append(world).append(',').append('"').append(viewingDisplayName().replace('"', '\'')).append("\"\n\n");
+		sb.append(csvField(world)).append(',').append(csvField(viewingDisplayName())).append('\n').append('\n');
 		sb.append("item_id,display_name,total_count,container_count,stacks_of_64\n");
 		for (ItemSummary summary : items) {
-			String display = itemDisplayName(summary.itemId()).replace('"', '\'');
-			sb.append('"').append(summary.itemId()).append('"').append(',')
-				.append('"').append(display).append('"').append(',')
+			sb.append(csvField(summary.itemId())).append(',')
+				.append(csvField(itemDisplayName(summary.itemId()))).append(',')
 				.append(summary.totalCount()).append(',')
 				.append(summary.containerCount()).append(',')
 				.append(summary.fullStacks()).append('\n');
@@ -1247,14 +1281,14 @@ public final class ChestMemoryStorage {
 				if (!matchesQuery(e.getKey(), query == null ? "" : query.trim().toLowerCase(Locale.ROOT))) {
 					continue;
 				}
-				sb.append(record.type()).append(',')
-					.append(record.dimension()).append(',')
+				sb.append(csvField(record.type())).append(',')
+					.append(csvField(record.dimension())).append(',')
 					.append(record.x()).append(',')
 					.append(record.y()).append(',')
 					.append(record.z()).append(',')
-					.append(record.virtualId() == null ? "" : record.virtualId()).append(',')
+					.append(csvField(record.virtualId())).append(',')
 					.append(record.doubleChest()).append(',')
-					.append(e.getKey()).append(',')
+					.append(csvField(e.getKey())).append(',')
 					.append(e.getValue()).append('\n');
 			}
 		}
