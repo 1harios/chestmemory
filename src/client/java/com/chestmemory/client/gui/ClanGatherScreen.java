@@ -7,7 +7,6 @@ import com.chestmemory.client.data.ModSettings;
 import com.chestmemory.client.litematica.LitematicaAccess;
 import com.chestmemory.client.util.ClientScreens;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -60,23 +59,25 @@ public class ClanGatherScreen extends Screen {
 		this.addRenderableWidget(this.tokenBox);
 		y += rowH + gap;
 
-		this.addRenderableWidget(Button.builder(
+		this.addRenderableWidget(new SettingRowButton(
+			left, y, w, rowH,
 			Component.translatable("screen.chestmemory.clan.save_hub"),
-			btn -> {
+			() -> {
 				ModSettings.get().setClanHubUrl(this.hubBox.getValue());
 				ModSettings.get().setClanToken(this.tokenBox.getValue());
 				this.status = Component.translatable("screen.chestmemory.clan.hub_saved").getString();
 			}
-		).bounds(left, y, w, rowH).build());
+		));
 		y += rowH + gap + 2;
 
 		boolean in = ClanSessionManager.isInSession();
 		int half = (w - gap) / 2;
 
 		if (!in) {
-			this.addRenderableWidget(Button.builder(
+			this.addRenderableWidget(new SettingRowButton(
+				left, y, half, rowH,
 				Component.translatable("screen.chestmemory.clan.create"),
-				btn -> {
+				() -> {
 					saveHubQuiet();
 					if (this.minecraft == null) {
 						return;
@@ -88,7 +89,7 @@ public class ClanGatherScreen extends Screen {
 					this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 					ClanSessionManager.createAsync(this.minecraft, this::rebuildWidgets);
 				}
-			).bounds(left, y, half, rowH).build());
+			));
 
 			this.codeBox = new EditBox(this.font, left + half + gap, y, half, rowH,
 				Component.translatable("screen.chestmemory.clan.code"));
@@ -97,9 +98,10 @@ public class ClanGatherScreen extends Screen {
 			this.addRenderableWidget(this.codeBox);
 			y += rowH + gap;
 
-			this.addRenderableWidget(Button.builder(
+			this.addRenderableWidget(new SettingRowButton(
+				left, y, w, rowH,
 				Component.translatable("screen.chestmemory.clan.join"),
-				btn -> {
+				() -> {
 					saveHubQuiet();
 					if (this.minecraft == null) {
 						return;
@@ -108,53 +110,57 @@ public class ClanGatherScreen extends Screen {
 					this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 					ClanSessionManager.joinAsync(this.minecraft, code, this::rebuildWidgets);
 				}
-			).bounds(left, y, w, rowH).build());
+			));
 			y += rowH + gap;
 		} else {
 			ClanSession s = ClanSessionManager.session();
 			String code = s != null ? s.code : "?";
-			this.addRenderableWidget(Button.builder(
+			this.addRenderableWidget(new SettingRowButton(
+				left, y, w, rowH,
 				Component.translatable("screen.chestmemory.clan.say_code", code),
-				btn -> {
+				() -> {
 					if (this.minecraft != null && this.minecraft.player != null && s != null) {
 						// Prefer client-side system message + clipboard; chat send may be blocked
 						this.minecraft.player.connection.sendChat("ChestMemory сбор: " + s.code);
 						this.status = Component.translatable("screen.chestmemory.clan.code_sent").getString();
 					}
 				}
-			).bounds(left, y, w, rowH).build());
+			));
 			y += rowH + gap;
 
-			this.addRenderableWidget(Button.builder(
+			this.addRenderableWidget(new SettingRowButton(
+				left, y, half, rowH,
 				Component.translatable("screen.chestmemory.clan.copy_code"),
-				btn -> {
+				() -> {
 					if (this.minecraft != null && s != null) {
 						this.minecraft.keyboardHandler.setClipboard(s.code);
 						this.status = Component.translatable("screen.chestmemory.clan.copied", s.code).getString();
 					}
 				}
-			).bounds(left, y, half, rowH).build());
+			));
 
 			boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
-			this.addRenderableWidget(Button.builder(
+			this.addRenderableWidget(new SettingRowButton(
+				left + half + gap, y, half, rowH,
 				Component.translatable(host
 					? "screen.chestmemory.clan.close_session"
 					: "screen.chestmemory.clan.leave"),
-				btn -> {
+				() -> {
 					if (this.minecraft == null) {
 						return;
 					}
 					this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 					ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
 				}
-			).bounds(left + half + gap, y, half, rowH).build());
+			));
 			y += rowH + gap;
 		}
 
-		this.addRenderableWidget(Button.builder(
+		this.addRenderableWidget(new SettingRowButton(
+			left, this.panelTop + this.panelH - 26, w, rowH,
 			Component.translatable("screen.chestmemory.clan.back"),
-			btn -> this.onClose()
-		).bounds(left, this.panelTop + this.panelH - 26, w, rowH).build());
+			this::onClose
+		));
 	}
 
 	private void saveHubQuiet() {
