@@ -73,6 +73,13 @@ public class ChestMemoryScreen extends Screen {
 
 	/** First click on Clear — wait for second confirm click. */
 	private boolean clearConfirmPending;
+	/**
+	 * Countdown for the armed Clear confirmation. Without it the armed state persisted for
+	 * as long as the panel stayed open, so a click minutes later wiped the profile.
+	 */
+	private int clearConfirmTicks;
+	/** 5 seconds at 20 tps. */
+	private static final int CLEAR_CONFIRM_TICKS = 100;
 
 	/**
 	 * Pending search text, applied a few ticks after the last keystroke.
@@ -564,6 +571,7 @@ public class ChestMemoryScreen extends Screen {
 		}
 		if (!this.clearConfirmPending) {
 			this.clearConfirmPending = true;
+			this.clearConfirmTicks = CLEAR_CONFIRM_TICKS;
 			if (this.clearMemoryIcon != null) {
 				this.clearMemoryIcon.setConfirmMode(true);
 			}
@@ -775,6 +783,13 @@ public class ChestMemoryScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
+		if (this.clearConfirmPending && --this.clearConfirmTicks <= 0) {
+			this.clearConfirmPending = false;
+			if (this.clearMemoryIcon != null) {
+				this.clearMemoryIcon.setConfirmMode(false);
+			}
+			this.statusLine = "";
+		}
 		if (this.pendingQuery != null && --this.searchDebounceTicks <= 0) {
 			String q = this.pendingQuery;
 			this.pendingQuery = null;

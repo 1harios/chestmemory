@@ -604,11 +604,34 @@ public final class ChestMemoryStorage {
 	public synchronized void clearAll() {
 		// Clear currently viewed profile if live; only live can be cleared for safety
 		if (viewingContainers == liveContainers && !liveContainers.isEmpty()) {
+			// Months of scanning can go in one click and there is no undo, so keep the
+			// pre-clear file under a distinct name rather than letting the normal .bak
+			// rotation overwrite it on the very next save.
+			snapshotBeforeClear();
 			liveContainers.clear();
 			liveSnapshotCache = null;
 			liveStagingKeys.clear();
 			liveDirty = true;
 			saveIfNeeded();
+		}
+	}
+
+	/** Copy the live profile to {@code <id>.json.before-clear} (best effort). */
+	private void snapshotBeforeClear() {
+		if (liveWorldId == null) {
+			return;
+		}
+		Path file = worldFile(liveWorldId);
+		if (!Files.isRegularFile(file)) {
+			return;
+		}
+		Path backup = file.resolveSibling(file.getFileName() + ".before-clear");
+		try {
+			Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);
+			ChestMemoryMod.LOGGER.info("Saved pre-clear backup: {}", backup.getFileName());
+		} catch (IOException e) {
+			// Not fatal — the user asked to clear, so don't block that on a failed copy.
+			ChestMemoryMod.LOGGER.warn("Could not write pre-clear backup: {}", e.toString());
 		}
 	}
 
