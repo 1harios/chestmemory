@@ -244,12 +244,19 @@ public class ClanGatherScreen extends Screen {
 							break;
 						}
 						boolean host = m.uuid != null && m.uuid.equalsIgnoreCase(s.hostUuid);
-						String label = (host ? "★ " : "· ") + (m.name == null ? "?" : m.name);
+						boolean away = m.isAway();
+						// Mark who the hub has stopped hearing from, so a claim freeing up
+						// on its own is explained rather than mysterious.
+						String label = (host ? "★ " : "· ") + (m.name == null ? "?" : m.name)
+							+ (away ? "  " + Component.translatable("screen.chestmemory.clan.away").getString() : "");
+						int colour = away
+							? ChestGuiStyle.TEXT_MUTED
+							: (host ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT);
 						graphics.text(
 							this.font,
 							ChestGuiStyle.ellipsize(this.font, label, contentW),
 							left, rosterY + shown * 10,
-							host ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
+							colour,
 							false
 						);
 						shown++;

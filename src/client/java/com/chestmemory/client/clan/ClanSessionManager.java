@@ -628,6 +628,43 @@ public final class ClanSessionManager {
 		}
 	}
 
+	/**
+	 * Leaving a server / quitting to the menu: hand our claims back now.
+	 * <p>
+	 * The hub would eventually release them on heartbeat timeout, but that leaves the
+	 * clan unable to pick up those materials for minutes. Best-effort and fire-and-forget
+	 * — the game is shutting down, so there is nobody left to report a failure to.
+	 * <p>
+	 * Note this is deliberately NOT wired to dimension changes: going to the Nether keeps
+	 * the same connection, and the poll keeps the heartbeat alive.
+	 */
+	public static void releaseOnDisconnect() {
+		ClanSession current = session;
+		if (current == null || current.code == null || current.code.isBlank()) {
+			return;
+		}
+		String code = current.code;
+		Minecraft mc = Minecraft.getInstance();
+		JsonObject body = new JsonObject();
+		if (mc != null) {
+			body.addProperty("uuid", localUuid(mc));
+			body.addProperty("name", localName(mc));
+		}
+		IO.execute(() -> {
+			try {
+				// Always "leave", never "close" — even the host quitting should not end a
+				// session the others are still gathering for; they can carry on and the
+				// host rejoins later by code.
+				client().leave(code, body);
+			} catch (Exception e) {
+				ChestMemoryMod.LOGGER.debug("Clan release on disconnect: {}", e.toString());
+			}
+		});
+		session = null;
+		lastError = null;
+		ClanAuth.clear();
+	}
+
 	public static void clearLocal() {
 		session = null;
 		lastError = null;

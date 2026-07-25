@@ -37,6 +37,14 @@ CLAN_TOKEN = os.environ.get("CLAN_TOKEN", "").strip()
 #: turn it on — that is what actually closes the impersonation hole.
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes")
 SESSION_TTL_SEC = int(os.environ.get("SESSION_TTL_SEC", str(7 * 24 * 3600)))
+#: A member's claims are released after this long without a heartbeat.
+#:
+#: The client polls every ~3s while the game is running, and polling refreshes
+#: lastSeen — so this measures "client is gone" (quit, crash, lost connection), not
+#: "player is idle". Someone mining in the Nether for an hour keeps their claims:
+#: they changed dimension, not connection. 180s is 60 missed polls in a row, which
+#: no ordinary network hiccup explains.
+CLAIM_TIMEOUT_SEC = int(os.environ.get("CLAIM_TIMEOUT_SEC", "180"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent / "data")))
 SESSIONS_FILE = DATA_DIR / "sessions.json"
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -133,6 +141,35 @@ def _purge_old() -> None:
     for c in dead:
         _sessions.pop(c, None)
     _save_sessions()
+
+
+def _release_stale_claims(sess: dict[str, Any]) -> list[str]:
+    """
+    Drop claims held by members whose client stopped talking to us.
+
+    Without this a player who alt-F4'd kept their material reserved for the whole
+    7-day session lifetime, and nobody else could pick it up.
+
+    :return: names of members whose claims were released, for logging
+    """
+    cutoff = _now() - CLAIM_TIMEOUT_SEC * 1000
+    stale: dict[str, str] = {}
+    for m in sess.get("members") or []:
+        uuid = str(m.get("uuid") or "")
+        if uuid and int(m.get("lastSeen", 0) or 0) < cutoff:
+            stale[uuid.lower()] = str(m.get("name") or "?")
+    if not stale:
+        return []
+    released: list[str] = []
+    for mat in (sess.get("materials") or {}).values():
+        holder = str(mat.get("claimedBy") or "").lower()
+        if holder and holder in stale:
+            mat["claimedBy"] = None
+            mat["claimedName"] = None
+            if stale[holder] not in released:
+                released.append(stale[holder])
+    # Keep the member listed but visibly stale; the roster shows who is away.
+    return released
 
 
 def _touch(sess: dict[str, Any]) -> None:
@@ -274,6 +311,25 @@ class Handler(BaseHTTPRequestHandler):
                 if not sess:
                     self._send(404, {"error": "not found"})
                     return
+                # The poll IS the heartbeat. It used to refresh nothing, so lastSeen only
+                # moved when a player claimed or delivered — which would have marked
+                # someone mining for an hour as gone. Polling continues across dimension
+                # changes (same connection), so this measures the client being alive.
+                who = self._identity()
+                changed = False
+                if who is not None:
+                    _member_upsert(sess, who["name"], who["uuid"])
+                    changed = True
+                released = _release_stale_claims(sess)
+                if released:
+                    print(
+                        "released claims of %s in %s (no heartbeat for %ss)"
+                        % (", ".join(released), code, CLAIM_TIMEOUT_SEC)
+                    )
+                    _touch(sess)
+                    changed = True
+                if changed:
+                    _save_sessions()
                 self._send(200, sess)
             return
         self._send(404, {"error": "not found"})

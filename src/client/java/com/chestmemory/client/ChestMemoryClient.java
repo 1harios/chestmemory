@@ -88,6 +88,11 @@ public class ChestMemoryClient implements ClientModInitializer {
 				// A gather queue belongs to the world it was started in. Carrying it over
 				// showed the previous world's materials against the new world's chests.
 				BuildGatherSession.clear();
+				// Release our claims right away instead of leaving the clan waiting for
+				// the hub's heartbeat timeout. Fires when leaving a server or quitting to
+				// the menu — NOT on a dimension change, which keeps the same connection,
+				// so a trip to the Nether does not drop what you reserved.
+				com.chestmemory.client.clan.ClanSessionManager.releaseOnDisconnect();
 			});
 		EnderChestTooltip.register();
 		BuildGatherHud.register();

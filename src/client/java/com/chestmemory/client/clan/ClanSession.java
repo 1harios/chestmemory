@@ -28,6 +28,16 @@ public final class ClanSession {
 		public String name = "";
 		public String uuid = "";
 		public long lastSeen;
+
+		/**
+		 * True when the hub has not heard from this member for a while.
+		 * <p>
+		 * The hub refreshes lastSeen on every poll (~3s), so this means their client is
+		 * gone — not that they are idle. Someone mining in the Nether still polls.
+		 */
+		public boolean isAway() {
+			return lastSeen > 0 && System.currentTimeMillis() - lastSeen > 180_000L;
+		}
 	}
 
 	public static final class ClanMaterial {

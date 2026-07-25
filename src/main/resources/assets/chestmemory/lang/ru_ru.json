@@ -75,6 +75,7 @@
 	"screen.chestmemory.clan.status_ready": "Создай сбор или введи код CM-XXXX",
 	"screen.chestmemory.clan.progress": "Сдано %s / %s  (%s%%)",
 	"screen.chestmemory.clan.more_members": "…и ещё %s",
+	"screen.chestmemory.clan.away": "(не в сети)",
 	"screen.chestmemory.clan.status_in": "%s · %s игр. · сдано %s/%s (%s%%)",
 	"screen.chestmemory.tooltip.clan_claim_me": "§eКлан: занято тобой§r",
 	"screen.chestmemory.tooltip.clan_claim_other": "§dКлан: занял %s§r (не бери)",

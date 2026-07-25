@@ -36,6 +36,13 @@ clan_auth_init($dataDir);
 $requireAuth = (bool)($config['require_auth'] ?? false);
 $token = (string)($config['token'] ?? '');
 $ttlMs = (int)($config['ttl_sec'] ?? 604800) * 1000;
+/**
+ * A member's claims are released after this long without a heartbeat.
+ * The client polls every ~3s and polling refreshes lastSeen, so this means "client
+ * is gone" (quit/crash), not "player is idle" — mining in the Nether for an hour
+ * keeps your claims, because that changes dimension, not connection.
+ */
+$claimTimeoutMs = (int)($config['claim_timeout_sec'] ?? 180) * 1000;
 
 function now_ms(): int
 {
@@ -160,6 +167,42 @@ function member_upsert(array &$sess, string $name, string $uuid): void
     $members[] = ['name' => $name !== '' ? $name : '?', 'uuid' => $uuid, 'lastSeen' => now_ms()];
 }
 
+/**
+ * Drop claims held by members whose client stopped talking to us. Without this an
+ * alt-F4 left a material reserved for the whole session lifetime.
+ *
+ * @return string[] names whose claims were released
+ */
+function release_stale_claims(array &$sess, int $timeoutMs): array
+{
+    $cutoff = now_ms() - $timeoutMs;
+    $stale = [];
+    foreach ($sess['members'] ?? [] as $m) {
+        $uuid = (string)($m['uuid'] ?? '');
+        if ($uuid !== '' && (int)($m['lastSeen'] ?? 0) < $cutoff) {
+            $stale[strtolower($uuid)] = (string)($m['name'] ?? '?');
+        }
+    }
+    if ($stale === []) {
+        return [];
+    }
+    $released = [];
+    if (isset($sess['materials']) && is_array($sess['materials'])) {
+        foreach ($sess['materials'] as &$mat) {
+            $holder = strtolower((string)($mat['claimedBy'] ?? ''));
+            if ($holder !== '' && isset($stale[$holder])) {
+                $mat['claimedBy'] = null;
+                $mat['claimedName'] = null;
+                if (!in_array($stale[$holder], $released, true)) {
+                    $released[] = $stale[$holder];
+                }
+            }
+        }
+        unset($mat);
+    }
+    return $released;
+}
+
 function touch_sess(array &$sess): void
 {
     $sess['updatedAt'] = now_ms();
@@ -245,7 +288,13 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
  * they never observe a half-applied state. respond() calls exit(), so the release is
  * registered as a shutdown function rather than written after each branch.
  */
-$isWrite = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
+/*
+ * Session lookups now write too (heartbeat + stale-claim release), so they need the
+ * exclusive lock as well — a shared lock would let two concurrent polls read the same
+ * state and clobber each other's lastSeen update.
+ */
+$isWrite = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    || preg_match('#^/v1/sessions/[^/]+/?$#', api_path()) === 1;
 $lockHandle = fopen($dataDir . '/sessions.lock', 'c');
 if ($lockHandle !== false) {
     flock($lockHandle, $isWrite ? LOCK_EX : LOCK_SH);
@@ -289,6 +338,22 @@ if ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $m)) {
     $code = normalize_code($m[1]);
     if (!isset($sessions[$code])) {
         respond(404, ['error' => 'not found']);
+    }
+    // The poll IS the heartbeat — it used to refresh nothing, so lastSeen only moved
+    // on claim/deliver and a long mining trip looked like a disconnect.
+    $who = clan_identity();
+    $changed = false;
+    if ($who !== null) {
+        member_upsert($sessions[$code], $who['name'], $who['uuid']);
+        $changed = true;
+    }
+    $released = release_stale_claims($sessions[$code], $claimTimeoutMs);
+    if ($released !== []) {
+        touch_sess($sessions[$code]);
+        $changed = true;
+    }
+    if ($changed) {
+        save_sessions($sessionsFile, $sessions);
     }
     respond(200, $sessions[$code]);
 }
