@@ -38,6 +38,20 @@ public final class ChestGuiStyle {
 	/** Height of title header area (title + "you are here"). */
 	public static final int HEADER_H = 36;
 
+	/**
+	 * Panel size shared by every screen of the mod.
+	 * <p>
+	 * Each screen used to compute its own bounds, so the frame visibly jumped when moving
+	 * between the item list and settings. One source of truth keeps them identical.
+	 */
+	public static int panelWidth(int screenWidth) {
+		return Math.min(340, Math.max(260, screenWidth - 24));
+	}
+
+	public static int panelHeight(int screenHeight) {
+		return Math.min(300, Math.max(230, screenHeight - 32));
+	}
+
 	private ChestGuiStyle() {
 	}
 
@@ -66,6 +80,65 @@ public final class ChestGuiStyle {
 
 	public static void drawSlot(GuiGraphicsExtractor graphics, int x, int y) {
 		graphics.blitSprite(RenderPipelines.GUI_TEXTURED, SLOT_SPRITE, x, y, 18, 18);
+	}
+
+	/**
+	 * Section heading for the settings list: wooden label plate with a rule running to
+	 * the right edge, instead of a bare line of text floating over the panel.
+	 */
+	public static void drawSectionHeader(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		Component title,
+		int left,
+		int y,
+		int width
+	) {
+		int textW = font.width(title);
+		int plateW = Math.min(width, textW + 12);
+
+		// Wooden tab behind the caption
+		graphics.fill(left, y - 2, left + plateW, y + 11, WOOD_MID);
+		graphics.fill(left + 1, y - 1, left + plateW - 1, y + 10, WOOD_LIGHT);
+		graphics.text(font, title, left + 6, y + 1, TEXT_LIGHT, false);
+
+		// Rule filling the remaining width, so sections read as bands
+		int ruleLeft = left + plateW + 4;
+		int ruleRight = left + width;
+		if (ruleRight > ruleLeft) {
+			graphics.fill(ruleLeft, y + 4, ruleRight, y + 5, HEADER_LINE);
+			graphics.fill(ruleLeft, y + 5, ruleRight, y + 6, 0x33000000);
+		}
+	}
+
+	/**
+	 * Wood tones for interactive rows. Deliberately darker than the panel frame: the row
+	 * caption is TEXT_LIGHT, and mid-brown backgrounds left it at ~2.6:1 contrast, which
+	 * is hard to read. These sit at 4.7:1 (idle) and 3.9:1 (hover).
+	 */
+	public static final int ROW_WOOD = 0xFF33200F;
+	public static final int ROW_WOOD_HOVER = 0xFF432B15;
+	public static final int ROW_WOOD_DISABLED = 0xFF2A2018;
+
+	/**
+	 * Recessed wooden background for a settings row, so rows sit in the panel instead of
+	 * floating on it as flat vanilla buttons.
+	 */
+	public static void drawSettingRow(
+		GuiGraphicsExtractor graphics,
+		int x,
+		int y,
+		int width,
+		int height,
+		boolean hovered,
+		boolean enabled
+	) {
+		int fill = !enabled ? ROW_WOOD_DISABLED : (hovered ? ROW_WOOD_HOVER : ROW_WOOD);
+		// Outer edge, then face, then a lighter top rim for a slight bevel
+		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, fill);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + 2, withAlpha(0xFFFFFF, hovered ? 0.22F : 0.12F));
+		graphics.fill(x + 1, y + height - 2, x + width - 1, y + height - 1, withAlpha(0x000000, 0.25F));
 	}
 
 	public static void drawCountBadge(GuiGraphicsExtractor graphics, Font font, String text, int right, int y) {

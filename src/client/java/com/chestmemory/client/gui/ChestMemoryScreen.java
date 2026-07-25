@@ -123,8 +123,8 @@ public class ChestMemoryScreen extends Screen {
 		// «Назад» can leave the materials list while HUD/route continue.
 
 		// Same panel size for normal and scheme modes (no resize jump)
-		this.panelW = Math.min(340, Math.max(260, this.width - 24));
-		this.panelH = Math.min(300, Math.max(230, this.height - 32));
+		this.panelW = ChestGuiStyle.panelWidth(this.width);
+		this.panelH = ChestGuiStyle.panelHeight(this.height);
 		this.panelLeft = (this.width - this.panelW) / 2;
 		this.panelTop = (this.height - this.panelH) / 2;
 

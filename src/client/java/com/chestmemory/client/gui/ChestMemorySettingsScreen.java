@@ -9,7 +9,6 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -46,7 +45,7 @@ public class ChestMemorySettingsScreen extends Screen {
 	/** Per-widget: refresh label after any setting change. */
 	private final List<java.util.function.Supplier<Component>> contentLabels = new ArrayList<>();
 
-	private final List<Button> keyButtons = new ArrayList<>();
+	private final List<SettingRowButton> keyButtons = new ArrayList<>();
 	private final List<KeyMapping> keyMappings = new ArrayList<>();
 	private @Nullable KeyMapping listeningKey;
 
@@ -72,8 +71,9 @@ public class ChestMemorySettingsScreen extends Screen {
 		this.listeningKey = null;
 		this.scrollY = 0;
 
-		this.panelW = Math.min(320, Math.max(260, this.width - 36));
-		this.panelH = Math.min(300, Math.max(240, this.height - 28));
+		// Same size as the item panel — the frame must not resize when opening settings.
+		this.panelW = ChestGuiStyle.panelWidth(this.width);
+		this.panelH = ChestGuiStyle.panelHeight(this.height);
 		this.panelLeft = (this.width - this.panelW) / 2;
 		this.panelTop = (this.height - this.panelH) / 2;
 
@@ -235,10 +235,12 @@ public class ChestMemorySettingsScreen extends Screen {
 		applyScroll();
 
 		// Done — fixed footer
-		this.addRenderableWidget(Button.builder(
+		// Footer button in the same wooden style as the rows above it.
+		this.addRenderableWidget(new SettingRowButton(
+			this.contentLeft, this.panelTop + this.panelH - 26, this.contentW, 18,
 			Component.translatable("screen.chestmemory.settings.done"),
-			btn -> this.onClose()
-		).bounds(this.contentLeft, this.panelTop + this.panelH - 26, this.contentW, 18).build());
+			this::onClose
+		));
 	}
 
 	/** Section title aligned with button column; tight spacing to first button. */
@@ -295,11 +297,14 @@ public class ChestMemorySettingsScreen extends Screen {
 		);
 		// Leave room for swatch on the right
 		int btnW = this.contentW - 18;
-		Button btn = Button.builder(label.get(), b -> {
-			onCycle.run();
-			refreshAllSettingLabels();
-			applyScroll();
-		}).bounds(this.contentLeft, this.viewTop + y, btnW, rowH).build();
+		SettingRowButton btn = new SettingRowButton(
+			this.contentLeft, this.viewTop + y, btnW, rowH, label.get(),
+			() -> {
+				onCycle.run();
+				refreshAllSettingLabels();
+				applyScroll();
+			}
+		);
 		this.addRenderableWidget(btn);
 		this.contentWidgets.add(btn);
 		this.contentBaseY.add(y);
@@ -323,14 +328,17 @@ public class ChestMemorySettingsScreen extends Screen {
 		java.util.function.@Nullable BooleanSupplier enabledWhen
 	) {
 		java.util.function.BooleanSupplier en = enabledWhen != null ? enabledWhen : () -> true;
-		Button btn = Button.builder(label.get(), b -> {
-			if (!en.getAsBoolean()) {
-				return;
+		SettingRowButton btn = new SettingRowButton(
+			this.contentLeft, this.viewTop + y, this.contentW, rowH, label.get(),
+			() -> {
+				if (!en.getAsBoolean()) {
+					return;
+				}
+				onClick.run();
+				refreshAllSettingLabels();
+				applyScroll();
 			}
-			onClick.run();
-			refreshAllSettingLabels();
-			applyScroll();
-		}).bounds(this.contentLeft, this.viewTop + y, this.contentW, rowH).build();
+		);
 		this.addRenderableWidget(btn);
 		this.contentWidgets.add(btn);
 		this.contentBaseY.add(y);
@@ -343,11 +351,14 @@ public class ChestMemorySettingsScreen extends Screen {
 		if (mapping == null) {
 			return y;
 		}
-		Button btn = Button.builder(keyLabel(mapping, false), b -> {
-			this.listeningKey = mapping;
-			refreshKeyLabels();
-			applyScroll();
-		}).bounds(this.contentLeft, this.viewTop + y, this.contentW, rowH).build();
+		SettingRowButton btn = new SettingRowButton(
+			this.contentLeft, this.viewTop + y, this.contentW, rowH, keyLabel(mapping, false),
+			() -> {
+				this.listeningKey = mapping;
+				refreshKeyLabels();
+				applyScroll();
+			}
+		);
 		this.addRenderableWidget(btn);
 		this.contentWidgets.add(btn);
 		this.contentBaseY.add(y);
@@ -360,7 +371,9 @@ public class ChestMemorySettingsScreen extends Screen {
 
 	private void refreshAllSettingLabels() {
 		for (int i = 0; i < contentWidgets.size(); i++) {
-			if (contentWidgets.get(i) instanceof Button b && i < contentLabels.size()) {
+			// Rows are SettingRowButton now; the old Button check silently stopped
+			// matching, which would have frozen every caption after a click.
+			if (contentWidgets.get(i) instanceof SettingRowButton b && i < contentLabels.size()) {
 				b.setMessage(contentLabels.get(i).get());
 			}
 		}
@@ -511,14 +524,14 @@ public class ChestMemorySettingsScreen extends Screen {
 			if (sy + 10 < this.viewTop || sy > this.viewBottom) {
 				continue;
 			}
-			// Dark section titles — readable on light panel (not yellow)
-			graphics.text(
+			// Wooden tab + rule, matching the panel frame
+			ChestGuiStyle.drawSectionHeader(
+				graphics,
 				this.font,
 				Component.translatable(m.titleKey()),
 				this.contentLeft,
 				sy,
-				ChestGuiStyle.TEXT_TITLE,
-				false
+				this.contentW
 			);
 		}
 		for (SectionMark m : hintMarkers) {

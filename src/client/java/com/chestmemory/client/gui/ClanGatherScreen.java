@@ -33,8 +33,8 @@ public class ClanGatherScreen extends Screen {
 
 	@Override
 	protected void init() {
-		this.panelW = Math.min(320, Math.max(260, this.width - 36));
-		this.panelH = Math.min(260, Math.max(220, this.height - 40));
+		this.panelW = ChestGuiStyle.panelWidth(this.width);
+		this.panelH = ChestGuiStyle.panelHeight(this.height);
 		this.panelLeft = (this.width - this.panelW) / 2;
 		this.panelTop = (this.height - this.panelH) / 2;
 
