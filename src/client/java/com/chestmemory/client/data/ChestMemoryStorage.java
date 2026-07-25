@@ -87,6 +87,16 @@ public final class ChestMemoryStorage {
 	 * consumers (highlighter, Jade) don't copy the whole list each call.
 	 */
 	private @Nullable List<ContainerRecord> liveSnapshotCache;
+	/**
+	 * itemId -> keys of live containers holding it.
+	 * <p>
+	 * Every lookup ("how much iron do I have", "which chests glow") used to walk the whole
+	 * profile, once per tick for the highlighter and once per material for the gather
+	 * queue. That is O(containers) per question on a base with thousands of chests.
+	 * The index is maintained incrementally in {@link #remember}/{@link #forget}, the only
+	 * places that mutate liveContainers, so it cannot drift out of sync.
+	 */
+	private final Map<String, Set<String>> liveItemIndex = new HashMap<>();
 
 	/** Profile shown in the Ё panel (may differ from live). */
 	private String viewingWorldId;
@@ -235,6 +245,7 @@ public final class ChestMemoryStorage {
 		if (file.containers != null) {
 			liveContainers.putAll(file.containers);
 		}
+		reindexAll();
 		if (file.knownDimensions != null) {
 			liveKnownDimensions.addAll(file.knownDimensions);
 		}
@@ -264,6 +275,7 @@ public final class ChestMemoryStorage {
 	public synchronized void unload() {
 		saveIfNeeded();
 		liveContainers.clear();
+		liveItemIndex.clear();
 		liveSnapshotCache = null;
 		liveKnownDimensions.clear();
 		liveStagingKeys.clear();
@@ -482,16 +494,62 @@ public final class ChestMemoryStorage {
 		if (liveWorldId == null) {
 			return;
 		}
-		liveContainers.put(record.positionKey(), record);
+		String key = record.positionKey();
+		ContainerRecord previous = liveContainers.put(key, record);
+		if (previous != null) {
+			unindex(key, previous);
+		}
+		index(key, record);
 		liveSnapshotCache = null;
 		liveDirty = true;
 	}
 
 	public synchronized void forget(String key) {
-		if (liveContainers.remove(key) != null) {
+		ContainerRecord removed = liveContainers.remove(key);
+		if (removed != null) {
+			unindex(key, removed);
 			liveSnapshotCache = null;
 			liveDirty = true;
 		}
+	}
+
+	private void index(String key, ContainerRecord record) {
+		for (String itemId : record.items().keySet()) {
+			liveItemIndex.computeIfAbsent(itemId, k -> new LinkedHashSet<>()).add(key);
+		}
+	}
+
+	private void unindex(String key, ContainerRecord record) {
+		for (String itemId : record.items().keySet()) {
+			Set<String> keys = liveItemIndex.get(itemId);
+			if (keys != null && keys.remove(key) && keys.isEmpty()) {
+				liveItemIndex.remove(itemId);
+			}
+		}
+	}
+
+	/** Rebuild the whole index — used after bulk loads and clears. */
+	private void reindexAll() {
+		liveItemIndex.clear();
+		for (Map.Entry<String, ContainerRecord> e : liveContainers.entrySet()) {
+			index(e.getKey(), e.getValue());
+		}
+	}
+
+	/** Live containers known to hold this item (index lookup, no full scan). */
+	private List<ContainerRecord> indexedContainers(String itemId) {
+		Set<String> keys = liveItemIndex.get(itemId);
+		if (keys == null || keys.isEmpty()) {
+			return List.of();
+		}
+		List<ContainerRecord> out = new ArrayList<>(keys.size());
+		for (String k : keys) {
+			ContainerRecord r = liveContainers.get(k);
+			if (r != null) {
+				out.add(r);
+			}
+		}
+		return out;
 	}
 
 	public synchronized void forgetAt(String dimension, BlockPos pos) {
@@ -543,7 +601,8 @@ public final class ChestMemoryStorage {
 	/** Total count of an item across live containers (optionally nearby). */
 	public synchronized int liveItemTotal(String itemId) {
 		int total = 0;
-		for (ContainerRecord r : liveContainers.values()) {
+		// Index lookup: only containers that actually hold the item, not the whole profile.
+		for (ContainerRecord r : indexedContainers(itemId)) {
 			total += r.countOf(itemId);
 		}
 		return total;
@@ -609,6 +668,7 @@ public final class ChestMemoryStorage {
 			// rotation overwrite it on the very next save.
 			snapshotBeforeClear();
 			liveContainers.clear();
+			liveItemIndex.clear();
 			liveSnapshotCache = null;
 			liveStagingKeys.clear();
 			liveDirty = true;
@@ -875,7 +935,7 @@ public final class ChestMemoryStorage {
 		}
 		DimensionChoice dim = dimensionFilter != null ? dimensionFilter : DimensionChoice.ALL;
 		int t = 0;
-		for (ContainerRecord r : liveContainers.values()) {
+		for (ContainerRecord r : indexedContainers(itemId)) {
 			if (isStaging(r)) {
 				continue;
 			}
@@ -902,7 +962,7 @@ public final class ChestMemoryStorage {
 			return out;
 		}
 		DimensionChoice dim = dimensionFilter != null ? dimensionFilter : DimensionChoice.ALL;
-		for (ContainerRecord r : liveContainers.values()) {
+		for (ContainerRecord r : indexedContainers(itemId)) {
 			if (isStaging(r)) {
 				continue;
 			}
