@@ -580,10 +580,13 @@ public final class BuildGatherSession {
 			out.add(new RankedItem(e.getKey(), need, inChests, band, dist, e.getValue()));
 		}
 
+		// Only `need` is descending. Chaining .reversed() after thenComparingInt would
+		// reverse the whole composite instead, putting partial stacks before ready ones
+		// and the farthest chest first.
 		out.sort(Comparator
 			.comparingInt(RankedItem::band)
-			.thenComparingDouble(r -> r.dist >= 0 ? r.dist : Double.MAX_VALUE)
-			.thenComparingInt(RankedItem::need).reversed()
+			.thenComparingDouble((RankedItem r) -> r.dist >= 0 ? r.dist : Double.MAX_VALUE)
+			.thenComparing(Comparator.comparingInt(RankedItem::need).reversed())
 			.thenComparing(r -> ChestMemoryStorage.itemDisplayName(r.itemId), String.CASE_INSENSITIVE_ORDER));
 		return out;
 	}
@@ -797,10 +800,12 @@ public final class BuildGatherSession {
 			out.add(summary);
 		}
 
+		// As in rankPhase: reverse only the `neededForBuild` key. Reversing the whole
+		// chain would list DONE rows before READY ones and sort by farthest first.
 		out.sort(Comparator
 			.comparingInt(BuildFilter::gatherPriority)
 			.thenComparingDouble((ItemSummary s) -> s.hasDistance() ? s.nearestDistance() : Double.MAX_VALUE)
-			.thenComparingInt(ItemSummary::neededForBuild).reversed()
+			.thenComparing(Comparator.comparingInt(ItemSummary::neededForBuild).reversed())
 			.thenComparing(s -> ChestMemoryStorage.itemDisplayName(s.itemId()), String.CASE_INSENSITIVE_ORDER));
 		return out;
 	}
