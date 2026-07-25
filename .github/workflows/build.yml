@@ -4,11 +4,21 @@
 # against bad commits.
 
 name: build
-on: [pull_request, push]
+
+# Pull requests from this repository would otherwise run twice (once for the
+# push, once for the PR).
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: checkout repository
         uses: actions/checkout@v6
@@ -19,6 +29,7 @@ jobs:
         with:
           java-version: '25'
           distribution: 'microsoft'
+          cache: 'gradle'
       - name: make gradle wrapper executable
         run: chmod +x ./gradlew
       - name: build
@@ -26,5 +37,7 @@ jobs:
       - name: capture build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: Artifacts
-          path: build/libs/
+          name: chestmemory-jar
+          # Only the mod jar; skips the -sources jar produced by withSourcesJar().
+          path: build/libs/*[0-9].jar
+          if-no-files-found: error

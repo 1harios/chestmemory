@@ -9,4 +9,11 @@ pluginManagement {
 	}
 }
 
+// Lets Gradle download a JDK 25 toolchain when the running JVM is older, which is what
+// the toolchain block in build.gradle promises. Without this resolver the build just
+// fails with "No matching toolchains found".
+plugins {
+	id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
 rootProject.name = 'chestmemory'
