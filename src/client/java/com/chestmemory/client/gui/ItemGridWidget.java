@@ -256,8 +256,13 @@ public class ItemGridWidget extends AbstractWidget {
 				}
 			} else {
 				lines.add(Component.translatable("screen.chestmemory.tooltip.total", s.totalCount()));
-				if (s.fullStacks() > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.stacks", s.fullStacks(), s.remainder()));
+				// Use the item's real stack size — 16 for pearls, 1 for tools, not always 64.
+				int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
+				if (s.fullStacks(per) > 0) {
+					lines.add(Component.translatable(
+						"screen.chestmemory.tooltip.stacks",
+						s.fullStacks(per), per, s.remainder(per)
+					));
 				} else {
 					lines.add(Component.translatable("screen.chestmemory.tooltip.less_than_stack", s.totalCount()));
 				}

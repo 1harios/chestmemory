@@ -106,11 +106,29 @@ public final class ItemSummary {
 		return Math.min(neededForBuild, totalCount);
 	}
 
+	/** @deprecated assumes 64 per stack; use {@link #fullStacks(int)} */
+	@Deprecated
 	public int fullStacks() {
 		return totalCount / 64;
 	}
 
+	/** @deprecated assumes 64 per stack; use {@link #remainder(int)} */
+	@Deprecated
 	public int remainder() {
 		return totalCount % 64;
+	}
+
+	/**
+	 * Full stacks for this item's real stack size. Ender pearls stack to 16 and tools to
+	 * 1, so the fixed /64 reported e.g. "2 stacks" for 128 pearls when it is really 8.
+	 */
+	public int fullStacks(int maxStackSize) {
+		int per = Math.max(1, maxStackSize);
+		return totalCount / per;
+	}
+
+	public int remainder(int maxStackSize) {
+		int per = Math.max(1, maxStackSize);
+		return totalCount % per;
 	}
 }

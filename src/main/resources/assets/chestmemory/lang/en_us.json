@@ -144,7 +144,7 @@
 	"screen.chestmemory.status.export_failed": "Export failed",
 
 	"screen.chestmemory.tooltip.total": "Total: ×%s",
-	"screen.chestmemory.tooltip.stacks": "Stacks: %s×64 + %s",
+	"screen.chestmemory.tooltip.stacks": "Stacks: %s×%s + %s",
 	"screen.chestmemory.tooltip.less_than_stack": "Less than a stack: ×%s",
 	"screen.chestmemory.tooltip.containers": "Containers: %s",
 	"screen.chestmemory.tooltip.nearest": "Nearest: %s m",

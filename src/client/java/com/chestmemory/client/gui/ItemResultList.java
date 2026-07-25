@@ -131,8 +131,9 @@ public class ItemResultList extends ObjectSelectionList<ItemResultList.Entry> {
 			graphics.text(font, name, textLeft, rowY + 5, ChestGuiStyle.TEXT_BODY, false);
 
 			// Secondary line: stacks · containers · distance (nearby mode)
-			String stacks = summary.fullStacks() > 0
-				? summary.fullStacks() + "×64" + (summary.remainder() > 0 ? "+" + summary.remainder() : "")
+			int per = Math.max(1, this.icon.getMaxStackSize());
+			String stacks = summary.fullStacks(per) > 0
+				? summary.fullStacks(per) + "×" + per + (summary.remainder(per) > 0 ? "+" + summary.remainder(per) : "")
 				: ("×" + summary.totalCount());
 			String meta = stacks + " · " + summary.containerCount()
 				+ (summary.containerCount() == 1 ? " cont." : " cont.");

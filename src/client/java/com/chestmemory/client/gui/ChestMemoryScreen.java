@@ -1292,13 +1292,30 @@ public class ChestMemoryScreen extends Screen {
 		}
 
 		if (this.statusLine != null && !this.statusLine.isEmpty()) {
-			String line = ChestGuiStyle.ellipsize(this.font, this.statusLine, this.panelW + 80);
+			// Normally the status sits just under the panel. On a short screen the panel
+			// already reaches the bottom edge, and the line was drawn off-screen — which
+			// hid every explanation the panel gives ("nearby is live-only", "clear only
+			// works on live", item totals). Fall back to inside the panel there.
+			int belowPanel = this.panelTop + this.panelH + 6;
+			boolean fits = belowPanel + this.font.lineHeight <= this.height;
+			int statusY = fits ? belowPanel : this.panelTop + this.panelH - 12;
+			int maxWidth = fits ? this.panelW + 80 : this.panelW - 24;
+			String line = ChestGuiStyle.ellipsize(this.font, this.statusLine, maxWidth);
+			if (!fits) {
+				// Inside the panel the text needs its own backdrop to stay readable.
+				int halfW = this.font.width(line) / 2 + 3;
+				graphics.fill(
+					centerX - halfW, statusY - 2,
+					centerX + halfW, statusY + this.font.lineHeight,
+					0xC0000000
+				);
+			}
 			ChestGuiStyle.drawCentered(
 				graphics,
 				this.font,
 				line,
 				centerX,
-				this.panelTop + this.panelH + 6,
+				statusY,
 				ChestGuiStyle.TEXT_LIGHT
 			);
 		}

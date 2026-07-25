@@ -144,7 +144,7 @@
 	"screen.chestmemory.status.export_failed": "Ошибка экспорта",
 
 	"screen.chestmemory.tooltip.total": "Всего: ×%s",
-	"screen.chestmemory.tooltip.stacks": "Стаков: %s×64 + %s",
+	"screen.chestmemory.tooltip.stacks": "Стаков: %s×%s + %s",
 	"screen.chestmemory.tooltip.less_than_stack": "Меньше стака: ×%s",
 	"screen.chestmemory.tooltip.containers": "Контейнеров: %s",
 	"screen.chestmemory.tooltip.nearest": "Ближайший: %s м",
