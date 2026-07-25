@@ -1,0 +1,12 @@
+RewriteEngine On
+
+# Let's Encrypt / ACME — must NOT go through index.php
+RewriteRule ^\.well-known/ - [L]
+
+# Existing files as-is (status.html, etc.)
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# API and rest → PHP hub
+RewriteRule ^ index.php [L,QSA]

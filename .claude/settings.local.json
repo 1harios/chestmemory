@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__hyperagent__get_thread"
+    ]
+  }
+}

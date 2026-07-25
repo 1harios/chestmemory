@@ -1,0 +1,16 @@
+{
+	"required": true,
+	"package": "com.chestmemory.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"MultiPlayerGameModeMixin",
+		"AbstractContainerScreenAccessor",
+		"ItemStackMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

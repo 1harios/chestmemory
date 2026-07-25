@@ -1,0 +1,35 @@
+﻿# gradle
+.gradle/
+build/
+out/
+run/
+runs/
+logs/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+
+# local toolchain / temp exploration
+.jdk/
+mc-sources/
+mc-tmp/
+temp-example-mod/
+*.jar.backup
+fabric-rendering-sources.jar
+key-sources.jar
+life-sources.jar
+screen-sources.jar
+jar-list.txt
+jar-list-src.txt
+
+# OS
+.DS_Store
+Thumbs.db

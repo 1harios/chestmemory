@@ -1,0 +1,45 @@
+{
+	"schemaVersion": 1,
+	"id": "chestmemory",
+	"version": "${version}",
+	"name": "Chest Memory",
+	"description": "Remembers chest contents per world/server, search with Ё, highlights containers. Works on Fabric 26.1.2 and 26.2.",
+	"authors": [
+		"Karandash"
+	],
+	"contact": {},
+	"license": "MIT",
+	"icon": "assets/chestmemory/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.chestmemory.ChestMemoryMod"
+		],
+		"client": [
+			"com.chestmemory.client.ChestMemoryClient"
+		],
+		"jade": [
+			"com.chestmemory.client.jade.ChestMemoryJadePlugin"
+		]
+	},
+	"mixins": [
+		"chestmemory.mixins.json",
+		{
+			"config": "chestmemory.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": [
+			"~26.1.2",
+			"~26.2"
+		],
+		"java": ">=25",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"jade": "*",
+		"litematica": "*"
+	}
+}

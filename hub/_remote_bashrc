@@ -1,0 +1,18 @@
+# Minimal .bashrc — do NOT auto-load nvm (forks too many processes).
+# Do NOT autostart hub on every login (that filled the process limit).
+
+# Interactive safety
+case $- in
+  *i*) ;;
+  *) return ;;
+esac
+
+# Optional: load nvm only when you type: loadnvm
+loadnvm() {
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+}
+
+# Hub: start manually only
+#   cd ~/chestmemory-hub && bash start.sh
