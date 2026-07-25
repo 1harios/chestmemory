@@ -109,6 +109,27 @@ public final class LitematicaCompat {
 			}
 		}
 
+		// Decide once for the whole list whether countMissing can be trusted.
+		// It is 0 for every entry both when the build is finished and when Litematica has
+		// not refreshed the list yet; per-entry we could not tell those apart, but across
+		// the list we can: if nothing is missing anywhere while the schematic clearly has
+		// blocks, the data is stale and the full totals are the safer answer.
+		boolean anyMissing = false;
+		boolean anyTotal = false;
+		for (MaterialListEntry e : entries) {
+			if (e == null) {
+				continue;
+			}
+			if (e.getCountMissing() > 0) {
+				anyMissing = true;
+				break;
+			}
+			if (e.getCountTotal() > 0) {
+				anyTotal = true;
+			}
+		}
+		boolean useMissingCounts = anyMissing || !anyTotal;
+
 		Map<String, MaterialNeed> merged = new LinkedHashMap<>();
 		for (MaterialListEntry entry : entries) {
 			if (entry == null) {
@@ -123,7 +144,12 @@ public final class LitematicaCompat {
 			}
 			// Distinct enchanted books / gear by enchantments
 			String key = com.chestmemory.client.data.ItemStackKeys.keyOf(stack);
-			int total = Math.max(0, entry.getCountTotal());
+			int schematicTotal = Math.max(0, entry.getCountTotal());
+			int stillNeeded = Math.max(0, entry.getCountMissing());
+			// See useMissingCounts: countMissing excludes blocks already placed, which is
+			// what a half-built schematic actually needs — but only when the list has
+			// been refreshed. Otherwise fall back to the full schematic total.
+			int total = useMissingCounts ? Math.min(stillNeeded, schematicTotal) : schematicTotal;
 			if (total <= 0) {
 				continue;
 			}
