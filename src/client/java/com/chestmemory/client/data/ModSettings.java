@@ -60,6 +60,8 @@ public final class ModSettings {
 
 	// --- Gather / scheme display ---
 	private boolean showGatherHud = true;
+	/** HUD corner: 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right. */
+	private int gatherHudCorner = 0;
 	/** Chat announcements when advancing gather queue. */
 	private boolean gatherChatMessages = true;
 	/** Auto-advance to next item when inventory has enough. */
@@ -476,6 +478,16 @@ public final class ModSettings {
 	}
 
 	// --- Gather ---
+
+	/** 0 = top-left, 1 = top-right, 2 = bottom-left, 3 = bottom-right. */
+	public int gatherHudCorner() {
+		return Math.max(0, Math.min(3, gatherHudCorner));
+	}
+
+	public void cycleGatherHudCorner() {
+		this.gatherHudCorner = (gatherHudCorner() + 1) % 4;
+		save();
+	}
 
 	public boolean showGatherHud() {
 		return showGatherHud;

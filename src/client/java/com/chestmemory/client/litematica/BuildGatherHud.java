@@ -46,6 +46,10 @@ public final class BuildGatherHud {
 		if (com.chestmemory.client.util.ClientScreens.get(client) != null) {
 			return;
 		}
+		// F3 fills the same corners with vanilla debug text; stay out of its way.
+		if (client.getDebugOverlay() != null && client.getDebugOverlay().showDebugScreen()) {
+			return;
+		}
 
 		List<BuildGatherSession.HudLine> lines = BuildGatherSession.hudLines();
 		BuildGatherSession.HudLine current = null;
@@ -169,6 +173,23 @@ public final class BuildGatherHud {
 		));
 
 		int boxH = PAD_Y * 2 + rows.size() * LINE_H + 2;
+
+		// Place in the configured corner. The HUD used to be nailed to the top-left,
+		// where it fought with the F3 overlay and with other mods' HUDs.
+		int screenW = graphics.guiWidth();
+		int screenH = graphics.guiHeight();
+		switch (ModSettings.get().gatherHudCorner()) {
+			case 1 -> x = screenW - BOX_W - BOX_X;
+			case 2 -> y = screenH - boxH - 8;
+			case 3 -> {
+				x = screenW - BOX_W - BOX_X;
+				y = screenH - boxH - 8;
+			}
+			default -> {
+				// top-left, as before
+			}
+		}
+
 		// Soft background, single thin border (accent from settings)
 		graphics.fill(x, y, x + BOX_W, y + boxH, 0xC0121218);
 		graphics.fill(x, y, x + BOX_W, y + 1, accent);

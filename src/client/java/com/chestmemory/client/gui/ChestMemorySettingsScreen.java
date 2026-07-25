@@ -184,6 +184,13 @@ public class ChestMemorySettingsScreen extends Screen {
 			() -> ModSettings.get().toggleShowGatherHud(),
 			null);
 		y = addToggle(y, rowH, gap,
+			() -> Component.translatable(
+				"screen.chestmemory.settings.hud_corner",
+				Component.translatable(hudCornerKey(ModSettings.get().gatherHudCorner()))
+			),
+			() -> ModSettings.get().cycleGatherHudCorner(),
+			null);
+		y = addToggle(y, rowH, gap,
 			() -> Component.translatable(ModSettings.get().gatherChatMessages()
 				? "screen.chestmemory.settings.chat_on"
 				: "screen.chestmemory.settings.chat_off"),
@@ -235,6 +242,15 @@ public class ChestMemorySettingsScreen extends Screen {
 	}
 
 	/** Section title aligned with button column; tight spacing to first button. */
+	private static String hudCornerKey(int corner) {
+		return switch (corner) {
+			case 1 -> "screen.chestmemory.settings.corner.top_right";
+			case 2 -> "screen.chestmemory.settings.corner.bottom_left";
+			case 3 -> "screen.chestmemory.settings.corner.bottom_right";
+			default -> "screen.chestmemory.settings.corner.top_left";
+		};
+	}
+
 	private int addSection(int y, String titleKey) {
 		sectionMarkers.add(new SectionMark(y, titleKey));
 		// Title ~10px high, then 2px before buttons (same left as buttons)
