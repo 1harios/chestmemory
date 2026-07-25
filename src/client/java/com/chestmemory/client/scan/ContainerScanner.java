@@ -195,10 +195,15 @@ public final class ContainerScanner {
 		for (int i = 0; i < inv.getContainerSize(); i++) {
 			ItemStack stack = inv.getItem(i);
 			if (stack.isEmpty() || !isShulkerStack(stack)) {
+				// Slot holds no shulker now. Any record left from a previous scan is stale:
+				// moving a shulker between slots used to leave a duplicate behind, and
+				// emptying the slot left a phantom whose contents kept being counted.
+				ChestMemoryStorage.get().forget("virtual|inv_shulker_" + i);
 				continue;
 			}
 			ItemContainerContents contents = stack.get(DataComponents.CONTAINER);
 			if (contents == null) {
+				ChestMemoryStorage.get().forget("virtual|inv_shulker_" + i);
 				continue;
 			}
 
