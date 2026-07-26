@@ -256,7 +256,7 @@ public final class ClanSessionManager {
 						// ended up sharing one warehouse. The host marks a chest for this build.
 						com.chestmemory.client.data.StagingPickMode.stopQuiet();
 						ChestMemoryStorage.get().clearStaging();
-						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed());
+						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed(), session.hostName);
 						ModSettings.get().setClanActiveCode(session.code);
 						chat(mc, Component.translatable("message.chestmemory.clan_created", session.code));
 						// Also paste-friendly line
@@ -337,7 +337,7 @@ public final class ClanSessionManager {
 						com.chestmemory.client.data.StagingPickMode.stopQuiet();
 						ChestMemoryStorage.get().clearStaging();
 						applyClanStagingKeys(session);
-						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed());
+						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed(), session.hostName);
 						ModSettings.get().setClanActiveCode(session.code);
 						chat(mc, Component.translatable("message.chestmemory.clan_joined", session.code));
 						if (session.stagingKeys != null && !session.stagingKeys.isEmpty()) {

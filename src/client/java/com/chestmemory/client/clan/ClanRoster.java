@@ -50,7 +50,7 @@ public final class ClanRoster {
 	 * @param delivered items delivered as of the last time we saw this session
 	 * @param need     items required as of the last time we saw this session
 	 */
-	public record Entry(String code, String label, int delivered, int need) {
+	public record Entry(String code, String label, int delivered, int need, String host, long seenAt) {
 		public int percent() {
 			return need > 0 ? (int) (100L * delivered / need) : 0;
 		}
@@ -67,14 +67,28 @@ public final class ClanRoster {
 			if (raw == null || raw.isBlank()) {
 				continue;
 			}
-			String[] parts = raw.split("\\|", 4);
+			// Two fields were added later, so anything shorter is an older entry and simply
+			// has no host or timestamp — reading it must not throw those entries away.
+			String[] parts = raw.split("\\|", 6);
 			String code = normalize(parts[0]);
 			if (code.isEmpty()) {
 				continue;
 			}
 			int delivered = parts.length > 2 ? parseInt(parts[2]) : 0;
 			int need = parts.length > 3 ? parseInt(parts[3]) : 0;
-			known.put(code, new Entry(code, parts.length > 1 ? parts[1] : "", delivered, need));
+			String host = parts.length > 4 ? parts[4] : "";
+			long seen = parts.length > 5 ? parseLong(parts[5]) : 0L;
+			known.put(code, new Entry(
+				code, parts.length > 1 ? parts[1] : "", delivered, need, host, seen
+			));
+		}
+	}
+
+	private static long parseLong(String s) {
+		try {
+			return Math.max(0L, Long.parseLong(s.trim()));
+		} catch (NumberFormatException e) {
+			return 0L;
 		}
 	}
 
@@ -93,13 +107,21 @@ public final class ClanRoster {
 	private static void persist() {
 		List<String> out = new ArrayList<>(known.size());
 		for (Entry e : known.values()) {
-			out.add(e.code() + "|" + e.label().replace('|', ' ') + "|" + e.delivered() + "|" + e.need());
+			out.add(e.code() + "|" + e.label().replace('|', ' ') + "|" + e.delivered()
+				+ "|" + e.need() + "|" + e.host().replace('|', ' ') + "|" + e.seenAt());
 		}
 		ModSettings.get().setClanKnownCodes(out);
 	}
 
 	/** Remember a gather, or refresh what we know about it. Newest entries sort first. */
 	public static void remember(@Nullable String code, @Nullable String label, int delivered, int need) {
+		remember(code, label, delivered, need, null);
+	}
+
+	/** Remember a gather along with who runs it, so the list can say more than a code. */
+	public static void remember(
+		@Nullable String code, @Nullable String label, int delivered, int need, @Nullable String host
+	) {
 		String key = normalize(code);
 		if (key.isEmpty()) {
 			return;
@@ -109,7 +131,12 @@ public final class ClanRoster {
 		String name = label != null && !label.isBlank()
 			? label
 			: (prev != null ? prev.label() : "");
-		known.put(key, new Entry(key, name, delivered, need));
+		// Keep what we knew when the new call cannot say: a poll refreshing progress must
+		// not erase the host recorded when the gather was joined.
+		String owner = host != null && !host.isBlank()
+			? host
+			: (prev != null ? prev.host() : "");
+		known.put(key, new Entry(key, name, delivered, need, owner, System.currentTimeMillis()));
 		// Re-insert to the front by rebuilding: LinkedHashMap keeps insertion order, and the
 		// most recently touched gather is the one the player cares about.
 		while (known.size() > MAX_REMEMBERED) {
