@@ -600,6 +600,9 @@ public final class ChestMemoryStorage {
 
 		ContainerRecord record = new ContainerRecord(finalType, dimension, canonical.getX(), canonical.getY(), canonical.getZ());
 		record.setItems(items);
+		// Stamp the world, so a multiworld server's two Nethers can be told apart later even
+		// though both report minecraft:the_nether.
+		record.setWorldTag(WorldFingerprint.current(Minecraft.getInstance()));
 		record.setDoubleChest(dbl);
 		if (other != null) {
 			// Always store the other half relative to canonical for full glow
@@ -1400,6 +1403,14 @@ public final class ChestMemoryStorage {
 		if (playerDimension != null && record.dimension() != null
 			&& !playerDimension.equals(record.dimension())
 			&& !record.isVirtual()) {
+			return false;
+		}
+		// Matching dimension ids are not enough on a multiworld server: the farm world's
+		// Nether and the build world's Nether are both minecraft:the_nether, so a chest at
+		// these coordinates in the other world would otherwise be reported as "nearby".
+		if (!record.isVirtual()
+			&& WorldFingerprint.provablyDifferent(
+				WorldFingerprint.current(Minecraft.getInstance()), record.worldTag())) {
 			return false;
 		}
 		double dist = distanceTo(record, playerPos, playerDimension);

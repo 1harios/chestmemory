@@ -494,6 +494,13 @@ public final class ChestHighlighter {
 		if (!record.isWorldBlock() || client.level == null || !client.level.isLoaded(pos)) {
 			return false;
 		}
+		// On a multiworld server the same coordinates exist in another world's Nether. Do not
+		// judge a record that belongs to a world we are not standing in — and do not draw it
+		// either; the caller skips whatever this returns true for.
+		if (com.chestmemory.client.data.WorldFingerprint.provablyDifferent(
+			com.chestmemory.client.data.WorldFingerprint.of(client.level), record.worldTag())) {
+			return true;
+		}
 		if (isContainerBlockAt(client, pos)) {
 			return false;
 		}

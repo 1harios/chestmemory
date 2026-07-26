@@ -14,6 +14,16 @@ public final class ContainerRecord {
 	private int y;
 	private int z;
 	private String dimension;
+	/**
+	 * Which world this was seen in, when the dimension id alone cannot say.
+	 * <p>
+	 * A multiworld server gives every world the same vanilla dimension keys, so a farm
+	 * world's Nether and a build world's Nether both arrive as {@code minecraft:the_nether}.
+	 * See {@link WorldFingerprint}. Null on records written before this field existed and on
+	 * servers that offer nothing to fingerprint with, so callers must read null as "unknown",
+	 * never as "different".
+	 */
+	private String worldTag;
 	/** Optional virtual id for non-world containers (ender chest, inventory shulkers). */
 	private String virtualId;
 	/** item id -> total count */
@@ -48,6 +58,15 @@ public final class ContainerRecord {
 		ContainerRecord record = new ContainerRecord(type, dimension, 0, 0, 0);
 		record.virtualId = virtualId;
 		return record;
+	}
+
+	/** Fingerprint of the world this was seen in, or null when unknown. */
+	public String worldTag() {
+		return worldTag;
+	}
+
+	public void setWorldTag(String worldTag) {
+		this.worldTag = worldTag;
 	}
 
 	public String type() {

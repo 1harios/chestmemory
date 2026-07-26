@@ -80,12 +80,19 @@ public final class ContainerVerifier {
 		}
 		String dimension = ChestMemoryStorage.dimensionId(level);
 		BlockPos me = client.player.blockPosition();
+		String here = com.chestmemory.client.data.WorldFingerprint.of(level);
 
 		List<ContainerRecord> gone = new ArrayList<>();
 		List<String> stillHere = new ArrayList<>();
 
 		for (ContainerRecord record : ChestMemoryStorage.get().liveWorldBlockRecords()) {
 			if (!dimension.equals(record.dimension())) {
+				continue;
+			}
+			// A multiworld server reports the same dimension id for every world's Nether, so
+			// a matching id is not proof we are in the world this chest was seen in. Standing
+			// in the farm Nether must not delete a chest remembered in the build Nether.
+			if (com.chestmemory.client.data.WorldFingerprint.provablyDifferent(here, record.worldTag())) {
 				continue;
 			}
 			BlockPos pos = new BlockPos(record.x(), record.y(), record.z());
