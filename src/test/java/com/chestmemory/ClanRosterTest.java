@@ -131,7 +131,12 @@ class ClanRosterTest {
 			int sw = body.indexOf("public static void switchToAsync(");
 			assertTrue(sw > 0, "switchToAsync not found");
 			String method = body.substring(sw, body.indexOf("\n\tpublic static", sw + 10));
-			assertTrue(method.contains("clearStaging()"), "warehouse marks belong to one gather");
+			// The warehouse handover lives on the join success path that switching delegates
+			// to. Tearing it down before the request meant a failed switch unmarked the
+			// player's chest and gave nothing back.
+			int join = body.indexOf("public static void joinAsync(");
+			String joinBody = body.substring(join, body.indexOf("\n\tpublic ", join + 10));
+			assertTrue(joinBody.contains("clearStaging()"), "warehouse marks belong to one gather");
 			// The feed is deliberately NOT cleared here any more. Clearing on every switch —
 			// and a portal rejoin counts as one — meant activity was never readable, which is
 			// what the user reported. Entries name the item and the player, so a few lines
@@ -142,7 +147,7 @@ class ClanRosterTest {
 			);
 			assertTrue(method.contains("joinAsync("), "switching reuses join, which the hub treats as idempotent");
 			assertTrue(
-				method.contains("BuildGatherSession.clear()"),
+				body.contains("if (differentGather) {") && body.contains("BuildGatherSession.clear()"),
 				"the local queue belongs to the schematic being left behind"
 			);
 		}

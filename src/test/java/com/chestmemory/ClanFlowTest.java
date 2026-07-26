@@ -111,10 +111,22 @@ class ClanFlowTest {
 			// Without this the panel listed one schematic's materials while the session
 			// described another: old items looked claimed, and clicking a new one made the hub
 			// answer "unknown item".
-			String body = methodBody(read(CLAN), "public static void switchToAsync(");
+			//
+			// The reset now happens when the new gather ARRIVES, not when the switch is
+			// requested: doing it up front left a slow or failed switch with no gather at all,
+			// which is what made switching feel like a freeze followed by a jump. This test
+			// asks that the queue is dropped on a real change of gather, wherever that lives.
+			String src = read(CLAN);
 			assertTrue(
-				body.contains("BuildGatherSession.clear()"),
+				src.contains("if (differentGather) {")
+					&& src.contains("BuildGatherSession.clear()"),
 				"the queue belongs to the schematic being left behind"
+			);
+			assertTrue(
+				src.contains("boolean differentGather = previous != null")
+					&& src.contains("!previous.code.equalsIgnoreCase(res.value.code)"),
+				"and it must only be dropped when the gather actually changed — re-joining the "
+					+ "same one after a portal must not wipe the queue"
 			);
 		}
 
@@ -131,8 +143,16 @@ class ClanFlowTest {
 		@Test
 		@DisplayName("The warehouse is still handed over")
 		void switchHandsOverWarehouse() throws Exception {
-			String body = methodBody(read(CLAN), "public static void switchToAsync(");
+			// Handled on the join success path, which switching goes through — so this checks
+			// the behaviour rather than the line's location.
+			String src = read(CLAN);
+			int join = src.indexOf("public static void joinAsync(");
+			String body = src.substring(join, src.indexOf("\n\tpublic ", join + 10));
 			assertTrue(body.contains("clearStaging()"), "one gather's drop-off is not another's");
+			assertTrue(
+				body.contains("applyClanStagingKeys(session)"),
+				"and the new gather's own warehouse has to be adopted"
+			);
 		}
 	}
 
