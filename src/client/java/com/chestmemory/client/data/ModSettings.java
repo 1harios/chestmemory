@@ -76,6 +76,16 @@ public final class ModSettings {
 	private String clanHubUrl = "";
 	/** Optional shared clan token (header X-Clan-Token). */
 	private String clanToken = "";
+	/**
+	 * Gathers this player knows about, as "CODE|label|delivered|need".
+	 * <p>
+	 * A clan runs several builds at once, so the client has to remember more than the one it
+	 * is currently following — otherwise joining the second gather loses the first.
+	 * See {@link com.chestmemory.client.clan.ClanRoster}.
+	 */
+	private java.util.List<String> clanKnownCodes = new java.util.ArrayList<>();
+	/** Code of the gather currently being followed, or empty. */
+	private String clanActiveCode = "";
 
 	// --- Deferred save (transient: never serialized by Gson) ---
 	/** Pending unsaved changes. */
@@ -545,6 +555,24 @@ public final class ModSettings {
 
 	public void setClanHubUrl(String url) {
 		this.clanHubUrl = url == null ? "" : url.trim();
+		save();
+	}
+
+	public java.util.List<String> clanKnownCodes() {
+		return clanKnownCodes == null ? java.util.List.of() : java.util.List.copyOf(clanKnownCodes);
+	}
+
+	public void setClanKnownCodes(java.util.List<String> codes) {
+		this.clanKnownCodes = codes == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(codes);
+		save();
+	}
+
+	public String clanActiveCode() {
+		return clanActiveCode == null ? "" : clanActiveCode.trim();
+	}
+
+	public void setClanActiveCode(String code) {
+		this.clanActiveCode = code == null ? "" : code.trim();
 		save();
 	}
 

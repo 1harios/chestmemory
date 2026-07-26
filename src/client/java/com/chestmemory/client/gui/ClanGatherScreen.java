@@ -29,10 +29,12 @@ public class ClanGatherScreen extends Screen {
 	private static final int TAB_GATHER = 0;
 	private static final int TAB_MEMBERS = 1;
 	private static final int TAB_FEED = 2;
+	private static final int TAB_LIST = 3;
 	private static final String[] TAB_KEYS = {
 		"screen.chestmemory.clan.tab_gather",
 		"screen.chestmemory.clan.tab_members",
-		"screen.chestmemory.clan.tab_feed"
+		"screen.chestmemory.clan.tab_feed",
+		"screen.chestmemory.clan.tab_list"
 	};
 
 	private final Screen parent;
@@ -49,6 +51,10 @@ public class ClanGatherScreen extends Screen {
 	private int tabsY = -1;
 	private int tabsLeft;
 	private int tabsWidth;
+	/** Gather-list geometry, filled while rendering so clicks can be mapped to a code. */
+	private int listRowsTop = -1;
+	private int listRowH = 22;
+	private java.util.List<String> listCodes = java.util.List.of();
 	private int panelLeft;
 	private int panelTop;
 	private int panelW;
@@ -123,6 +129,51 @@ public class ClanGatherScreen extends Screen {
 			this.tabsWidth = w;
 			this.tabsY = y;
 			y += 20;
+			if (this.tab == TAB_LIST) {
+				// Gathers tab: start another build or join one by code, without leaving the
+				// gather being followed right now.
+				int halfL = (w - gap) / 2;
+				int rowTop = this.panelTop + this.panelH - 48;
+				this.addRenderableWidget(new SettingRowButton(
+					left, rowTop, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.create_more"),
+					() -> {
+						if (this.minecraft == null) {
+							return;
+						}
+						if (!LitematicaAccess.hasActiveMaterialList()) {
+							this.status = Component.translatable("screen.chestmemory.status.litematica_no_list").getString();
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.createAsync(this.minecraft, this::rebuildWidgets);
+					}
+				));
+				this.codeBox = new EditBox(
+					this.font, left + halfL + gap, rowTop, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.code")
+				);
+				this.codeBox.setMaxLength(16);
+				this.codeBox.setHint(Component.literal("CM-XXXX"));
+				this.addRenderableWidget(this.codeBox);
+				this.addRenderableWidget(new SettingRowButton(
+					left, this.panelTop + this.panelH - 26, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.join"),
+					() -> {
+						if (this.minecraft == null || this.codeBox == null) {
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.switchToAsync(this.minecraft, this.codeBox.getValue(), this::rebuildWidgets);
+					}
+				));
+				this.addRenderableWidget(new SettingRowButton(
+					left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.back"),
+					this::onClose
+				));
+				return;
+			}
 			if (this.tab != TAB_GATHER) {
 				// Members / feed tabs: no controls, just the back row at the bottom.
 				this.addRenderableWidget(new SettingRowButton(
@@ -245,6 +296,14 @@ public class ClanGatherScreen extends Screen {
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
 		// Tabs are painted, not widgets, so they are hit-tested here — before the default
 		// handling, which would otherwise swallow the click on the panel background.
+		String pick = gatherAt(event.x(), event.y());
+		if (pick != null) {
+			if (this.minecraft != null) {
+				this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+				ClanSessionManager.switchToAsync(this.minecraft, pick, this::rebuildWidgets);
+			}
+			return true;
+		}
 		int t = tabAt(event.x(), event.y());
 		if (t >= 0) {
 			if (t != this.tab) {
@@ -255,6 +314,32 @@ public class ClanGatherScreen extends Screen {
 			return true;
 		}
 		return super.mouseClicked(event, doubleClick);
+	}
+
+	/**
+	 * Code of the gather row under the cursor, or null.
+	 * <p>
+	 * Rows are painted rather than built as widgets, so clicks are mapped from the geometry
+	 * recorded during the last render.
+	 */
+	private @org.jspecify.annotations.Nullable String gatherAt(double mx, double my) {
+		if (this.tab != TAB_LIST || this.listRowsTop < 0 || this.listCodes.isEmpty()) {
+			return null;
+		}
+		if (mx < this.tabsLeft || mx > this.tabsLeft + this.tabsWidth) {
+			return null;
+		}
+		int idx = (int) ((my - this.listRowsTop) / Math.max(1, this.listRowH));
+		if (idx < 0 || idx >= this.listCodes.size()) {
+			return null;
+		}
+		// Guard the gap between rows: a click in the 2px seam should do nothing rather than
+		// switch a gather the player was not aiming at.
+		int rowTop = this.listRowsTop + idx * this.listRowH;
+		if (my > rowTop + 20) {
+			return null;
+		}
+		return this.listCodes.get(idx);
 	}
 
 	/** Tab index under the cursor, or -1. */
@@ -328,6 +413,7 @@ public class ClanGatherScreen extends Screen {
 				switch (this.tab) {
 					case TAB_MEMBERS -> drawMembers(graphics, s, left, contentW);
 					case TAB_FEED -> drawFeed(graphics, left, contentW);
+					case TAB_LIST -> drawGatherList(graphics, s, left, contentW);
 					default -> drawGatherSummary(graphics, s, left, centerX, contentW);
 				}
 			}
@@ -545,6 +631,78 @@ public class ClanGatherScreen extends Screen {
 				ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
 			);
 			y += lineH;
+		}
+	}
+
+	/**
+	 * Gathers tab: every gather this player knows about, with the active one marked.
+	 * <p>
+	 * Click a row to follow it instead. Only the active gather is polled, so this list shows
+	 * the progress last seen for the others rather than live numbers — following all of them
+	 * would multiply request volume by the number of gathers.
+	 */
+	private void drawGatherList(
+		GuiGraphicsExtractor graphics,
+		ClanSession current,
+		int left,
+		int contentW
+	) {
+		int y = this.tabsY + 22;
+		// This tab carries two rows of buttons at the bottom (new gather / join / back), so the
+		// list has to stop above them — the shared "panelH - 32" would run underneath.
+		int bottom = this.panelTop + this.panelH - 52;
+		int rowH = 20;
+
+		List<com.chestmemory.client.clan.ClanRoster.Entry> entries =
+			com.chestmemory.client.clan.ClanRoster.all();
+		this.listRowsTop = y;
+		this.listRowH = rowH + 2;
+		this.listCodes = new java.util.ArrayList<>();
+
+		if (entries.isEmpty()) {
+			graphics.text(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.no_gathers").getString(),
+				left, y, ChestGuiStyle.TEXT_BODY, false
+			);
+			return;
+		}
+
+		for (com.chestmemory.client.clan.ClanRoster.Entry e : entries) {
+			if (y + rowH > bottom) {
+				break;
+			}
+			boolean active = current != null && e.code().equalsIgnoreCase(current.code);
+			// Active gather gets the gold marker; the rest read as available to switch to.
+			int accent = active ? ChestGuiStyle.LATCH : ChestGuiStyle.WOOD_LIGHT;
+			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, !active);
+
+			String name = (active ? "▶ " : "") + e.code();
+			String right = e.need() > 0
+				? Component.translatable("screen.chestmemory.clan.list_progress", e.percent()).getString()
+				: "";
+			int rightW = right.isEmpty() ? 0 : this.font.width(right);
+			int textY = y + (rowH - this.font.lineHeight) / 2 + 1;
+
+			// Schematic name under the code when there is room, so two gathers are told apart
+			// by what they build, not only by their code.
+			String label = e.label();
+			String main = label.isBlank() ? name : name + " · " + label;
+			graphics.text(
+				this.font,
+				ChestGuiStyle.ellipsize(this.font, main, contentW - rightW - 16),
+				left + 7, textY,
+				active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
+				false
+			);
+			if (rightW > 0) {
+				graphics.text(
+					this.font, right, left + contentW - 6 - rightW, textY,
+					active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+				);
+			}
+			this.listCodes.add(e.code());
+			y += rowH + 2;
 		}
 	}
 

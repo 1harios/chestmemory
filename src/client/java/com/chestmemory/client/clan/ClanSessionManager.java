@@ -146,6 +146,8 @@ public final class ClanSessionManager {
 						lastPollMillis = System.currentTimeMillis();
 						// Upload existing warehouse marks so clan sees drop-off
 						pushStagingKeysAsync(mc, true);
+						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed());
+						ModSettings.get().setClanActiveCode(session.code);
 						chat(mc, Component.translatable("message.chestmemory.clan_created", session.code));
 						// Also paste-friendly line
 						chat(mc, Component.translatable("message.chestmemory.clan_code_line", session.code));
@@ -204,6 +206,8 @@ public final class ClanSessionManager {
 						applyClanStagingKeys(session);
 						// Merge our local warehouse marks into clan list
 						pushStagingKeysAsync(mc, false);
+						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed());
+						ModSettings.get().setClanActiveCode(session.code);
 						chat(mc, Component.translatable("message.chestmemory.clan_joined", session.code));
 						if (session.stagingKeys != null && !session.stagingKeys.isEmpty()) {
 							chat(mc, Component.translatable(
@@ -228,6 +232,51 @@ public final class ClanSessionManager {
 				});
 			}
 		});
+	}
+
+	/**
+	 * Follow a different gather without leaving it.
+	 * <p>
+	 * A clan runs several builds at once, and a member moves between them: help with the farm
+	 * for an hour, then switch to the house. This is not the same as leaving and re-joining —
+	 * your claims in the other gather stay yours, and the hub keeps its progress.
+	 * <p>
+	 * Exactly one gather is followed at a time, and switching has to hand over the things that
+	 * only make sense for one of them:
+	 * <ul>
+	 *   <li>the warehouse marks, or the farm's drop-off chest would glow during the house
+	 *       build;</li>
+	 *   <li>the activity feed, which describes one gather;</li>
+	 *   <li>the gather target, since the new build needs different materials.</li>
+	 * </ul>
+	 * Polling also follows the active gather only: it runs every 3s, so following every known
+	 * gather would multiply request volume, and the hub counts a session poll in its tightest
+	 * rate-limit bucket.
+	 */
+	public static void switchToAsync(Minecraft mc, String rawCode, @Nullable Runnable onDone) {
+		String code = ClanCodes.normalize(rawCode);
+		if (!ClanCodes.isValid(code)) {
+			fail("bad_code", mc);
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (session != null && code.equalsIgnoreCase(session.code)) {
+			// Already following it — nothing to do, and re-joining would be a pointless request.
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		// Drop what belonged to the previous gather before the new one arrives, so a failed
+		// switch cannot leave the old warehouse glowing under the new build's name.
+		com.chestmemory.client.data.StagingPickMode.stop(false);
+		ChestMemoryStorage.get().clearStaging();
+		ClanEventLog.clear();
+		// join is idempotent on the hub: a member who is already in the session just gets the
+		// current snapshot back, so this doubles as "switch to".
+		joinAsync(mc, code, onDone);
 	}
 
 	public static void leaveAsync(Minecraft mc, @Nullable Runnable onDone) {
@@ -257,6 +306,12 @@ public final class ClanSessionManager {
 			}
 			mc.execute(() -> {
 				busy.set(false);
+				// Leaving drops this gather from the list; the others stay so the player can
+				// switch back to them.
+				ClanRoster.forget(code);
+				if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
+					ModSettings.get().setClanActiveCode("");
+				}
 				session = null;
 				lastError = null;
 				ClanEventLog.clear();
@@ -516,6 +571,11 @@ public final class ClanSessionManager {
 						// open the screen, but not worth a chat line every few seconds.
 						recordMemberDiffs(prev, session);
 						recordDeliveryDiffs(prev, session);
+						// Keep the switcher's progress numbers current for the active gather.
+						ClanRoster.remember(
+							session.code, session.schemaName,
+							session.totalDelivered(), session.totalNeed()
+						);
 					});
 				} else if (res.status == 401) {
 					// Session token expired or the hub restarted: re-run the handshake once
@@ -527,6 +587,10 @@ public final class ClanSessionManager {
 					// anywhere in the error also fired on proxy/tunnel HTML error pages, so a
 					// transient gateway hiccup silently dropped everyone out of the session.
 					mc.execute(() -> {
+						ClanRoster.forget(code);
+						if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
+							ModSettings.get().setClanActiveCode("");
+						}
 						session = null;
 						ClanEventLog.clear();
 						// The host ended the gather: the shared warehouse is no longer a
