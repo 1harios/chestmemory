@@ -240,6 +240,50 @@ public final class ChestGuiStyle {
 		graphics.fill(x + 1, y + 1, x + 3, y + height - 1, accent);
 	}
 
+	/** Hub reachable. */
+	public static final int LAMP_ONLINE = 0xFF5FD068;
+	/** Hub unreachable — the one state a player has to notice. */
+	public static final int LAMP_OFFLINE = 0xFFE0603C;
+	/** Check in flight. */
+	public static final int LAMP_CHECKING = 0xFFE0A83C;
+
+	/**
+	 * Status strip for the hub: a state lamp, a caption and an optional detail on the right.
+	 * <p>
+	 * Replaces a row that looked like a button, did nothing when clicked, and said "hub:
+	 * built in" whether or not anything answered there. A player cannot act on that; they can
+	 * act on "hub unreachable".
+	 *
+	 * @param lamp colour of the state dot — green online, red offline, amber checking
+	 */
+	public static void drawStatusStrip(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		int x,
+		int y,
+		int width,
+		int height,
+		String label,
+		@org.jspecify.annotations.Nullable String detail,
+		int lamp
+	) {
+		// Flat and recessed: it carries information, so it must not read as pressable.
+		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF2A1B0D);
+		int cy = y + height / 2;
+		// Lamp with a dark rim, so it stays visible against the plank.
+		graphics.fill(x + 6, cy - 4, x + 12, cy + 2, withAlpha(0x000000, 0.45F));
+		graphics.fill(x + 7, cy - 5, x + 11, cy + 1, lamp);
+		int textY = y + (height - font.lineHeight) / 2 + 1;
+		int detailW = detail == null || detail.isBlank() ? 0 : font.width(detail);
+		graphics.text(
+			font, ellipsize(font, label, width - 22 - detailW), x + 17, textY, TEXT_LIGHT, false
+		);
+		if (detailW > 0) {
+			graphics.text(font, detail, x + width - 7 - detailW, textY, TEXT_ON_WOOD_MUTED, false);
+		}
+	}
+
 	/**
 	 * Small coloured dot used by the activity feed to mark the kind of event, so the list is
 	 * scannable at a glance instead of being a wall of sentences.

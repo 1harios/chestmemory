@@ -63,6 +63,82 @@ public final class ClanSessionManager {
 		return busy.get();
 	}
 
+	/** Result of the last hub reachability check. */
+	public enum HubState {
+		/** Never checked, or a check is running. */
+		UNKNOWN,
+		/** The hub answered. */
+		ONLINE,
+		/** The hub could not be reached, or refused the build's token. */
+		OFFLINE
+	}
+
+	private static volatile HubState hubState = HubState.UNKNOWN;
+	private static volatile @Nullable String hubError;
+	private static long lastHealthMillis;
+	private static final AtomicBoolean healthBusy = new AtomicBoolean(false);
+
+	public static HubState hubState() {
+		return hubState;
+	}
+
+	/** Drop the 15s throttle, so a manual retry actually reaches the hub. */
+	public static void forceHubRecheck() {
+		lastHealthMillis = 0L;
+		hubState = HubState.UNKNOWN;
+	}
+
+	/** Why the hub is unreachable, when it is. */
+	public static @Nullable String hubError() {
+		return hubError;
+	}
+
+	/**
+	 * Check that the hub answers, at most once every 15s.
+	 * <p>
+	 * The clan screen used to claim "hub: built in" whether or not anything was actually
+	 * there, so a dead hub looked identical to a working one and the first sign of trouble
+	 * was a failed create. This runs off the health endpoint, which needs no session.
+	 * <p>
+	 * Deliberately on its own flag rather than {@code busy}: a status check must never block
+	 * a real request, nor be blocked by one.
+	 */
+	public static void checkHubAsync(Minecraft mc, @Nullable Runnable onDone) {
+		if (!client().isConfigured()) {
+			hubState = HubState.OFFLINE;
+			hubError = "no_hub";
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		long now = System.currentTimeMillis();
+		if (hubState != HubState.UNKNOWN && now - lastHealthMillis < 15_000L) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!healthBusy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		lastHealthMillis = now;
+		IO.execute(() -> {
+			var res = client().health();
+			mc.execute(() -> {
+				healthBusy.set(false);
+				hubState = res.ok ? HubState.ONLINE : HubState.OFFLINE;
+				hubError = res.ok ? null : res.error;
+				if (onDone != null) {
+					onDone.run();
+				}
+			});
+		});
+	}
+
 	private ClanSessionManager() {
 	}
 
