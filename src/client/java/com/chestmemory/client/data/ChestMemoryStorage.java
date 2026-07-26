@@ -557,6 +557,24 @@ public final class ChestMemoryStorage {
 	}
 
 	/**
+	 * Snapshot of the live profile's world-block containers.
+	 * <p>
+	 * A copy, because the caller ({@link com.chestmemory.client.scan.ContainerVerifier})
+	 * removes entries while walking the result, which would otherwise fault the map.
+	 * Virtual records (ender chest, inventory shulkers) are excluded: they have no block in
+	 * the world to verify.
+	 */
+	public synchronized List<ContainerRecord> liveWorldBlockRecords() {
+		List<ContainerRecord> out = new ArrayList<>(liveContainers.size());
+		for (ContainerRecord r : liveContainers.values()) {
+			if (r != null && r.isWorldBlock()) {
+				out.add(r);
+			}
+		}
+		return out;
+	}
+
+	/**
 	 * Store a world-block container under a canonical double-chest key and drop the other half entry.
 	 */
 	public synchronized void rememberBlockContainer(

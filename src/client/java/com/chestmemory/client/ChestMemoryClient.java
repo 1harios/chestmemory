@@ -85,6 +85,9 @@ public class ChestMemoryClient implements ClientModInitializer {
 			.register((handler, client) -> {
 				ChestMemoryStorage.get().saveIfNeeded();
 				com.chestmemory.client.scan.LastInteractTracker.clear();
+				// Strike counts are per world: a position that looked empty here must not
+				// count against a container at the same coordinates on the next server.
+				com.chestmemory.client.scan.ContainerVerifier.reset();
 				// A gather queue belongs to the world it was started in. Carrying it over
 				// showed the previous world's materials against the new world's chests.
 				BuildGatherSession.clear();
@@ -128,6 +131,9 @@ public class ChestMemoryClient implements ClientModInitializer {
 		ChestMemoryStorage.get().ensureLoaded(client);
 		MultiworldTracker.tick(client);
 		ContainerScanner.tick(client);
+		// Drop containers whose block is gone, so a chest someone broke stops counting
+		// toward the item list and stops being highlighted.
+		com.chestmemory.client.scan.ContainerVerifier.tick(client);
 		ChestHighlighter.tick(client);
 		BuildGatherSession.tick(client);
 		com.chestmemory.client.clan.ClanSessionManager.tick(client);

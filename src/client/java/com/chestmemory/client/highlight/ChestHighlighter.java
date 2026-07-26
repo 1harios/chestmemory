@@ -212,6 +212,12 @@ public final class ChestHighlighter {
 			if (dist > ModSettings.get().highlightRenderRange()) {
 				continue;
 			}
+			// A remembered chest that has been broken would otherwise glow around empty air
+			// until the verifier gets to it. Only skip when the chunk is loaded — an unloaded
+			// chunk reads as air on the client, and skipping those would hide good chests.
+			if (isMissingContainer(client, record, pos)) {
+				continue;
+			}
 			AABB box = fullContainerBox(client, record, pos);
 			located.add(new Located(record, pos, dist, box));
 		}
@@ -380,6 +386,11 @@ public final class ChestHighlighter {
 			}
 			// Prefer memory record for double-chest volume
 			ContainerRecord rec = ChestMemoryStorage.get().findLiveByKey(key);
+			// Same guard as the item highlight: a warehouse mark on a chest that no longer
+			// exists should not paint a label in mid-air.
+			if (client.level != null && client.level.isLoaded(pos) && !isContainerBlockAt(client, pos)) {
+				continue;
+			}
 			AABB box = fullContainerBox(client, rec, pos);
 			drawRgbOutline(box, rgb, pulse, true);
 			// Label “Склад” above chest
@@ -470,6 +481,42 @@ public final class ChestHighlighter {
 			return new BlockPos(record.highlightX(), record.highlightY(), record.highlightZ());
 		}
 		return new BlockPos(record.x(), record.y(), record.z());
+	}
+
+	/**
+	 * True when the record points at a block that is no longer a container.
+	 * <p>
+	 * Deliberately conservative: answers false whenever the answer cannot be trusted — a
+	 * virtual record (ender chest has no fixed block), a null level, or an unloaded chunk,
+	 * which reads as air on the client and would otherwise hide every distant chest.
+	 */
+	private static boolean isMissingContainer(Minecraft client, ContainerRecord record, BlockPos pos) {
+		if (!record.isWorldBlock() || client.level == null || !client.level.isLoaded(pos)) {
+			return false;
+		}
+		if (isContainerBlockAt(client, pos)) {
+			return false;
+		}
+		// Half of a double chest can be broken while the other half stands; the record is
+		// keyed on one position, so check its partner before calling it gone.
+		if (record.hasOtherHalf()) {
+			BlockPos other = new BlockPos(record.otherX(), record.otherY(), record.otherZ());
+			return !(client.level.isLoaded(other) && isContainerBlockAt(client, other));
+		}
+		return true;
+	}
+
+	private static boolean isContainerBlockAt(Minecraft client, BlockPos pos) {
+		if (client.level == null) {
+			return false;
+		}
+		var block = client.level.getBlockState(pos).getBlock();
+		return block instanceof ChestBlock
+			|| block instanceof net.minecraft.world.level.block.BarrelBlock
+			|| block instanceof net.minecraft.world.level.block.ShulkerBoxBlock
+			|| block instanceof net.minecraft.world.level.block.EnderChestBlock
+			|| block instanceof net.minecraft.world.level.block.HopperBlock
+			|| block instanceof net.minecraft.world.level.block.DispenserBlock;
 	}
 
 	/**
