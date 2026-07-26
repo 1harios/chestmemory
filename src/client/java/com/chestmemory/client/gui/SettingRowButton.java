@@ -55,7 +55,7 @@ public class SettingRowButton extends AbstractWidget {
 		var font = net.minecraft.client.Minecraft.getInstance().font;
 		int textY = y0 + (this.height - font.lineHeight) / 2 + 1;
 		// Disabled rows keep a legible tone: TEXT_MUTED on the dark row was only 2.6:1.
-		int labelColor = this.active ? ChestGuiStyle.TEXT_LIGHT : 0xFFA89880;
+		int labelColor = this.active ? ChestGuiStyle.TEXT_LIGHT : ChestGuiStyle.TEXT_DISABLED;
 
 		int swatchW = this.swatch != null ? 14 : 0;
 		if (this.value == null && swatchW == 0) {
@@ -70,7 +70,7 @@ public class SettingRowButton extends AbstractWidget {
 			graphics.text(font, label, x0 + 6, textY, labelColor, false);
 			if (valueW > 0) {
 				int vx = x0 + this.width - 6 - swatchW - (swatchW > 0 ? 4 : 0) - valueW;
-				graphics.text(font, valueText, vx, textY, this.active ? ChestGuiStyle.TEXT_GOLD : 0xFFA89880, false);
+				graphics.text(font, valueText, vx, textY, this.active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_DISABLED, false);
 			}
 		}
 

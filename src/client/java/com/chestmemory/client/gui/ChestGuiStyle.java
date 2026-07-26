@@ -118,7 +118,19 @@ public final class ChestGuiStyle {
 	 */
 	public static final int ROW_WOOD = 0xFF33200F;
 	public static final int ROW_WOOD_HOVER = 0xFF432B15;
-	public static final int ROW_WOOD_DISABLED = 0xFF2A2018;
+
+	/**
+	 * A button that cannot be pressed.
+	 * <p>
+	 * The previous tone was another brown, 1.03:1 against ROW_WOOD — invisible, so a dead
+	 * button looked live and players kept clicking it. Wood is deeply saturated (0.71), so
+	 * this drains the colour instead of chasing brightness: near-grey at 0.14 reads as
+	 * "dead" next to warm planks even though it is only 1.26:1 apart in luminance.
+	 */
+	public static final int ROW_WOOD_DISABLED = 0xFF383430;
+
+	/** Caption of a disabled row: 4.9:1 on ROW_WOOD_DISABLED — readable, clearly dimmer. */
+	public static final int TEXT_DISABLED = 0xFFA8A39C;
 
 	/**
 	 * Secondary text on a wooden row. TEXT_MUTED is tuned for the light panel and drops to
@@ -150,8 +162,12 @@ public final class ChestGuiStyle {
 		// Outer edge, then face, then a lighter top rim for a slight bevel
 		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
 		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, fill);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + 2, withAlpha(0xFFFFFF, hovered ? 0.22F : 0.12F));
-		graphics.fill(x + 1, y + height - 2, x + width - 1, y + height - 1, withAlpha(0x000000, 0.25F));
+		if (enabled) {
+			// The bevel is what makes a row look pressable, so a disabled row goes flat —
+			// colour alone is a weak signal, and a flat plate reads as inert immediately.
+			graphics.fill(x + 1, y + 1, x + width - 1, y + 2, withAlpha(0xFFFFFF, hovered ? 0.22F : 0.12F));
+			graphics.fill(x + 1, y + height - 2, x + width - 1, y + height - 1, withAlpha(0x000000, 0.25F));
+		}
 	}
 
 	/**
