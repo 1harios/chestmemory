@@ -267,6 +267,11 @@ public final class BuildGatherSession {
 	 */
 	public static void startQueue(Minecraft client, String first, List<String> orderedIds) {
 		resetState();
+		// Arm the list cache BEFORE reading materials: this is the real entry point for a
+		// gather (setActive is not on this path), and snapshotTotals below already needs the
+		// cache live. Missing this made the portal fix dead code — armed stayed false, so a
+		// world load still emptied the list.
+		MaterialListCache.setArmed(true);
 		snapshotTotals();
 		active = true;
 		phase = GatherPhase.CHESTS;

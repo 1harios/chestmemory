@@ -1,6 +1,5 @@
 package com.chestmemory.client.litematica;
 
-import com.chestmemory.ChestMemoryMod;
 import org.jspecify.annotations.Nullable;
 
 import java.util.List;
@@ -95,7 +94,8 @@ public final class MaterialListCache {
 		return cachedListName;
 	}
 
-	static void debugLog(String what) {
-		ChestMemoryMod.LOGGER.debug("Material list cache: {}", what);
+	/** Visible for tests: true when a gather has armed the cache. */
+	static boolean isArmed() {
+		return armed;
 	}
 }

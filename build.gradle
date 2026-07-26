@@ -46,6 +46,21 @@ dependencies {
 	// Optional Litematica + MaLiLib (build-gather mode; runtime only if installed)
 	compileOnly files("libs/litematica-26.2.jar")
 	compileOnly files("libs/malilib-26.2.jar")
+
+	// Unit tests. Plain JUnit with no Minecraft on the test classpath on purpose: the logic
+	// worth testing (world identity, list caching, claim ordering, key encoding) is pure data
+	// handling, and dragging the game in would make tests slow and brittle.
+	testImplementation platform("org.junit:junit-bom:5.11.3")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+	useJUnitPlatform()
+	testLogging {
+		events "passed", "failed", "skipped"
+		exceptionFormat = "full"
+	}
 }
 
 processResources {
