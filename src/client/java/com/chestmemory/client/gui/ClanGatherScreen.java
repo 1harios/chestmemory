@@ -55,12 +55,50 @@ public class ClanGatherScreen extends Screen {
 	private int tabsWidth;
 	/** Gather-list geometry, filled while rendering so clicks can be mapped to a code. */
 	private int listRowsTop = -1;
+	/**
+	 * Y where the gather list has to stop, set by init() next to the controls it must clear.
+	 * Hard-coding the offset in the drawing code is what let the empty-list caption land on
+	 * top of the buttons.
+	 */
+	private int listBottom = -1;
 	private int listRowH = 22;
 	private java.util.List<String> listCodes = java.util.List.of();
 	private int panelLeft;
 	private int panelTop;
 	private int panelW;
 	private int panelH;
+	/**
+	 * Typed code, kept across widget rebuilds.
+	 * <p>
+	 * init() builds a fresh EditBox every time, so any rebuild — a finished switch, a poll —
+	 * silently erased what the player was typing.
+	 */
+	private String codeDraft = "";
+	/** State the widgets were last built for; a change means their enabled state is stale. */
+	private @org.jspecify.annotations.Nullable String builtForSwitching;
+	private boolean builtForBusy;
+	private @org.jspecify.annotations.Nullable String builtForCode;
+
+	/**
+	 * Rebuild only when something that changes a button's enabled state actually changed.
+	 * <p>
+	 * The screen has no tick of its own, so a switch finishing in the background left every
+	 * button greyed out until the next click. Rebuilding unconditionally is not an option
+	 * either: it recreates the widgets, and doing that 20×/s fights with typing.
+	 */
+	@Override
+	public void tick() {
+		super.tick();
+		String switching = ClanSessionManager.switchingTo();
+		boolean busy = ClanSessionManager.isBusy();
+		ClanSession s = ClanSessionManager.session();
+		String code = s != null ? s.code : null;
+		if (!java.util.Objects.equals(switching, this.builtForSwitching)
+			|| busy != this.builtForBusy
+			|| !java.util.Objects.equals(code, this.builtForCode)) {
+			this.rebuildWidgets();
+		}
+	}
 
 	public ClanGatherScreen(Screen parent) {
 		super(Component.translatable("screen.chestmemory.clan.title"));
@@ -69,6 +107,10 @@ public class ClanGatherScreen extends Screen {
 
 	@Override
 	protected void init() {
+		this.builtForSwitching = ClanSessionManager.switchingTo();
+		this.builtForBusy = ClanSessionManager.isBusy();
+		ClanSession built = ClanSessionManager.session();
+		this.builtForCode = built != null ? built.code : null;
 		this.panelW = ChestGuiStyle.panelWidth(this.width);
 		this.panelH = ChestGuiStyle.panelHeight(this.height);
 		this.panelLeft = (this.width - this.panelW) / 2;
@@ -136,29 +178,44 @@ public class ClanGatherScreen extends Screen {
 				// gather being followed right now.
 				int halfL = (w - gap) / 2;
 				int rowTop = this.panelTop + this.panelH - 48;
-				this.addRenderableWidget(new SettingRowButton(
+				// The list must stop above these two rows of controls. Recorded here, where the
+				// controls are actually placed, so the drawing code cannot drift out of step.
+				this.listBottom = rowTop - 6;
+				boolean switching = ClanSessionManager.switchingTo() != null;
+				// A new gather needs a schematic of its own; the clan's materials belong to the
+				// gather already being followed, so they cannot seed a second one.
+				boolean canCreate = LitematicaAccess.isAvailable()
+					&& com.chestmemory.client.litematica.LitematicaCompat.hasActiveMaterialListSafe();
+				SettingRowButton createBtn = new SettingRowButton(
 					left, rowTop, halfL, rowH,
 					Component.translatable("screen.chestmemory.clan.create_more"),
 					() -> {
 						if (this.minecraft == null) {
 							return;
 						}
-						if (!LitematicaAccess.hasActiveMaterialList()) {
-							this.status = Component.translatable("screen.chestmemory.status.litematica_no_list").getString();
-							return;
-						}
 						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 						ClanSessionManager.createAsync(this.minecraft, this::rebuildWidgets);
 					}
+				);
+				// Grey instead of silently doing nothing: this button used to look live and
+				// answer with an error only after being clicked.
+				createBtn.active = canCreate && !switching;
+				createBtn.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+					canCreate
+						? Component.translatable("screen.chestmemory.clan.create_more_tip")
+						: Component.translatable("screen.chestmemory.clan.create_need_list")
 				));
+				this.addRenderableWidget(createBtn);
 				this.codeBox = new EditBox(
 					this.font, left + halfL + gap, rowTop, halfL, rowH,
 					Component.translatable("screen.chestmemory.clan.code")
 				);
 				this.codeBox.setMaxLength(16);
 				this.codeBox.setHint(Component.literal("CM-XXXX"));
+				this.codeBox.setValue(this.codeDraft);
+				this.codeBox.setResponder(v -> this.codeDraft = v);
 				this.addRenderableWidget(this.codeBox);
-				this.addRenderableWidget(new SettingRowButton(
+				SettingRowButton joinBtn = new SettingRowButton(
 					left, this.panelTop + this.panelH - 26, halfL, rowH,
 					Component.translatable("screen.chestmemory.clan.join"),
 					() -> {
@@ -168,7 +225,9 @@ public class ClanGatherScreen extends Screen {
 						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 						ClanSessionManager.switchToAsync(this.minecraft, this.codeBox.getValue(), this::rebuildWidgets);
 					}
-				));
+				);
+				joinBtn.active = !switching;
+				this.addRenderableWidget(joinBtn);
 				boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
 				if (host) {
 					// Only the creator can end a gather for everyone, and until now there was no way to
@@ -224,6 +283,61 @@ public class ClanGatherScreen extends Screen {
 				// Members / feed describe a session we are not in.
 				this.tab = TAB_LIST;
 			}
+			if (this.tab == TAB_LIST) {
+				// The remembered-gathers list gets the panel body and the controls go to the
+				// bottom. They used to be laid out from the top, straight over the list, so
+				// "Сборов пока нет" was printed across the "Создать сбор" button.
+				int halfL = (w - gap) / 2;
+				int rowTop = this.panelTop + this.panelH - 48;
+				this.listBottom = rowTop - 6;
+				boolean canCreate = LitematicaAccess.hasActiveMaterialList();
+				SettingRowButton createBtn = new SettingRowButton(
+					left, rowTop, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.create"),
+					() -> {
+						saveHubQuiet();
+						if (this.minecraft == null) {
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.createAsync(this.minecraft, this::rebuildWidgets);
+					}
+				);
+				createBtn.active = canCreate;
+				createBtn.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+					canCreate
+						? Component.translatable("screen.chestmemory.clan.create_tip")
+						: Component.translatable("screen.chestmemory.clan.create_need_list")
+				));
+				this.addRenderableWidget(createBtn);
+				this.codeBox = new EditBox(
+					this.font, left + halfL + gap, rowTop, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.code")
+				);
+				this.codeBox.setMaxLength(16);
+				this.codeBox.setHint(Component.literal("CM-XXXX"));
+				this.codeBox.setValue(this.codeDraft);
+				this.codeBox.setResponder(v -> this.codeDraft = v);
+				this.addRenderableWidget(this.codeBox);
+				this.addRenderableWidget(new SettingRowButton(
+					left, this.panelTop + this.panelH - 26, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.join"),
+					() -> {
+						saveHubQuiet();
+						if (this.minecraft == null || this.codeBox == null) {
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.joinAsync(this.minecraft, this.codeBox.getValue(), this::rebuildWidgets);
+					}
+				));
+				this.addRenderableWidget(new SettingRowButton(
+					left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
+					Component.translatable("screen.chestmemory.clan.back"),
+					this::onClose
+				));
+				return;
+			}
 		}
 
 		if (!in) {
@@ -248,6 +362,8 @@ public class ClanGatherScreen extends Screen {
 				Component.translatable("screen.chestmemory.clan.code"));
 			this.codeBox.setMaxLength(16);
 			this.codeBox.setHint(Component.literal("CM-XXXX"));
+			this.codeBox.setValue(this.codeDraft);
+			this.codeBox.setResponder(v -> this.codeDraft = v);
 			this.addRenderableWidget(this.codeBox);
 			y += rowH + gap;
 
@@ -336,6 +452,11 @@ public class ClanGatherScreen extends Screen {
 		// handling, which would otherwise swallow the click on the panel background.
 		String pick = gatherAt(event.x(), event.y());
 		if (pick != null) {
+			if (ClanSessionManager.switchingTo() != null) {
+				// A switch is already running. Queuing a second one is what made rapid
+				// clicking feel unpredictable.
+				return true;
+			}
 			if (this.minecraft != null) {
 				this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 				ClanSessionManager.switchToAsync(this.minecraft, pick, this::rebuildWidgets);
@@ -698,9 +819,9 @@ public class ClanGatherScreen extends Screen {
 		int contentW
 	) {
 		int y = this.tabsY + 22;
-		// This tab carries two rows of buttons at the bottom (new gather / join / back), so the
-		// list has to stop above them — the shared "panelH - 32" would run underneath.
-		int bottom = this.panelTop + this.panelH - 52;
+		// Set by init() from the actual button positions; the old hard-coded offset was right
+		// in a session and wrong outside one, which is how the caption ended up on a button.
+		int bottom = this.listBottom > 0 ? this.listBottom : this.panelTop + this.panelH - 52;
 		int rowH = 20;
 
 		List<com.chestmemory.client.clan.ClanRoster.Entry> entries =
@@ -710,28 +831,45 @@ public class ClanGatherScreen extends Screen {
 		this.listCodes = new java.util.ArrayList<>();
 
 		if (entries.isEmpty()) {
-			graphics.text(
-				this.font,
+			// Centred in the space the list would have used, so it reads as an empty area
+			// rather than a stray line of text sitting on the controls below.
+			ChestGuiStyle.drawCentered(
+				graphics, this.font,
 				Component.translatable("screen.chestmemory.clan.no_gathers").getString(),
-				left, y, ChestGuiStyle.TEXT_BODY, false
+				left + contentW / 2, y + Math.max(0, (bottom - y) / 2 - 8),
+				ChestGuiStyle.TEXT_MUTED
+			);
+			ChestGuiStyle.drawCentered(
+				graphics, this.font,
+				Component.translatable("screen.chestmemory.clan.no_gathers_hint").getString(),
+				left + contentW / 2, y + Math.max(0, (bottom - y) / 2 + 4),
+				ChestGuiStyle.TEXT_ON_WOOD_MUTED
 			);
 			return;
 		}
 
+		String pending = ClanSessionManager.switchingTo();
 		for (com.chestmemory.client.clan.ClanRoster.Entry e : entries) {
 			if (y + rowH > bottom) {
 				break;
 			}
 			boolean active = current != null && e.code().equalsIgnoreCase(current.code);
+			// The row being switched to is marked while the hub answers. Without it the click
+			// produced no visible change at all, and the switch landed as a sudden jump.
+			boolean loading = pending != null && pending.equalsIgnoreCase(e.code());
 			// Active gather gets the gold marker; the rest read as available to switch to.
-			int accent = active ? ChestGuiStyle.LATCH : ChestGuiStyle.WOOD_LIGHT;
-			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, !active);
+			int accent = loading
+				? ChestGuiStyle.TEXT_GOLD
+				: (active ? ChestGuiStyle.LATCH : ChestGuiStyle.WOOD_LIGHT);
+			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, !active && !loading);
 
 			boolean iAmHost = active && this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
 			// Mark ownership: only the creator can delete a gather, so it should be visible
 			// which of them are yours.
-			String name = (active ? "▶ " : "") + (iAmHost ? "★ " : "") + e.code();
-			String right = e.need() > 0
+			String name = (loading ? "» " : active ? "▶ " : "") + (iAmHost ? "★ " : "") + e.code();
+			String right = loading
+				? Component.translatable("screen.chestmemory.clan.switching").getString()
+				: e.need() > 0
 				? Component.translatable("screen.chestmemory.clan.list_progress", e.percent()).getString()
 				: "";
 			int rightW = right.isEmpty() ? 0 : this.font.width(right);
@@ -745,13 +883,13 @@ public class ClanGatherScreen extends Screen {
 				this.font,
 				ChestGuiStyle.ellipsize(this.font, main, contentW - rightW - 16),
 				left + 7, textY,
-				active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
+				active || loading ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
 				false
 			);
 			if (rightW > 0) {
 				graphics.text(
 					this.font, right, left + contentW - 6 - rightW, textY,
-					active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+					active || loading ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
 				);
 			}
 			this.listCodes.add(e.code());
