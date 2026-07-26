@@ -54,6 +54,8 @@ public class ClanGatherScreen extends Screen {
 	private int tabsLeft;
 	private int tabsWidth;
 	/** Gather-list geometry, filled while rendering so clicks can be mapped to a code. */
+	/** Y of the painted hub status strip, or -1 when the build has no baked hub. */
+	private int hubStripY = -1;
 	private int listRowsTop = -1;
 	/**
 	 * Y where the gather list has to stop, set by init() next to the controls it must clear.
@@ -77,6 +79,8 @@ public class ClanGatherScreen extends Screen {
 	/** State the widgets were last built for; a change means their enabled state is stale. */
 	private @org.jspecify.annotations.Nullable String builtForSwitching;
 	private boolean builtForBusy;
+	private boolean builtForHasCode;
+	private ClanSessionManager.@org.jspecify.annotations.Nullable HubState builtForHub;
 	private @org.jspecify.annotations.Nullable String builtForCode;
 
 	/**
@@ -93,10 +97,26 @@ public class ClanGatherScreen extends Screen {
 		boolean busy = ClanSessionManager.isBusy();
 		ClanSession s = ClanSessionManager.session();
 		String code = s != null ? s.code : null;
+		// Typing the first character has to light up "join", and a hub coming back has to
+		// swap the retry button away — both change which buttons are usable, so both belong
+		// in the same comparison as the rest.
+		boolean hasCode = !this.codeDraft.isBlank();
+		ClanSessionManager.HubState hub = ClanSessionManager.hubState();
 		if (!java.util.Objects.equals(switching, this.builtForSwitching)
 			|| busy != this.builtForBusy
-			|| !java.util.Objects.equals(code, this.builtForCode)) {
+			|| !java.util.Objects.equals(code, this.builtForCode)
+			|| hasCode != this.builtForHasCode
+			|| hub != this.builtForHub) {
+			// A rebuild recreates the EditBox, and typing the first character triggers one —
+			// so without this the box loses focus after a single keystroke and the player has
+			// to click it again for every letter of the code.
+			boolean wasTyping = this.codeBox != null && this.codeBox.isFocused();
 			this.rebuildWidgets();
+			if (wasTyping && this.codeBox != null) {
+				this.setFocused(this.codeBox);
+				this.codeBox.setFocused(true);
+				this.codeBox.moveCursorToEnd(false);
+			}
 		}
 	}
 
@@ -109,6 +129,8 @@ public class ClanGatherScreen extends Screen {
 	protected void init() {
 		this.builtForSwitching = ClanSessionManager.switchingTo();
 		this.builtForBusy = ClanSessionManager.isBusy();
+		this.builtForHasCode = !this.codeDraft.isBlank();
+		this.builtForHub = ClanSessionManager.hubState();
 		ClanSession built = ClanSessionManager.session();
 		this.builtForCode = built != null ? built.code : null;
 		this.panelW = ChestGuiStyle.panelWidth(this.width);
@@ -127,19 +149,16 @@ public class ClanGatherScreen extends Screen {
 		this.hubBox = null;
 		this.tokenBox = null;
 		if (ClanDefaults.hasBakedHub()) {
-			this.addRenderableWidget(new SettingRowButton(
-				left, y, w, rowH,
-				Component.translatable("screen.chestmemory.clan.hub_builtin"),
-				() -> {
-				}
-			) {
-				@Override
-				public void onClick(net.minecraft.client.input.MouseButtonEvent e, boolean d) {
-					// Informational row, not a button.
-				}
-			});
+			// Painted, not a widget: it reports state and cannot be pressed. It used to be a
+			// SettingRowButton with an empty handler, which looked exactly like the buttons
+			// below it and did nothing — the single most confusing thing on this screen.
+			this.hubStripY = y;
+			if (this.minecraft != null) {
+				ClanSessionManager.checkHubAsync(this.minecraft, null);
+			}
 			y += rowH + gap + 2;
 		} else {
+			this.hubStripY = -1;
 			this.hubBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.hub"));
 			this.hubBox.setMaxLength(256);
 			this.hubBox.setHint(Component.translatable("screen.chestmemory.clan.hub_hint"));
@@ -206,8 +225,12 @@ public class ClanGatherScreen extends Screen {
 						: Component.translatable("screen.chestmemory.clan.create_need_list")
 				));
 				this.addRenderableWidget(createBtn);
+				// 64, not 58: "Вставить" measures 48px and needs 12px of padding, and a
+				// clipped verb on a button is worse than a slightly narrower code box.
+				int pasteW = 64;
+				int codeW = halfL - gap - pasteW;
 				this.codeBox = new EditBox(
-					this.font, left + halfL + gap, rowTop, halfL, rowH,
+					this.font, left + halfL + gap, rowTop, codeW, rowH,
 					Component.translatable("screen.chestmemory.clan.code")
 				);
 				this.codeBox.setMaxLength(16);
@@ -215,6 +238,13 @@ public class ClanGatherScreen extends Screen {
 				this.codeBox.setValue(this.codeDraft);
 				this.codeBox.setResponder(v -> this.codeDraft = v);
 				this.addRenderableWidget(this.codeBox);
+				SettingRowButton pasteInSession = new SettingRowButton(
+					left + halfL + gap + codeW + gap, rowTop, pasteW, rowH,
+					Component.translatable("screen.chestmemory.clan.paste_code"),
+					this::pasteCodeFromClipboard
+				);
+				pasteInSession.active = !switching;
+				this.addRenderableWidget(pasteInSession);
 				SettingRowButton joinBtn = new SettingRowButton(
 					left, this.panelTop + this.panelH - 26, halfL, rowH,
 					Component.translatable("screen.chestmemory.clan.join"),
@@ -226,7 +256,7 @@ public class ClanGatherScreen extends Screen {
 						ClanSessionManager.switchToAsync(this.minecraft, this.codeBox.getValue(), this::rebuildWidgets);
 					}
 				);
-				joinBtn.active = !switching;
+				joinBtn.active = !switching && !this.codeDraft.isBlank();
 				this.addRenderableWidget(joinBtn);
 				boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
 				if (host) {
@@ -310,8 +340,14 @@ public class ClanGatherScreen extends Screen {
 						: Component.translatable("screen.chestmemory.clan.create_need_list")
 				));
 				this.addRenderableWidget(createBtn);
+				// Code box shares its row with a paste button: the code arrives in chat, so
+				// copying that line and pasting beats typing four characters by hand.
+				// 64, not 58: "Вставить" measures 48px and needs 12px of padding, and a
+				// clipped verb on a button is worse than a slightly narrower code box.
+				int pasteW = 64;
+				int codeW = halfL - gap - pasteW;
 				this.codeBox = new EditBox(
-					this.font, left + halfL + gap, rowTop, halfL, rowH,
+					this.font, left + halfL + gap, rowTop, codeW, rowH,
 					Component.translatable("screen.chestmemory.clan.code")
 				);
 				this.codeBox.setMaxLength(16);
@@ -319,7 +355,14 @@ public class ClanGatherScreen extends Screen {
 				this.codeBox.setValue(this.codeDraft);
 				this.codeBox.setResponder(v -> this.codeDraft = v);
 				this.addRenderableWidget(this.codeBox);
-				this.addRenderableWidget(new SettingRowButton(
+				SettingRowButton pasteBtn = new SettingRowButton(
+					left + halfL + gap + codeW + gap, rowTop, pasteW, rowH,
+					Component.translatable("screen.chestmemory.clan.paste_code"),
+					this::pasteCodeFromClipboard
+				);
+				this.addRenderableWidget(pasteBtn);
+
+				SettingRowButton joinRow = new SettingRowButton(
 					left, this.panelTop + this.panelH - 26, halfL, rowH,
 					Component.translatable("screen.chestmemory.clan.join"),
 					() -> {
@@ -330,12 +373,30 @@ public class ClanGatherScreen extends Screen {
 						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 						ClanSessionManager.joinAsync(this.minecraft, this.codeBox.getValue(), this::rebuildWidgets);
 					}
-				));
-				this.addRenderableWidget(new SettingRowButton(
-					left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
-					Component.translatable("screen.chestmemory.clan.back"),
-					this::onClose
-				));
+				);
+				// Nothing to join without a code — grey rather than an error after the click.
+				joinRow.active = !this.codeDraft.isBlank();
+				this.addRenderableWidget(joinRow);
+
+				// When the hub is down, the useful button here is "try again", not "back".
+				boolean hubDown = ClanSessionManager.hubState() == ClanSessionManager.HubState.OFFLINE;
+				if (hubDown) {
+					SettingRowButton retry = new SettingRowButton(
+						left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
+						Component.translatable("screen.chestmemory.clan.hub_retry"),
+						this::retryHubCheck
+					);
+					retry.setTooltip(net.minecraft.client.gui.components.Tooltip.create(
+						Component.translatable("screen.chestmemory.clan.hub_retry_tip")
+					));
+					this.addRenderableWidget(retry);
+				} else {
+					this.addRenderableWidget(new SettingRowButton(
+						left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
+						Component.translatable("screen.chestmemory.clan.back"),
+						this::onClose
+					));
+				}
 				return;
 			}
 		}
@@ -444,6 +505,40 @@ public class ClanGatherScreen extends Screen {
 			Component.translatable("screen.chestmemory.clan.back"),
 			this::onClose
 		));
+	}
+
+	/**
+	 * Pull a CM-XXXX code out of the clipboard into the code box.
+	 * <p>
+	 * The code arrives in chat, and a player who copies that line gets a whole sentence, not
+	 * a bare code — so this picks the code out of whatever was copied rather than demanding
+	 * a clean paste. Typing it by hand was the only option before.
+	 */
+	private void pasteCodeFromClipboard() {
+		if (this.minecraft == null || this.codeBox == null) {
+			return;
+		}
+		String clip = this.minecraft.keyboardHandler.getClipboard();
+		var m = java.util.regex.Pattern
+			.compile("(?i)\\bCM[-\\s]?([A-Z0-9]{4})\\b")
+			.matcher(clip == null ? "" : clip);
+		if (!m.find()) {
+			this.status = Component.translatable("screen.chestmemory.clan.paste_empty").getString();
+			return;
+		}
+		String code = "CM-" + m.group(1).toUpperCase(java.util.Locale.ROOT);
+		this.codeDraft = code;
+		this.codeBox.setValue(code);
+		this.status = Component.translatable("screen.chestmemory.clan.pasted", code).getString();
+	}
+
+	/** Ask the hub again after a failed check, instead of leaving the player stuck. */
+	private void retryHubCheck() {
+		if (this.minecraft == null) {
+			return;
+		}
+		ClanSessionManager.forceHubRecheck();
+		ClanSessionManager.checkHubAsync(this.minecraft, this::rebuildWidgets);
 	}
 
 	@Override
@@ -590,11 +685,37 @@ public class ClanGatherScreen extends Screen {
 			}
 		}
 
+		if (this.hubStripY >= 0) {
+			ClanSessionManager.HubState st = ClanSessionManager.hubState();
+			int lamp = switch (st) {
+				case ONLINE -> ChestGuiStyle.LAMP_ONLINE;
+				case OFFLINE -> ChestGuiStyle.LAMP_OFFLINE;
+				case UNKNOWN -> ChestGuiStyle.LAMP_CHECKING;
+			};
+			// The state is spelled out as well as coloured — a red/green lamp alone is no
+			// help to a colour-blind player, and "unreachable" is the one state that matters.
+			String label = Component.translatable(switch (st) {
+				case ONLINE -> "screen.chestmemory.clan.hub_online";
+				case OFFLINE -> "screen.chestmemory.clan.hub_offline";
+				case UNKNOWN -> "screen.chestmemory.clan.hub_checking";
+			}).getString();
+			String detail = st == ClanSessionManager.HubState.ONLINE
+				? Component.translatable("screen.chestmemory.clan.hub_builtin_short").getString()
+				: null;
+			ChestGuiStyle.drawStatusStrip(
+				graphics, this.font, left, this.hubStripY, contentW, 18, label, detail, lamp
+			);
+		}
+
 		// Status line last, so a fresh message always wins over the standing hints.
 		String line;
 		if (ClanSessionManager.isInSession() && this.tab != TAB_GATHER) {
 			// The list tabs use the full body; a status sentence under them would collide
 			// with the back row.
+			line = "";
+		} else if (this.tab == TAB_LIST) {
+			// The Gathers tab puts its controls at the bottom, where the status line used to
+			// be printed — the sentence landed straight across the create button.
 			line = "";
 		} else if (!this.status.isBlank()) {
 			line = this.status;
