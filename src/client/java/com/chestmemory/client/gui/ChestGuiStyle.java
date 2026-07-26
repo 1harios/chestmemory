@@ -121,6 +121,19 @@ public final class ChestGuiStyle {
 	public static final int ROW_WOOD_DISABLED = 0xFF2A2018;
 
 	/**
+	 * Secondary text on a wooden row. TEXT_MUTED is tuned for the light panel and drops to
+	 * 2.96:1 on ROW_WOOD, which is unreadable; this sits at 5.5:1 while still reading as
+	 * quieter than TEXT_LIGHT.
+	 */
+	public static final int TEXT_ON_WOOD_MUTED = 0xFFA89880;
+
+	/**
+	 * Face of the selected tab. WOOD_LIGHT looked right but only gave 2.87:1 against the
+	 * dark caption; this lighter plank reaches 6.9:1.
+	 */
+	public static final int TAB_ACTIVE = 0xFFC9A063;
+
+	/**
 	 * Recessed wooden background for a settings row, so rows sit in the panel instead of
 	 * floating on it as flat vanilla buttons.
 	 */
@@ -184,6 +197,79 @@ public final class ChestGuiStyle {
 		graphics.fill(x + 1, y + 1, x + w - 1, y + 2, withAlpha(0xFFFFFF, 0.18F));
 		graphics.text(font, code, centerX - textW / 2 + 1, y + 7, 0xFF000000, false);
 		graphics.text(font, code, centerX - textW / 2, y + 6, TEXT_GOLD, false);
+	}
+
+	/**
+	 * One row of the clan roster: name on the left, what they are carrying on the right.
+	 * <p>
+	 * Drawn as a recessed plank like the settings rows, so the roster reads as part of the
+	 * chest panel rather than as a list of plain text lines floating over it.
+	 *
+	 * @param accent left edge marker — gold for the host, green when they are delivering,
+	 *               muted when the hub has lost them
+	 */
+	public static void drawMemberRow(
+		GuiGraphicsExtractor graphics,
+		int x,
+		int y,
+		int width,
+		int height,
+		int accent,
+		boolean dim
+	) {
+		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, dim ? ROW_WOOD_DISABLED : ROW_WOOD);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + 2, withAlpha(0xFFFFFF, 0.10F));
+		// Accent stripe: colour-codes state without spending horizontal room on words.
+		graphics.fill(x + 1, y + 1, x + 3, y + height - 1, accent);
+	}
+
+	/**
+	 * Small coloured dot used by the activity feed to mark the kind of event, so the list is
+	 * scannable at a glance instead of being a wall of sentences.
+	 */
+	public static void drawEventDot(GuiGraphicsExtractor graphics, int x, int y, int colour) {
+		graphics.fill(x, y + 1, x + 3, y + 4, colour);
+		graphics.fill(x + 1, y, x + 2, y + 5, colour);
+	}
+
+	/**
+	 * Tab strip along the top of a panel section. The clan screen has more to say than fits
+	 * in one 340×300 panel, and tabs keep the frame a fixed size instead of growing it.
+	 *
+	 * @param selected index of the active tab
+	 * @return x position where each tab starts, so callers can hit-test clicks
+	 */
+	public static int[] drawTabs(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		Component[] labels,
+		int left,
+		int y,
+		int width,
+		int selected,
+		int hovered
+	) {
+		int[] xs = new int[labels.length + 1];
+		int tabW = width / Math.max(1, labels.length);
+		for (int i = 0; i < labels.length; i++) {
+			int tx = left + i * tabW;
+			int tw = (i == labels.length - 1) ? (left + width - tx) : tabW;
+			xs[i] = tx;
+			boolean on = i == selected;
+			graphics.fill(tx, y, tx + tw, y + 14, WOOD_DARK);
+			graphics.fill(tx + 1, y + 1, tx + tw - 1, y + 13,
+				on ? TAB_ACTIVE : (i == hovered ? ROW_WOOD_HOVER : ROW_WOOD));
+			if (on) {
+				// Lift the active tab with a bright top rim and a matching underline below.
+				graphics.fill(tx + 1, y + 1, tx + tw - 1, y + 2, withAlpha(0xFFFFFF, 0.28F));
+				graphics.fill(tx, y + 14, tx + tw, y + 15, LATCH);
+			}
+			String text = ellipsize(font, labels[i].getString(), tw - 8);
+			drawCentered(graphics, font, text, tx + tw / 2, y + 4, on ? 0xFF2A1A0E : TEXT_LIGHT);
+		}
+		xs[labels.length] = left + width;
+		return xs;
 	}
 
 	public static void drawCountBadge(GuiGraphicsExtractor graphics, Font font, String text, int right, int y) {

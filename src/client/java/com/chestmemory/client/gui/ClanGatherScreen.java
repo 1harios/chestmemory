@@ -2,20 +2,39 @@ package com.chestmemory.client.gui;
 
 import com.chestmemory.client.clan.ClanCodes;
 import com.chestmemory.client.clan.ClanDefaults;
+import com.chestmemory.client.clan.ClanEventLog;
 import com.chestmemory.client.clan.ClanSession;
 import com.chestmemory.client.clan.ClanSessionManager;
+import com.chestmemory.client.data.ChestMemoryStorage;
 import com.chestmemory.client.data.ModSettings;
 import com.chestmemory.client.litematica.LitematicaAccess;
 import com.chestmemory.client.util.ClientScreens;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
+import java.util.List;
+
 /**
- * Clan gather: set hub URL, create session (code), join by code, leave.
+ * Clan gather: create or join a session by code, then follow who is doing what.
+ * <p>
+ * While a gather runs there is more to show than fits in the mod's fixed panel — the code,
+ * overall progress, the roster with each member's assignment, and a feed of recent activity.
+ * Tabs keep the panel one size instead of letting it grow, matching the rest of the mod.
  */
 public class ClanGatherScreen extends Screen {
+	/** Tabs shown while in a session. Index order matches {@link #TAB_KEYS}. */
+	private static final int TAB_GATHER = 0;
+	private static final int TAB_MEMBERS = 1;
+	private static final int TAB_FEED = 2;
+	private static final String[] TAB_KEYS = {
+		"screen.chestmemory.clan.tab_gather",
+		"screen.chestmemory.clan.tab_members",
+		"screen.chestmemory.clan.tab_feed"
+	};
+
 	private final Screen parent;
 	private EditBox hubBox;
 	private EditBox tokenBox;
@@ -23,6 +42,13 @@ public class ClanGatherScreen extends Screen {
 	private String status = "";
 	/** Two-step guard for "say in chat": the code is readable by everyone on the server. */
 	private boolean sayCodeArmed;
+	/** Selected tab; kept across rebuildWidgets so polling does not snap you back. */
+	private int tab = TAB_GATHER;
+	private int hoveredTab = -1;
+	/** Tab strip geometry, filled while rendering and used for hit-testing. */
+	private int tabsY = -1;
+	private int tabsLeft;
+	private int tabsWidth;
 	private int panelLeft;
 	private int panelTop;
 	private int panelW;
@@ -89,6 +115,27 @@ public class ClanGatherScreen extends Screen {
 
 		boolean in = ClanSessionManager.isInSession();
 		int half = (w - gap) / 2;
+
+		if (in) {
+			// Tab strip sits above the controls; only the gather tab carries buttons, so the
+			// other tabs get the whole panel body for their list.
+			this.tabsLeft = left;
+			this.tabsWidth = w;
+			this.tabsY = y;
+			y += 20;
+			if (this.tab != TAB_GATHER) {
+				// Members / feed tabs: no controls, just the back row at the bottom.
+				this.addRenderableWidget(new SettingRowButton(
+					left, this.panelTop + this.panelH - 26, w, rowH,
+					Component.translatable("screen.chestmemory.clan.back"),
+					this::onClose
+				));
+				return;
+			}
+		} else {
+			this.tabsY = -1;
+			this.tab = TAB_GATHER;
+		}
 
 		if (!in) {
 			this.addRenderableWidget(new SettingRowButton(
@@ -194,6 +241,35 @@ public class ClanGatherScreen extends Screen {
 		));
 	}
 
+	@Override
+	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		// Tabs are painted, not widgets, so they are hit-tested here — before the default
+		// handling, which would otherwise swallow the click on the panel background.
+		int t = tabAt(event.x(), event.y());
+		if (t >= 0) {
+			if (t != this.tab) {
+				this.tab = t;
+				this.status = "";
+				this.rebuildWidgets();
+			}
+			return true;
+		}
+		return super.mouseClicked(event, doubleClick);
+	}
+
+	/** Tab index under the cursor, or -1. */
+	private int tabAt(double mx, double my) {
+		if (this.tabsY < 0 || my < this.tabsY || my > this.tabsY + 15) {
+			return -1;
+		}
+		if (mx < this.tabsLeft || mx > this.tabsLeft + this.tabsWidth) {
+			return -1;
+		}
+		int tabW = this.tabsWidth / TAB_KEYS.length;
+		int i = (int) ((mx - this.tabsLeft) / Math.max(1, tabW));
+		return Math.min(TAB_KEYS.length - 1, Math.max(0, i));
+	}
+
 	private void saveHubQuiet() {
 		if (this.hubBox != null) {
 			ModSettings.get().setClanHubUrl(this.hubBox.getValue());
@@ -237,63 +313,33 @@ public class ClanGatherScreen extends Screen {
 				// of its own instead of being buried in a status sentence.
 				ChestGuiStyle.drawCodePlate(graphics, this.font, s.code, centerX, this.panelTop + 22, 90);
 
-				int need = s.totalNeed();
-				int delivered = s.totalDelivered();
-				float f = need > 0 ? delivered / (float) need : 0F;
-				int barY = this.panelTop + this.panelH - 62;
-
-				ChestGuiStyle.drawProgressBar(graphics, left, barY, contentW, 8, f);
-				String amount = Component.translatable(
-					"screen.chestmemory.clan.progress",
-					delivered, need, need > 0 ? (int) (f * 100) : 0
-				).getString();
-				ChestGuiStyle.drawCentered(
-					graphics, this.font, amount, centerX, barY + 11, ChestGuiStyle.TEXT_LIGHT
-				);
-
-				// Roster: who is here, and what each one is carrying to the build.
-				int rosterY = barY + 22;
-				int shown = 0;
-				if (s.members != null) {
-					for (ClanSession.ClanMember m : s.members) {
-						if (shown >= 3) {
-							break;
-						}
-						boolean host = m.uuid != null && m.uuid.equalsIgnoreCase(s.hostUuid);
-						boolean away = m.isAway();
-						// Mark who the hub has stopped hearing from, so a claim freeing up
-						// on its own is explained rather than mysterious.
-						String label = (host ? "★ " : "· ") + (m.name == null ? "?" : m.name)
-							+ (away ? "  " + Component.translatable("screen.chestmemory.clan.away").getString() : "");
-						int colour = away
-							? ChestGuiStyle.TEXT_MUTED
-							: (host ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT);
-						graphics.text(
-							this.font,
-							ChestGuiStyle.ellipsize(this.font, label, contentW),
-							left, rosterY + shown * 10,
-							colour,
-							false
-						);
-						shown++;
+				if (this.tabsY >= 0) {
+					this.hoveredTab = tabAt(mouseX, mouseY);
+					Component[] labels = new Component[TAB_KEYS.length];
+					for (int i = 0; i < TAB_KEYS.length; i++) {
+						labels[i] = Component.translatable(TAB_KEYS[i]);
 					}
-					int rest = s.members.size() - shown;
-					if (rest > 0) {
-						graphics.text(
-							this.font,
-							Component.translatable("screen.chestmemory.clan.more_members", rest).getString(),
-							left, rosterY + shown * 10,
-							ChestGuiStyle.TEXT_MUTED,
-							false
-						);
-					}
+					ChestGuiStyle.drawTabs(
+						graphics, this.font, labels,
+						this.tabsLeft, this.tabsY, this.tabsWidth, this.tab, this.hoveredTab
+					);
+				}
+
+				switch (this.tab) {
+					case TAB_MEMBERS -> drawMembers(graphics, s, left, contentW);
+					case TAB_FEED -> drawFeed(graphics, left, contentW);
+					default -> drawGatherSummary(graphics, s, left, centerX, contentW);
 				}
 			}
 		}
 
 		// Status line last, so a fresh message always wins over the standing hints.
 		String line;
-		if (!this.status.isBlank()) {
+		if (ClanSessionManager.isInSession() && this.tab != TAB_GATHER) {
+			// The list tabs use the full body; a status sentence under them would collide
+			// with the back row.
+			line = "";
+		} else if (!this.status.isBlank()) {
 			line = this.status;
 		} else if (ClanSessionManager.isInSession()) {
 			line = "";
@@ -312,5 +358,199 @@ public class ClanGatherScreen extends Screen {
 				ChestGuiStyle.TEXT_MUTED
 			);
 		}
+	}
+
+	/** Gather tab: overall progress plus the three headline numbers. */
+	private void drawGatherSummary(
+		GuiGraphicsExtractor graphics,
+		ClanSession s,
+		int left,
+		int centerX,
+		int contentW
+	) {
+		int need = s.totalNeed();
+		int delivered = s.totalDelivered();
+		float f = need > 0 ? delivered / (float) need : 0F;
+		int barY = this.panelTop + this.panelH - 62;
+
+		ChestGuiStyle.drawProgressBar(graphics, left, barY, contentW, 8, f);
+		String amount = Component.translatable(
+			"screen.chestmemory.clan.progress",
+			delivered, need, need > 0 ? (int) (f * 100) : 0
+		).getString();
+		ChestGuiStyle.drawCentered(graphics, this.font, amount, centerX, barY + 11, ChestGuiStyle.TEXT_LIGHT);
+
+		// Counts that answer "is anyone actually working on this?" without switching tabs.
+		int online = 0;
+		int claimed = 0;
+		for (ClanSession.ClanMember m : s.members) {
+			if (!m.isAway()) {
+				online++;
+			}
+		}
+		for (ClanSession.ClanMaterial m : s.materials.values()) {
+			if (m.claimedBy != null && !m.claimedBy.isBlank()) {
+				claimed++;
+			}
+		}
+		String summary = Component.translatable(
+			"screen.chestmemory.clan.summary",
+			online, s.members.size(), claimed
+		).getString();
+		ChestGuiStyle.drawCentered(
+			graphics, this.font,
+			ChestGuiStyle.ellipsize(this.font, summary, contentW),
+			centerX, barY + 23, ChestGuiStyle.TEXT_LIGHT
+		);
+	}
+
+	/**
+	 * Members tab: one plank per player with what they reserved and how much they brought in.
+	 * <p>
+	 * This is the view that used to be missing — the roster only ever showed names, so there
+	 * was no way to tell who was on the glass and who had already delivered.
+	 */
+	private void drawMembers(GuiGraphicsExtractor graphics, ClanSession s, int left, int contentW) {
+		int y = this.tabsY + 22;
+		int bottom = this.panelTop + this.panelH - 32;
+		int rowH = 20;
+
+		if (s.members.isEmpty()) {
+			graphics.text(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.no_members").getString(),
+				left, y, ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+			);
+			return;
+		}
+
+		int shown = 0;
+		for (ClanSession.ClanMember m : s.members) {
+			if (y + rowH > bottom) {
+				// Count what is left explicitly; deriving it from pixel positions worked but
+				// silently depends on the row/gap constants staying in sync.
+				int rest = s.members.size() - shown;
+				if (rest > 0) {
+					graphics.text(
+						this.font,
+						Component.translatable("screen.chestmemory.clan.more_members", rest).getString(),
+						left, y + 2, ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+					);
+				}
+				break;
+			}
+			boolean host = m.uuid != null && m.uuid.equalsIgnoreCase(s.hostUuid);
+			boolean away = m.isAway();
+
+			// What this member is holding, and how much of it already reached the warehouse.
+			String claimItem = null;
+			int claimDone = 0;
+			int claimNeed = 0;
+			for (var e : s.materials.entrySet()) {
+				ClanSession.ClanMaterial mat = e.getValue();
+				if (mat.claimedBy != null && m.uuid != null && mat.claimedBy.equalsIgnoreCase(m.uuid)) {
+					claimItem = ChestMemoryStorage.itemDisplayName(e.getKey());
+					claimDone = Math.max(0, mat.delivered);
+					claimNeed = Math.max(0, mat.need);
+					break;
+				}
+			}
+
+			int accent = away
+				? ChestGuiStyle.TEXT_ON_WOOD_MUTED
+				: (host ? ChestGuiStyle.LATCH : (claimItem != null ? 0xFF5FD068 : ChestGuiStyle.WOOD_LIGHT));
+			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, away);
+
+			String name = (host ? "★ " : "") + (m.name == null || m.name.isBlank() ? "?" : m.name);
+			int nameColour = away
+				? ChestGuiStyle.TEXT_ON_WOOD_MUTED
+				: (host ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT);
+
+			// Right-hand column: the assignment. Reserve its width first so a long player
+			// name gets ellipsized instead of running underneath it.
+			String right;
+			int rightColour;
+			if (away) {
+				right = Component.translatable("screen.chestmemory.clan.away").getString();
+				rightColour = ChestGuiStyle.TEXT_ON_WOOD_MUTED;
+			} else if (claimItem != null) {
+				right = Component.translatable(
+					"screen.chestmemory.clan.carrying", claimItem, claimDone, claimNeed
+				).getString();
+				rightColour = claimNeed > 0 && claimDone >= claimNeed ? 0xFF7FE08A : ChestGuiStyle.TEXT_GOLD;
+			} else {
+				right = Component.translatable("screen.chestmemory.clan.idle").getString();
+				rightColour = ChestGuiStyle.TEXT_ON_WOOD_MUTED;
+			}
+			int rightW = Math.min(this.font.width(right), contentW - 60);
+			right = ChestGuiStyle.ellipsize(this.font, right, rightW);
+			rightW = this.font.width(right);
+
+			int textY = y + (rowH - this.font.lineHeight) / 2 + 1;
+			graphics.text(
+				this.font,
+				ChestGuiStyle.ellipsize(this.font, name, contentW - rightW - 18),
+				left + 7, textY, nameColour, false
+			);
+			graphics.text(this.font, right, left + contentW - 6 - rightW, textY, rightColour, false);
+			y += rowH + 2;
+			shown++;
+		}
+	}
+
+	/** Feed tab: recent claims, deliveries and arrivals, newest first. */
+	private void drawFeed(GuiGraphicsExtractor graphics, int left, int contentW) {
+		int y = this.tabsY + 22;
+		int bottom = this.panelTop + this.panelH - 32;
+		int lineH = 11;
+		int rows = Math.max(1, (bottom - y) / lineH);
+
+		List<ClanEventLog.Entry> events = ClanEventLog.recent(rows);
+		if (events.isEmpty()) {
+			graphics.text(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.no_events").getString(),
+				left, y, ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+			);
+			return;
+		}
+
+		long now = System.currentTimeMillis();
+		for (ClanEventLog.Entry e : events) {
+			int dot = switch (e.kind()) {
+				case CLAIM -> 0xFFE0A83C;
+				case RELEASE -> 0xFF9A8A70;
+				case DELIVER -> 0xFF5FD068;
+				case JOIN -> 0xFF6FB7E8;
+				case LEAVE -> 0xFFD9695A;
+			};
+			ChestGuiStyle.drawEventDot(graphics, left + 1, y + 1, dot);
+
+			// Relative age on the right — "2м" reads faster than a clock time here.
+			String age = ageLabel(now - e.at());
+			int ageW = this.font.width(age);
+			String text = ChestGuiStyle.ellipsize(
+				this.font, e.text().getString(), contentW - 10 - ageW - 6
+			);
+			graphics.text(this.font, text, left + 8, y, ChestGuiStyle.TEXT_LIGHT, false);
+			graphics.text(
+				this.font, age, left + contentW - ageW, y,
+				ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+			);
+			y += lineH;
+		}
+	}
+
+	/** Compact age: seconds under a minute, then minutes, then hours. */
+	private static String ageLabel(long millis) {
+		long sec = Math.max(0, millis / 1000L);
+		if (sec < 60) {
+			return Component.translatable("screen.chestmemory.clan.age_sec", sec).getString();
+		}
+		long min = sec / 60;
+		if (min < 60) {
+			return Component.translatable("screen.chestmemory.clan.age_min", min).getString();
+		}
+		return Component.translatable("screen.chestmemory.clan.age_hour", min / 60).getString();
 	}
 }

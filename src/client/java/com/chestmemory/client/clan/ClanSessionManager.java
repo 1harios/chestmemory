@@ -259,6 +259,7 @@ public final class ClanSessionManager {
 				busy.set(false);
 				session = null;
 				lastError = null;
+				ClanEventLog.clear();
 				chat(mc, Component.translatable(
 					host ? "message.chestmemory.clan_closed" : "message.chestmemory.clan_left"
 				));
@@ -506,6 +507,10 @@ public final class ClanSessionManager {
 						applyClanStagingKeys(session);
 						// Tell player when someone else claimed / released items
 						announceClaimDiffs(mc, prev, session, false);
+						// Roster and delivery changes are feed-only: they are useful when you
+						// open the screen, but not worth a chat line every few seconds.
+						recordMemberDiffs(prev, session);
+						recordDeliveryDiffs(prev, session);
 					});
 				} else if (res.status == 401) {
 					// Session token expired or the hub restarted: re-run the handshake once
@@ -518,6 +523,7 @@ public final class ClanSessionManager {
 					// transient gateway hiccup silently dropped everyone out of the session.
 					mc.execute(() -> {
 						session = null;
+						ClanEventLog.clear();
 						chat(mc, Component.translatable("message.chestmemory.clan_ended"));
 					});
 				}
@@ -545,10 +551,13 @@ public final class ClanSessionManager {
 		String me = localUuid(mc);
 		int printed = 0;
 		final int maxPrint = 6;
+		boolean saidMore = false;
 		for (Map.Entry<String, ClanSession.ClanMaterial> e : next.materials.entrySet()) {
-			if (printed >= maxPrint) {
+			// Chat is capped, but the loop must keep going: the activity feed records every
+			// change, and bailing out here would silently drop the rest of them.
+			if (printed >= maxPrint && !saidMore) {
 				chat(mc, Component.translatable("message.chestmemory.clan_claim_more"));
-				break;
+				saidMore = true;
 			}
 			String itemId = e.getKey();
 			ClanSession.ClanMaterial nm = e.getValue();
@@ -566,18 +575,25 @@ public final class ClanSessionManager {
 			}
 			boolean newIsMe = !newBy.isEmpty() && newBy.equalsIgnoreCase(me);
 			boolean oldIsMe = !oldBy.isEmpty() && oldBy.equalsIgnoreCase(me);
-			if (skipSelf && (newIsMe || oldIsMe)) {
-				continue;
-			}
+			// Whether this change is worth a chat line. The feed records it either way.
+			boolean chatty = printed < maxPrint && !(skipSelf && (newIsMe || oldIsMe));
 			String itemName = ChestMemoryStorage.itemDisplayName(itemId);
+			// The screen's activity feed gets every change; chat stays capped and still
+			// skips our own actions, which the acting client has already reported.
 			if (!newBy.isEmpty() && oldBy.isEmpty()) {
 				// New claim
-				if (newIsMe) {
-					chat(mc, Component.translatable("message.chestmemory.clan_claimed_self", itemName));
-				} else {
-					chat(mc, Component.translatable("message.chestmemory.clan_claimed_other", newName, itemName));
+				ClanEventLog.add(
+					ClanEventLog.Kind.CLAIM,
+					Component.translatable("screen.chestmemory.clan.ev_claim", newName, itemName)
+				);
+				if (chatty) {
+					if (newIsMe) {
+						chat(mc, Component.translatable("message.chestmemory.clan_claimed_self", itemName));
+					} else {
+						chat(mc, Component.translatable("message.chestmemory.clan_claimed_other", newName, itemName));
+					}
+					printed++;
 				}
-				printed++;
 			} else if (newBy.isEmpty() && !oldBy.isEmpty()) {
 				// Released
 				String oldName = "?";
@@ -587,17 +603,105 @@ public final class ClanSessionManager {
 						oldName = om.claimedName;
 					}
 				}
-				if (oldIsMe) {
-					chat(mc, Component.translatable("message.chestmemory.clan_unclaimed_self", itemName));
-				} else {
-					chat(mc, Component.translatable("message.chestmemory.clan_unclaimed_other", oldName, itemName));
+				ClanEventLog.add(
+					ClanEventLog.Kind.RELEASE,
+					Component.translatable("screen.chestmemory.clan.ev_release", oldName, itemName)
+				);
+				if (chatty) {
+					if (oldIsMe) {
+						chat(mc, Component.translatable("message.chestmemory.clan_unclaimed_self", itemName));
+					} else {
+						chat(mc, Component.translatable("message.chestmemory.clan_unclaimed_other", oldName, itemName));
+					}
+					printed++;
 				}
-				printed++;
 			} else if (!newBy.isEmpty()) {
 				// Steal / transfer (shouldn't happen often)
-				chat(mc, Component.translatable("message.chestmemory.clan_claimed_other", newName, itemName));
-				printed++;
+				ClanEventLog.add(
+					ClanEventLog.Kind.CLAIM,
+					Component.translatable("screen.chestmemory.clan.ev_claim", newName, itemName)
+				);
+				if (chatty) {
+					chat(mc, Component.translatable("message.chestmemory.clan_claimed_other", newName, itemName));
+					printed++;
+				}
 			}
+		}
+	}
+
+	/**
+	 * Record who joined or left between two snapshots.
+	 * <p>
+	 * Feed-only on purpose: on a big build the roster churns as people log in and out, and
+	 * chat lines for that would bury the claim messages that actually need attention.
+	 */
+	private static void recordMemberDiffs(@Nullable ClanSession prev, @Nullable ClanSession next) {
+		if (prev == null || next == null) {
+			// First snapshot of a session: everyone present is not "news".
+			return;
+		}
+		Map<String, String> before = new HashMap<>();
+		for (ClanSession.ClanMember m : prev.members) {
+			if (m.uuid != null && !m.uuid.isBlank()) {
+				before.put(m.uuid.toLowerCase(java.util.Locale.ROOT), m.name == null ? "?" : m.name);
+			}
+		}
+		Map<String, String> after = new HashMap<>();
+		for (ClanSession.ClanMember m : next.members) {
+			if (m.uuid != null && !m.uuid.isBlank()) {
+				after.put(m.uuid.toLowerCase(java.util.Locale.ROOT), m.name == null ? "?" : m.name);
+			}
+		}
+		for (Map.Entry<String, String> e : after.entrySet()) {
+			if (!before.containsKey(e.getKey())) {
+				ClanEventLog.add(
+					ClanEventLog.Kind.JOIN,
+					Component.translatable("screen.chestmemory.clan.ev_join", e.getValue())
+				);
+			}
+		}
+		for (Map.Entry<String, String> e : before.entrySet()) {
+			if (!after.containsKey(e.getKey())) {
+				ClanEventLog.add(
+					ClanEventLog.Kind.LEAVE,
+					Component.translatable("screen.chestmemory.clan.ev_leave", e.getValue())
+				);
+			}
+		}
+	}
+
+	/**
+	 * Record materials that reached the warehouse between two snapshots.
+	 * <p>
+	 * The hub counts a delivery when items land in a shared warehouse chest, so this is the
+	 * event people actually care about — "is the glass in yet?" — and the one that used to
+	 * be invisible unless you happened to watch the numbers change.
+	 */
+	private static void recordDeliveryDiffs(@Nullable ClanSession prev, @Nullable ClanSession next) {
+		if (prev == null || next == null || next.materials == null) {
+			return;
+		}
+		for (Map.Entry<String, ClanSession.ClanMaterial> e : next.materials.entrySet()) {
+			ClanSession.ClanMaterial nm = e.getValue();
+			if (nm == null) {
+				continue;
+			}
+			ClanSession.ClanMaterial om = prev.materials == null ? null : prev.materials.get(e.getKey());
+			int was = om == null ? 0 : Math.max(0, om.delivered);
+			int now = Math.max(0, nm.delivered);
+			if (now <= was) {
+				continue;
+			}
+			String itemName = ChestMemoryStorage.itemDisplayName(e.getKey());
+			// Name the carrier when the hub knows it; otherwise report the amount alone
+			// rather than inventing an attribution.
+			String who = nm.claimedName != null && !nm.claimedName.isBlank() ? nm.claimedName : null;
+			ClanEventLog.add(
+				ClanEventLog.Kind.DELIVER,
+				who != null
+					? Component.translatable("screen.chestmemory.clan.ev_deliver", who, now - was, itemName)
+					: Component.translatable("screen.chestmemory.clan.ev_deliver_anon", now - was, itemName)
+			);
 		}
 	}
 
@@ -662,12 +766,14 @@ public final class ClanSessionManager {
 		});
 		session = null;
 		lastError = null;
+		ClanEventLog.clear();
 		ClanAuth.clear();
 	}
 
 	public static void clearLocal() {
 		session = null;
 		lastError = null;
+		ClanEventLog.clear();
 		ClanAuth.clear();
 	}
 }
