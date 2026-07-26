@@ -88,9 +88,12 @@ public class ChestMemoryClient implements ClientModInitializer {
 				// Strike counts are per world: a position that looked empty here must not
 				// count against a container at the same coordinates on the next server.
 				com.chestmemory.client.scan.ContainerVerifier.reset();
-				// A gather queue belongs to the world it was started in. Carrying it over
-				// showed the previous world's materials against the new world's chests.
-				BuildGatherSession.clear();
+				// A gather belongs to a build, not to a connection. A multiworld server sends
+				// a full disconnect when you walk through a portal between its worlds, so
+				// clearing here wiped the queue and the cached material list mid-build — the
+				// gather list emptied and the «Сбор» button went dead. Park it instead, and
+				// let it resume if we land back where the schematic is.
+				BuildGatherSession.park();
 				// Release our claims right away instead of leaving the clan waiting for
 				// the hub's heartbeat timeout. Fires when leaving a server or quitting to
 				// the menu — NOT on a dimension change, which keeps the same connection,

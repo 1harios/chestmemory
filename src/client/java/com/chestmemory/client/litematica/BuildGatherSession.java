@@ -72,6 +72,11 @@ public final class BuildGatherSession {
 	private static @Nullable String listName;
 	/** Material list the current queueMissing snapshot belongs to. */
 	private static @Nullable String snapshotListName;
+	/**
+	 * Item clicked in the panel whose clan claim has not come back from the hub yet.
+	 * Survives resetState so startQueue cannot lose the player's pick.
+	 */
+	private static @Nullable String pendingClaimFocus;
 	private static int tickCounter;
 	private static long lastAdvanceMillis;
 	private static boolean highlightPaused;
@@ -147,6 +152,8 @@ public final class BuildGatherSession {
 		lastAdvanceMillis = 0;
 		highlightPaused = false;
 		phase = GatherPhase.CHESTS;
+		// pendingClaimFocus deliberately survives: startQueue resets state immediately after
+		// the panel click, and the player's pick must outlive that.
 	}
 
 	public static void pauseSchemeHighlight() {
@@ -319,6 +326,24 @@ public final class BuildGatherSession {
 	public static void clear() {
 		setActive(false);
 		ChestHighlighter.clear();
+	}
+
+	/**
+	 * Suspend the gather without throwing it away.
+	 * <p>
+	 * A multiworld server issues a real disconnect when you portal between its worlds, so the
+	 * old behaviour — clearing on disconnect — destroyed a build in progress: the material
+	 * list cache was dropped, the queue was emptied, and the «Сбор» button had nothing left to
+	 * open. The queue and the cached list are kept; only the world-bound parts (highlight,
+	 * route) are dropped, because they point at blocks in a world we just left.
+	 */
+	public static void park() {
+		ChestHighlighter.clear();
+		currentRoute = List.of();
+		routeChestIndex = 0;
+		highlightPaused = false;
+		// Deliberately keeps: active, queue, queueMissing, skipped, listName, and the material
+		// list cache. Those describe the build, not the connection.
 	}
 
 	// ── tick ───────────────────────────────────────────────────────────────
@@ -617,6 +642,13 @@ public final class BuildGatherSession {
 		// What you claimed in the clan wins over the mod's own ranking: taking an item is a
 		// promise to bring it, and the mod used to ignore that and walk you to whatever it
 		// thought was most needed — so the HUD named an item you had never picked.
+		// A pick whose claim is still in flight counts as claimed: the player already chose it.
+		if (pendingClaimFocus != null
+			&& !pendingClaimFocus.equals(exclude)
+			&& !skipped.contains(pendingClaimFocus)
+			&& remainingNeed(pendingClaimFocus, client != null ? client.player : null) > 0) {
+			return pendingClaimFocus;
+		}
 		String claimed = firstOwnClaim(client, exclude);
 		if (claimed != null) {
 			return claimed;
@@ -673,15 +705,33 @@ public final class BuildGatherSession {
 	/**
 	 * Point the gather at an item the player just claimed.
 	 * <p>
-	 * Called straight from the panel click so the HUD updates on the item you picked instead
-	 * of lagging behind on the previous target until the next auto-advance.
+	 * Called from the claim callback, once the hub has confirmed it. Calling it before the
+	 * round trip completes is useless: the claim is not in the session snapshot yet, so the
+	 * ranking wins and the HUD names the wrong item.
 	 */
 	public static void focusClaimed(Minecraft client, String itemId) {
 		if (!active || itemId == null) {
 			return;
 		}
+		pendingClaimFocus = null;
 		skipped.remove(itemId);
 		focusItem(client, itemId, true);
+	}
+
+	/**
+	 * Remember an item the player just clicked, before the hub has confirmed the claim.
+	 * <p>
+	 * {@link #startQueue} runs immediately after the click and resets state, so the intent has
+	 * to survive that reset — otherwise the queue is rebuilt around whatever the ranking
+	 * prefers and the player's pick is lost.
+	 */
+	public static void setPendingClaimFocus(@Nullable String itemId) {
+		pendingClaimFocus = itemId;
+	}
+
+	/** Item the player picked and is waiting on, or null. */
+	public static @Nullable String pendingClaimFocus() {
+		return pendingClaimFocus;
 	}
 
 	/**
@@ -689,6 +739,7 @@ public final class BuildGatherSession {
 	 * worth doing — the player said they no longer want this one.
 	 */
 	public static void dropCurrentClaimFocus(Minecraft client) {
+		pendingClaimFocus = null;
 		currentItemId = null;
 		currentRoute = List.of();
 		highlightPaused = false;

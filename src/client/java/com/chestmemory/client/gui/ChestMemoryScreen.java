@@ -379,20 +379,8 @@ public class ChestMemoryScreen extends Screen {
 				});
 			this.addRenderableWidget(this.stagingClearButton);
 
-			String clanLabel = com.chestmemory.client.clan.ClanSessionManager.isInSession()
-				? Component.translatable(
-					"screen.chestmemory.clan.btn_in",
-					com.chestmemory.client.clan.ClanSessionManager.code()
-				).getString()
-				: Component.translatable("screen.chestmemory.clan.btn").getString();
-			this.addRenderableWidget(new SettingRowButton(left + 3 * (colW + colGap), y, colW, rowH, Component.literal(clanLabel), () -> {
-					if (this.minecraft != null) {
-						com.chestmemory.client.util.ClientScreens.set(
-							this.minecraft,
-							new ClanGatherScreen(this)
-						);
-					}
-				}));
+			// No clan button here: the header already has one next to the search box, and two
+			// buttons opening the same screen in one panel read as a mistake.
 			y += rowH + gap;
 		}
 
@@ -1039,11 +1027,15 @@ public class ChestMemoryScreen extends Screen {
 					}
 					return;
 				}
+				// Claiming is a network round trip, so the claim is NOT visible yet. Remember
+				// what was picked and retarget when the hub confirms — reading it back right
+				// away found nothing claimed and fell through to the ranking, which is why the
+				// HUD kept naming the item the mod preferred instead of the one just taken.
+				String picked = summary.itemId();
 				com.chestmemory.client.clan.ClanSessionManager.claimToggleAsync(
-					client, summary.itemId(), null
+					client, picked, () -> BuildGatherSession.focusClaimed(client, picked)
 				);
-				// Follow the claim we just made, instead of whatever the ranking preferred.
-				BuildGatherSession.focusClaimed(client, summary.itemId());
+				BuildGatherSession.setPendingClaimFocus(picked);
 			}
 			// Queue order from ALL filter so path is always: ready → partial → none
 			// (ignore current UI filter for the queue contents after the clicked item)

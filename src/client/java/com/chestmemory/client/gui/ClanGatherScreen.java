@@ -354,7 +354,7 @@ public class ClanGatherScreen extends Screen {
 				this.font,
 				ChestGuiStyle.ellipsize(this.font, line, contentW),
 				centerX,
-				this.panelTop + this.panelH - 42,
+				this.panelTop + this.panelH - 39,
 				ChestGuiStyle.TEXT_MUTED
 			);
 		}
@@ -371,7 +371,9 @@ public class ClanGatherScreen extends Screen {
 		int need = s.totalNeed();
 		int delivered = s.totalDelivered();
 		float f = need > 0 ? delivered / (float) need : 0F;
-		int barY = this.panelTop + this.panelH - 62;
+		// Rows are stacked from the back button upwards with explicit gaps: the summary line
+		// and the status line used to be computed independently and overlapped by 12px.
+		int barY = this.panelTop + this.panelH - 72;
 
 		ChestGuiStyle.drawProgressBar(graphics, left, barY, contentW, 8, f);
 		String amount = Component.translatable(
@@ -400,7 +402,7 @@ public class ClanGatherScreen extends Screen {
 		ChestGuiStyle.drawCentered(
 			graphics, this.font,
 			ChestGuiStyle.ellipsize(this.font, summary, contentW),
-			centerX, barY + 23, ChestGuiStyle.TEXT_LIGHT
+			centerX, barY + 22, ChestGuiStyle.TEXT_LIGHT
 		);
 	}
 
@@ -506,6 +508,11 @@ public class ClanGatherScreen extends Screen {
 		int rows = Math.max(1, (bottom - y) / lineH);
 
 		List<ClanEventLog.Entry> events = ClanEventLog.recent(rows);
+		// Recessed panel behind the feed. Without it the light text sat on the light panel at
+		// 1.19:1 contrast — the "barely visible" the user reported. On this backing it is 10.8:1.
+		int feedH = Math.max(lineH, Math.min(rows, Math.max(1, events.size())) * lineH) + 4;
+		graphics.fill(left - 2, y - 3, left + contentW + 2, y + feedH, ChestGuiStyle.WOOD_DARK);
+		graphics.fill(left - 1, y - 2, left + contentW + 1, y + feedH - 1, ChestGuiStyle.ROW_WOOD);
 		if (events.isEmpty()) {
 			graphics.text(
 				this.font,
