@@ -214,10 +214,19 @@ class ClanFlowTest {
 		void clicksAboveListIgnored() throws Exception {
 			// (int) of a negative offset is 0 in Java, so a click on the tab strip mapped to
 			// row 0 and switched gathers — which is why the tab could not be left.
-			String body = methodBody(read(CLAN_SCREEN), "private @org.jspecify.annotations.Nullable String gatherAt(");
+			// The guard moved into ScrollList when the lists gained scrolling — it has to be
+			// there now, because the offset means the screen can no longer do this maths.
+			String scroll = read("src/client/java/com/chestmemory/client/gui/ScrollList.java");
+			int decl = scroll.indexOf("public int rowAt(");
+			assertTrue(decl > 0, "ScrollList.rowAt is missing");
+			String body = scroll.substring(decl, scroll.indexOf("\n\t}", decl));
 			assertTrue(
-				body.contains("my < this.listRowsTop"),
+				body.contains("mouseY < top"),
 				"without this guard the tab strip is swallowed by the gather list"
+			);
+			assertTrue(
+				read(CLAN_SCREEN).contains("this.gatherScroll.rowAt("),
+				"the screen must delegate, not redo the maths against a scrolled list"
 			);
 		}
 
