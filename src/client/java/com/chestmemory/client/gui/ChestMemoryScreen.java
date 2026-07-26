@@ -1065,7 +1065,14 @@ public class ChestMemoryScreen extends Screen {
 				}
 			}
 			BuildGatherSession.startQueue(client, summary.itemId(), ordered);
-			this.onClose();
+			// In a clan gather the panel stays open: reserving three items used to mean
+			// opening it three times, because every pick closed the screen. Solo it still
+			// closes, since there the pick IS the whole interaction — you go and mine it.
+			if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+				this.rebuildWidgets();
+			} else {
+				this.onClose();
+			}
 			return;
 		}
 
