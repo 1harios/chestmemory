@@ -591,7 +591,10 @@ public class ChestMemoryScreen extends Screen {
 
 	/** Open gather materials tab and start smart queue. */
 	private void enterGatherMode() {
-		if (!LitematicaAccess.isAvailable()) {
+		// A clan gather carries its own materials, so it opens even with no Litematica —
+		// only a solo gather actually needs the mod to produce a list.
+		boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInSession();
+		if (!clanGather && !LitematicaAccess.isAvailable()) {
 			this.statusLine = Component.translatable("screen.chestmemory.status.litematica_missing").getString();
 			updateLitematicaButtonState();
 			return;
