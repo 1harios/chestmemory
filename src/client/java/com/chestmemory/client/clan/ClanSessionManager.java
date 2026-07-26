@@ -43,6 +43,25 @@ public final class ClanSessionManager {
 	private static @Nullable String pausedCode;
 	/** Throttle for resume attempts; the tick fires 20×/s. */
 	private static long lastResumeAttemptMillis;
+	/**
+	 * Gather code being switched to, or null when idle.
+	 * <p>
+	 * Switching used to give no feedback at all: the click tore the old gather down straight
+	 * away and the panel sat on stale rows until the hub answered, so it read as a freeze and
+	 * then a jump. The UI shows this code as "switching…" and keeps the current gather intact
+	 * until the new one actually arrives.
+	 */
+	private static volatile @Nullable String switchingTo;
+
+	/** Code of the gather currently being switched to, or null when not switching. */
+	public static @Nullable String switchingTo() {
+		return switchingTo;
+	}
+
+	/** True while any hub request is in flight, so the UI can disable what must not be clicked. */
+	public static boolean isBusy() {
+		return busy.get();
+	}
 
 	private ClanSessionManager() {
 	}
@@ -114,6 +133,9 @@ public final class ClanSessionManager {
 			return;
 		}
 		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
 			return;
 		}
 		Map<String, Integer> needs = new HashMap<>();
@@ -199,6 +221,11 @@ public final class ClanSessionManager {
 			return;
 		}
 		if (!busy.compareAndSet(false, true)) {
+			// Another request is in flight. Returning without calling onDone left the screen
+			// stuck on "working…" for good, because nothing ever refreshed it again.
+			if (onDone != null) {
+				onDone.run();
+			}
 			return;
 		}
 		JsonObject body = new JsonObject();
@@ -212,9 +239,22 @@ public final class ClanSessionManager {
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
+						ClanSession previous = session;
+						boolean differentGather = previous != null
+							&& !previous.code.equalsIgnoreCase(res.value.code);
 						session = res.value;
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
+						if (differentGather) {
+							// The local queue belongs to the schematic we are leaving. Keeping it
+							// showed one build's materials under another build's session — old
+							// items still looked claimed, and clicking a new one made the hub
+							// answer "unknown item".
+							//
+							// Done here rather than before the request: tearing it down up front
+							// left a failed switch with no gather at all.
+							com.chestmemory.client.litematica.BuildGatherSession.clear();
+						}
 						// Adopt this gather's warehouse; do not push our own marks into it. A
 						// member joining used to merge whatever they had marked locally into the
 						// session, which is how one chest leaked across every schematic.
@@ -284,21 +324,29 @@ public final class ClanSessionManager {
 			}
 			return;
 		}
-		// Drop what belonged to the previous gather before the new one arrives, so a failed
-		// switch cannot leave the old warehouse glowing under the new build's name.
-		com.chestmemory.client.data.StagingPickMode.stopQuiet();
-		ChestMemoryStorage.get().clearStaging();
-		// The feed is NOT cleared here. Switching gathers used to wipe it, and since a portal
-		// also rejoins, activity never survived long enough to be read. Entries name the item
-		// and the player, so a few lines from the previous gather are harmless.
-		// The local gather queue belongs to the schematic of the gather we are leaving. Keeping
-		// it made the panel show one build's materials while the session described another —
-		// old items still looked claimed, and clicking a new one made the hub answer
-		// "unknown item". Stop it; the player restarts the gather for the new build.
-		com.chestmemory.client.litematica.BuildGatherSession.clear();
+		if (busy.get()) {
+			// A switch already in flight. Starting a second one tore down the first one's state
+			// mid-request, which is what made rapid clicking feel broken.
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		// Teardown happens only once the new gather has actually arrived. Doing it up front
+		// meant a failed or slow switch left the player with no gather and a blank panel — the
+		// old warehouse already unmarked, the old queue already gone, and nothing to show yet.
+		switchingTo = code;
+		if (onDone != null) {
+			onDone.run();
+		}
 		// join is idempotent on the hub: a member who is already in the session just gets the
 		// current snapshot back, so this doubles as "switch to".
-		joinAsync(mc, code, onDone);
+		joinAsync(mc, code, () -> {
+			switchingTo = null;
+			if (onDone != null) {
+				onDone.run();
+			}
+		});
 	}
 
 	public static void leaveAsync(Minecraft mc, @Nullable Runnable onDone) {
@@ -311,6 +359,9 @@ public final class ClanSessionManager {
 		String code = session.code;
 		boolean host = isHost(mc);
 		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
 			return;
 		}
 		JsonObject body = new JsonObject();
@@ -380,6 +431,9 @@ public final class ClanSessionManager {
 		ClanSession.ClanMaterial m = session.material(itemId);
 		boolean unclaim = m != null && localUuid(mc).equalsIgnoreCase(m.claimedBy);
 		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
 			return;
 		}
 		JsonObject body = new JsonObject();
