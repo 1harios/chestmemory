@@ -284,6 +284,91 @@ public final class ChestGuiStyle {
 		}
 	}
 
+	/** Slot pitch of the main screen's item grid. Everything item-shaped uses this. */
+	public static final int GRID_SLOT = 18;
+
+	/**
+	 * Recessed tray behind a grid of item slots, exactly as the main screen draws it:
+	 * a dark border with a light grey face.
+	 * <p>
+	 * Items on the bare panel read as loose icons; on this they read as an inventory. The
+	 * clan screen looked like a different mod because it skipped this.
+	 */
+	public static void drawGridTray(
+		GuiGraphicsExtractor graphics, int x, int y, int width, int height
+	) {
+		graphics.fill(x, y, x + width, y + height, 0xFF1A120A);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFFC6C6C6);
+	}
+
+	/**
+	 * Stack count in the corner of an 18px slot — scaled down, shadowed, no plate.
+	 * <p>
+	 * Copied from the main screen rather than reinvented: a count drawn at full size does
+	 * not fit an 18px slot, which is why the clan grid needed 24px cells and still looked
+	 * wrong next to the real thing.
+	 */
+	public static void drawSlotCount(
+		GuiGraphicsExtractor graphics, Font font, String text, int slotX, int slotY, int colour
+	) {
+		float scale = 0.72F;
+		int textW = font.width(text);
+		float drawX = Math.max(slotX + 1, slotX + 17 - textW * scale);
+		float drawY = slotY + 17 - 7.2F * scale;
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(drawX, drawY);
+		graphics.pose().scale(scale, scale);
+		graphics.text(font, text, 1, 1, 0xE0000000, false);
+		graphics.text(font, text, 0, 0, colour, false);
+		graphics.pose().popMatrix();
+	}
+
+	/** Compact counts that fit an 18px slot: 999, 1k, 1.5k, 12k, 1.2M. */
+	public static String formatCount(int count) {
+		if (count <= 0) {
+			return "0";
+		}
+		if (count >= 1_000_000) {
+			double m = count / 1_000_000.0;
+			return m >= 10 ? String.format("%.0fM", m) : String.format("%.1fM", m);
+		}
+		if (count >= 1000) {
+			double k = count / 1000.0;
+			// Rounding up at 999_500 produced "1000k" — five glyphs where the slot fits
+			// three. Anything that would round to 1000k is a million as far as this is
+			// concerned.
+			if (k >= 999.5) {
+				return "1.0M";
+			}
+			if (k >= 10 || Math.abs(k - Math.rint(k)) < 0.05) {
+				return String.format("%.0fk", k);
+			}
+			return String.format("%.1fk", k);
+		}
+		return String.valueOf(count);
+	}
+
+	/**
+	 * A label and its value on one line, the value right-aligned.
+	 * <p>
+	 * This is how a detail sheet reads: the eye runs down the labels on the left and the
+	 * values line up on the right, instead of every fact being a centred sentence.
+	 */
+	public static void drawDetailRow(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		String label,
+		String value,
+		int x,
+		int y,
+		int width,
+		int valueColour
+	) {
+		int valueW = font.width(value);
+		graphics.text(font, ellipsize(font, label, width - valueW - 8), x, y, TEXT_MUTED, false);
+		graphics.text(font, value, x + width - valueW, y, valueColour, false);
+	}
+
 	/**
 	 * Small coloured dot used by the activity feed to mark the kind of event, so the list is
 	 * scannable at a glance instead of being a wall of sentences.
