@@ -236,54 +236,188 @@ class ClanRedesignTest {
 		}
 
 		@Test
-		@DisplayName("The three numbers are tiles, not a run-on sentence")
-		void numbersAreTiles() throws Exception {
+		@DisplayName("The facts are label/value rows, not a run-on sentence")
+		void factsAreDetailRows() throws Exception {
+			// Tiles were replaced by detail rows: they duplicated numbers the rows carry and
+			// cost 32px the card needed for who/when. The eye runs down the labels instead.
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("private void drawTile("), "tiles are missing");
-			for (String key : new String[]{"tile_online", "tile_claimed", "tile_left"}) {
+			assertTrue(src.contains("ChestGuiStyle.drawDetailRow("), "detail rows are missing");
+			for (String key : new String[]{
+				"detail_host", "detail_created", "detail_updated",
+				"detail_items", "detail_warehouse", "detail_members"
+			}) {
 				assertTrue(src.contains("screen.chestmemory.clan." + key), "missing: " + key);
 			}
 		}
 
 		@Test
-		@DisplayName("It answers 'what should I go get?' with icons")
-		void showsFreeItems() throws Exception {
+		@DisplayName("It says how much work is free, and where to take it")
+		void pointsAtTheWork() throws Exception {
 			String src = read(CLAN_SCREEN);
 			int decl = src.indexOf("private void drawGatherSummary");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
-				body.contains("next.size() == 8"),
-				"the free-item strip must be bounded, or it would run off the panel"
+				body.contains("screen.chestmemory.clan.hint_free"),
+				"the card has to point at the Materials tab now that it has no slots of its own"
 			);
 			assertTrue(
-				body.contains("screen.chestmemory.clan.all_claimed"),
-				"when nothing is free the strip must say so rather than sit empty"
+				body.contains("screen.chestmemory.clan.all_claimed")
+					&& body.contains("screen.chestmemory.clan.hint_finished"),
+				"every end state needs its own line: all claimed is not the same as all done"
 			);
 		}
 
 		@Test
-		@DisplayName("Measured: the summary fits above the back button")
+		@DisplayName("Measured: the card fits above the session controls")
 		void summaryFits() {
 			int panelH = 300;
 			int tabsY = 36 + 8 + 18 + 4 + 2;
-			int y = tabsY + 24;
-			y += 14;   // schematic name
-			y += 26;   // bar + percentage
-			y += 32;   // tiles
-			int iconsBottom = y + 11 + 18;
-			assertTrue(iconsBottom <= panelH - 26, "the icon strip runs into the back button");
+			int y = tabsY + 22;
+			y += 20;        // name plate
+			y += 24;        // bar + percentage
+			y += 11 * 6;    // six detail rows
+			y += 4;
+			int end = y + 2 + 8;   // closing hint
+			assertTrue(end <= panelH - 70, "the card runs into the session controls");
 		}
 
 		@Test
-		@DisplayName("Measured: eight icons and three tiles fit the panel")
-		void horizontalFits() throws Exception {
+		@DisplayName("Measured: a detail row fits its label and value side by side")
+		void detailRowsFit() throws Exception {
 			int content = 340 - 24;
-			assertTrue(8 * 20 <= content, "the free-item strip is too wide");
-			int tileW = (content - 8) / 3;
-			for (String key : new String[]{"tile_online", "tile_claimed", "tile_left"}) {
-				String label = lang("screen.chestmemory.clan." + key);
-				assertTrue(px(label) <= tileW - 6, "tile caption clipped: " + label);
+			// Worst realistic case: a long player name against the widest label.
+			String label = lang("screen.chestmemory.clan.detail_host");
+			String value = "ОченьДлинныйНикИгрока (вы)";
+			assertTrue(px(label) + px(value) + 8 <= content, "the row cannot hold both");
+			for (String key : new String[]{
+				"detail_created", "detail_updated", "detail_items",
+				"detail_warehouse", "detail_members"
+			}) {
+				assertTrue(px(lang("screen.chestmemory.clan." + key)) < content / 2,
+					"label is too wide to leave room for its value: " + key);
 			}
+		}
+	}
+
+	@Nested
+	@DisplayName("The screen is built from the chest panel's own pieces")
+	class MatchesTheMainScreen {
+		private static final String STYLE =
+			"src/client/java/com/chestmemory/client/gui/ChestGuiStyle.java";
+		private static final String GRID =
+			"src/client/java/com/chestmemory/client/gui/ItemGridWidget.java";
+
+		@Test
+		@DisplayName("The slot pitch is shared, not copied")
+		void slotPitchIsShared() throws Exception {
+			String style = read(STYLE);
+			assertTrue(style.contains("GRID_SLOT = 18"), "the shared slot size is missing");
+			assertTrue(
+				read(GRID).contains("SLOT = 18"),
+				"the reference grid must still agree with it"
+			);
+			assertTrue(
+				read(CLAN_SCREEN).contains("CELL = ChestGuiStyle.GRID_SLOT"),
+				"the clan grid invented 24px cells, which is why it looked like another mod"
+			);
+		}
+
+		@Test
+		@DisplayName("Items sit on the same recessed tray")
+		void gridHasATray() throws Exception {
+			String style = read(STYLE);
+			int decl = style.indexOf("public static void drawGridTray");
+			assertTrue(decl > 0, "the tray helper is missing");
+			String body = style.substring(decl, style.indexOf("\n\t}", decl));
+			// The exact two fills the chest panel uses: dark border, light grey face.
+			assertTrue(body.contains("0xFF1A120A"), "border colour differs from the reference");
+			assertTrue(body.contains("0xFFC6C6C6"), "face colour differs from the reference");
+			assertTrue(
+				read(CLAN_SCREEN).contains("ChestGuiStyle.drawGridTray("),
+				"items on the bare panel read as loose icons, not as an inventory"
+			);
+		}
+
+		@Test
+		@DisplayName("Counts are scaled down the same way")
+		void countsMatch() throws Exception {
+			String style = read(STYLE);
+			int decl = style.indexOf("public static void drawSlotCount");
+			String body = style.substring(decl, style.indexOf("\n\t}", decl));
+			assertTrue(body.contains("0.72F"), "the reference scales counts to 0.72");
+			assertTrue(
+				read(CLAN_SCREEN).contains("ChestGuiStyle.drawSlotCount("),
+				"a full-size count does not fit an 18px slot"
+			);
+		}
+
+		@Test
+		@DisplayName("Compact counts fit the slot at every magnitude")
+		void compactCounts() {
+			// 18px of slot leaves room for about three glyphs.
+			for (int n : new int[]{9, 64, 999, 1000, 1500, 12000, 999_999, 1_500_000}) {
+				String text = com.chestmemory.client.gui.ChestGuiStyle.formatCount(n);
+				assertTrue(px(text) <= 24, n + " renders as '" + text + "', too wide");
+			}
+			assertEquals("1k", com.chestmemory.client.gui.ChestGuiStyle.formatCount(1000));
+			assertEquals("1.5k", com.chestmemory.client.gui.ChestGuiStyle.formatCount(1500));
+			assertEquals("999", com.chestmemory.client.gui.ChestGuiStyle.formatCount(999));
+		}
+
+		@Test
+		@DisplayName("The header carries a subtitle, and the code is not drawn twice")
+		void headerHasASubtitle() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("this.panelTop + 8") && src.contains("this.panelTop + 20"),
+				"title and subtitle sit on the two lines the chest panel uses"
+			);
+			assertFalse(
+				src.contains("drawCodePlate"),
+				"the plate sat at +22, straight on top of the new subtitle"
+			);
+			assertTrue(
+				src.contains("screen.chestmemory.clan.header_in"),
+				"the subtitle must name the gather being viewed"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("A gather says who, when and what")
+	class GatherDetails {
+		@Test
+		@DisplayName("The list of gathers names the host, not just a code")
+		void listShowsTheHost() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("if (!e.host().isBlank())"),
+				"a column of bare CM-XXXX codes says nothing about which gather is which"
+			);
+		}
+
+		@Test
+		@DisplayName("The roster remembers the host across restarts")
+		void hostIsPersisted() throws Exception {
+			String src = read("src/client/java/com/chestmemory/client/clan/ClanRoster.java");
+			assertTrue(
+				src.contains("String host, long seenAt"),
+				"the entry has to carry it to survive a restart"
+			);
+			assertTrue(
+				src.contains("prev != null ? prev.host()"),
+				"a poll refreshing progress must not erase the host recorded on join"
+			);
+		}
+
+		@Test
+		@DisplayName("Older saved entries still load after the format grew")
+		void oldEntriesSurvive() throws Exception {
+			String src = read("src/client/java/com/chestmemory/client/clan/ClanRoster.java");
+			assertTrue(
+				src.contains("parts.length > 4 ? parts[4]") && src.contains("parts.length > 5"),
+				"two fields were added later; a shorter line is an older entry, not a broken one"
+			);
 		}
 	}
 

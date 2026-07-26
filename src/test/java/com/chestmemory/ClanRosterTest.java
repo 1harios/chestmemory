@@ -40,15 +40,15 @@ class ClanRosterTest {
 		@Test
 		@DisplayName("Percent is delivered over need")
 		void percent() {
-			assertEquals(50, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "Farm", 16, 32).percent());
-			assertEquals(100, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "Farm", 32, 32).percent());
-			assertEquals(0, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "Farm", 0, 32).percent());
+			assertEquals(50, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "Farm", 16, 32, "", 0L).percent());
+			assertEquals(100, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "Farm", 32, 32, "", 0L).percent());
+			assertEquals(0, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "Farm", 0, 32, "", 0L).percent());
 		}
 
 		@Test
 		@DisplayName("A gather with no materials yet reports 0, not a division by zero")
 		void noNeedIsZero() {
-			assertEquals(0, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "", 0, 0).percent());
+			assertEquals(0, new com.chestmemory.client.clan.ClanRoster.Entry("CM-A", "", 0, 0, "", 0L).percent());
 		}
 	}
 

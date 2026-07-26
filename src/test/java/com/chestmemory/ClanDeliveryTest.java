@@ -185,7 +185,11 @@ class ClanDeliveryTest {
 		@DisplayName("The tab draws a grid, not a stack of planks")
 		void drawnAsAGrid() throws Exception {
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("private static final int CELL = 24"), "no cell size");
+			// 18px now: the same slot pitch as the chest panel, so the two screens match.
+			assertTrue(
+				src.contains("private static final int CELL = ChestGuiStyle.GRID_SLOT"),
+				"the grid must use the shared slot size, not one of its own"
+			);
 			String draw = body(src, "private void drawMaterials(");
 			assertTrue(
 				draw.contains("ChestGuiStyle.drawSlot(") && draw.contains("perRow"),
@@ -218,40 +222,27 @@ class ClanDeliveryTest {
 		}
 
 		@Test
-		@DisplayName("Items can also be taken from the summary strip")
-		void summaryStripIsClickable() throws Exception {
+		@DisplayName("The summary no longer duplicates the Materials grid")
+		void summaryDoesNotDuplicateTheGrid() throws Exception {
+			// The quick-take strip was the same slots doing the same thing one tab away, and
+			// it cost the detail card the room it needed. The card points at Materials now.
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("private int quickAt("), "the strip is not clickable");
+			assertFalse(src.contains("private int quickAt("), "the duplicate strip is back");
 			assertTrue(
-				src.contains("claimFromList(this.quickIds.get(q))"),
-				"the strip already answered 'what should I get?'; acting on it should not "
-					+ "need a tab switch"
+				src.contains("screen.chestmemory.clan.hint_free"),
+				"removing it means the card has to say where the items are"
 			);
 		}
 
 		@Test
-		@DisplayName("A stale hit-box cannot claim clicks for slots that are gone")
-		void hitBoxIsClearedEachFrame() throws Exception {
-			String src = body(read(CLAN_SCREEN), "private void drawGatherSummary(");
-			assertTrue(
-				src.contains("this.quickTop = -1"),
-				"the strip is conditional, so its geometry must be reset every frame"
-			);
-		}
-
-		@Test
-		@DisplayName("Measured: the grid and its counts fit")
+		@DisplayName("Measured: the grid matches the chest panel's density")
 		void gridFits() {
 			int content = 340 - 24;
-			int cell = 24;
-			int perRow = content / cell;
-			assertEquals(13, perRow, "columns at 24px");
+			int cell = 18;
+			// The tray has a 2px border and the scrollbar sits inside it.
+			int perRow = (content - 4 - 4) / cell;
+			assertEquals(17, perRow, "the reference grid fits 17 slots per row");
 			assertTrue(perRow * cell <= content, "the grid runs past the panel");
-			// The count sits bottom-right with 3px of padding on each side.
-			int room = cell - 6;
-			assertTrue(px("173") <= room, "a three-digit count must fit");
-			assertTrue(px("999+") > room, "which is why 999+ was replaced");
-			assertTrue(px("99k") <= room, "the compact form must fit");
 		}
 
 		@Test
@@ -259,8 +250,8 @@ class ClanDeliveryTest {
 		void captionClearsTheButton() {
 			int panelH = 300;
 			int gridBottom = panelH - 50;
-			int captionTop = panelH - 48;
-			int captionEnd = panelH - 38 + 8;
+			int captionTop = panelH - 46;
+			int captionEnd = panelH - 36 + 8;
 			int backTop = panelH - 26;
 			assertTrue(gridBottom < captionTop, "the grid runs into its own caption");
 			assertTrue(captionEnd <= backTop, "the caption runs into the back button");

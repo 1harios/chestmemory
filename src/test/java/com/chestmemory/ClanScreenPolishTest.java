@@ -170,13 +170,20 @@ class ClanScreenPolishTest {
 	@DisplayName("The Gathers tab stopped printing over its own controls")
 	class NoOverlap {
 		@Test
-		@DisplayName("The status sentence is not drawn where the buttons now live")
-		void statusLineSkipsTheTab() throws Exception {
+		@DisplayName("The status sentence is drawn below the panel, out of the way")
+		void statusLineIsBelowThePanel() throws Exception {
+			// It used to be printed inside the panel and had to be suppressed tab by tab to
+			// stop it landing on buttons. Below the panel — where the chest screen puts its
+			// footer — it has the full width and cannot collide with anything, so every tab
+			// can show it again.
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("} else if (this.tab == TAB_LIST) {"),
-				"the controls moved to panelH-48 but the status line stayed at panelH-39, "
-					+ "so the sentence was printed across the create button"
+				src.contains("this.panelTop + this.panelH + 6"),
+				"the status line must sit below the panel"
+			);
+			assertFalse(
+				src.contains("this.panelTop + this.panelH - 39"),
+				"the old in-panel position is what collided with the controls"
 			);
 		}
 
