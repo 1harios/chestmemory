@@ -112,6 +112,7 @@
 	"message.chestmemory.clan_created": "§dКлан-сбор создан§r · код §e%s§r",
 	"message.chestmemory.clan_code_line": "ChestMemory сбор: %s",
 	"message.chestmemory.clan_joined": "§dВступил в сбор§r §e%s§r",
+	"message.chestmemory.clan_not_in_gather": "%s не входит в этот сбор",
 	"message.chestmemory.clan_left": "§dВышел из клан-сбора",
 	"message.chestmemory.clan_closed": "§dСессия сбора закрыта",
 	"message.chestmemory.clan_ended": "§dСессия сбора завершена на хабе",

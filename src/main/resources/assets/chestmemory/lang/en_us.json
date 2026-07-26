@@ -112,6 +112,7 @@
 	"message.chestmemory.clan_created": "§dClan gather created§r · code §e%s§r",
 	"message.chestmemory.clan_code_line": "ChestMemory gather: %s",
 	"message.chestmemory.clan_joined": "§dJoined gather§r §e%s§r",
+	"message.chestmemory.clan_not_in_gather": "%s is not part of this gather",
 	"message.chestmemory.clan_left": "§dLeft clan gather",
 	"message.chestmemory.clan_closed": "§dGather session closed",
 	"message.chestmemory.clan_ended": "§dGather session ended on hub",

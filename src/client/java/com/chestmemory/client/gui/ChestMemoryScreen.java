@@ -618,6 +618,13 @@ public class ChestMemoryScreen extends Screen {
 		this.litematicaBuildMode = false;
 		BuildGatherSession.clear();
 		ChestHighlighter.clear();
+		// Finishing has to end the clan side too. Clearing only the local gather left the
+		// session polling, so the HUD kept showing the clan and the gather looked like it was
+		// still running. Leaving also releases this player's claims, which is what "finish"
+		// means from the clan's point of view. The host closes the session; a member leaves it.
+		if (com.chestmemory.client.clan.ClanSessionManager.isInSession() && this.minecraft != null) {
+			com.chestmemory.client.clan.ClanSessionManager.leaveAsync(this.minecraft, null);
+		}
 		// A warehouse mark belongs to the build it was made for, so finishing the gather must
 		// drop it. It used to survive and keep glowing over a chest that was no longer a
 		// drop-off point for anything.

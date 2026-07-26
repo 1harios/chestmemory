@@ -329,6 +329,12 @@ public class ClanGatherScreen extends Screen {
 		if (mx < this.tabsLeft || mx > this.tabsLeft + this.tabsWidth) {
 			return null;
 		}
+		// Anything above the first row belongs to the tab strip. Without this the (int) cast
+		// below turned a negative offset into row 0 — so clicking a tab switched gathers and
+		// never reached tabAt(), which is why the Gathers tab could not be left.
+		if (my < this.listRowsTop) {
+			return null;
+		}
 		int idx = (int) ((my - this.listRowsTop) / Math.max(1, this.listRowH));
 		if (idx < 0 || idx >= this.listCodes.size()) {
 			return null;

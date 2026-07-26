@@ -132,8 +132,19 @@ class ClanRosterTest {
 			assertTrue(sw > 0, "switchToAsync not found");
 			String method = body.substring(sw, body.indexOf("\n\tpublic static", sw + 10));
 			assertTrue(method.contains("clearStaging()"), "warehouse marks belong to one gather");
-			assertTrue(method.contains("ClanEventLog.clear()"), "the feed describes one gather");
+			// The feed is deliberately NOT cleared here any more. Clearing on every switch —
+			// and a portal rejoin counts as one — meant activity was never readable, which is
+			// what the user reported. Entries name the item and the player, so a few lines
+			// carried over from the previous gather are harmless.
+			assertTrue(
+				!method.contains("ClanEventLog.clear()"),
+				"clearing the feed on every switch is why activity never showed up"
+			);
 			assertTrue(method.contains("joinAsync("), "switching reuses join, which the hub treats as idempotent");
+			assertTrue(
+				method.contains("BuildGatherSession.clear()"),
+				"the local queue belongs to the schematic being left behind"
+			);
 		}
 
 		@Test

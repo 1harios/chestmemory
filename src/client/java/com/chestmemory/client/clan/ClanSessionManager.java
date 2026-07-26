@@ -34,6 +34,13 @@ public final class ClanSessionManager {
 	private static long lastPollMillis;
 	private static final AtomicBoolean busy = new AtomicBoolean(false);
 	private static int tickCounter;
+	/**
+	 * Code of a gather interrupted by a world change, waiting to be rejoined.
+	 * <p>
+	 * A multiworld portal is a full reconnect, so the session has to be picked up again rather
+	 * than abandoned.
+	 */
+	private static @Nullable String pausedCode;
 
 	private ClanSessionManager() {
 	}
@@ -273,7 +280,14 @@ public final class ClanSessionManager {
 		// switch cannot leave the old warehouse glowing under the new build's name.
 		com.chestmemory.client.data.StagingPickMode.stop(false);
 		ChestMemoryStorage.get().clearStaging();
-		ClanEventLog.clear();
+		// The feed is NOT cleared here. Switching gathers used to wipe it, and since a portal
+		// also rejoins, activity never survived long enough to be read. Entries name the item
+		// and the player, so a few lines from the previous gather are harmless.
+		// The local gather queue belongs to the schematic of the gather we are leaving. Keeping
+		// it made the panel show one build's materials while the session described another —
+		// old items still looked claimed, and clicking a new one made the hub answer
+		// "unknown item". Stop it; the player restarts the gather for the new build.
+		com.chestmemory.client.litematica.BuildGatherSession.clear();
 		// join is idempotent on the hub: a member who is already in the session just gets the
 		// current snapshot back, so this doubles as "switch to".
 		joinAsync(mc, code, onDone);
@@ -340,6 +354,18 @@ public final class ClanSessionManager {
 	/** Toggle claim on item for local player. */
 	public static void claimToggleAsync(Minecraft mc, String itemId, @Nullable Runnable onDone) {
 		if (session == null || itemId == null) {
+			return;
+		}
+		// Refuse locally rather than letting the hub answer "unknown item": the panel can show
+		// a schematic that is not the active gather's.
+		if (!isInActiveGather(itemId)) {
+			chat(mc, Component.translatable(
+				"message.chestmemory.clan_not_in_gather",
+				ChestMemoryStorage.itemDisplayName(itemId)
+			));
+			if (onDone != null) {
+				onDone.run();
+			}
 			return;
 		}
 		ClanSession.ClanMaterial m = session.material(itemId);
@@ -491,6 +517,19 @@ public final class ClanSessionManager {
 		return m == null ? 0 : Math.max(0, m.delivered);
 	}
 
+	/**
+	 * True when the item is part of the gather currently being followed.
+	 * <p>
+	 * The panel lists whatever schematic Litematica has open, which is not necessarily the
+	 * schematic of the active gather — switching gathers changes the session but not the local
+	 * material list. Claiming an item the session has never heard of made the hub answer
+	 * "unknown item"; asking this first turns that into a clear message instead.
+	 */
+	public static boolean isInActiveGather(@Nullable String itemId) {
+		ClanSession s = session;
+		return s != null && itemId != null && s.material(itemId) != null;
+	}
+
 	public static int clanNeed(String itemId) {
 		if (session == null || itemId == null) {
 			return 0;
@@ -528,7 +567,13 @@ public final class ClanSessionManager {
 	}
 
 	public static void tick(Minecraft mc) {
-		if (mc.player == null || session == null) {
+		if (mc.player == null) {
+			return;
+		}
+		if (session == null) {
+			// A world change on a multiworld server disconnects us; pick the gather back up
+			// instead of silently dropping out of the clan.
+			resumePausedAsync(mc);
 			return;
 		}
 		tickCounter++;
@@ -821,28 +866,64 @@ public final class ClanSessionManager {
 		if (current == null || current.code == null || current.code.isBlank()) {
 			return;
 		}
-		String code = current.code;
-		Minecraft mc = Minecraft.getInstance();
-		JsonObject body = new JsonObject();
-		if (mc != null) {
-			body.addProperty("uuid", localUuid(mc));
-			body.addProperty("name", localName(mc));
-		}
-		IO.execute(() -> {
-			try {
-				// Always "leave", never "close" — even the host quitting should not end a
-				// session the others are still gathering for; they can carry on and the
-				// host rejoins later by code.
-				client().leave(code, body);
-			} catch (Exception e) {
-				ChestMemoryMod.LOGGER.debug("Clan release on disconnect: {}", e.toString());
-			}
-		});
+		// Do NOT send "leave". On a multiworld server a portal between worlds is a full
+		// reconnect, so leaving here dropped the player out of the clan every time they
+		// walked through the Nether — claims released, roster gone, activity feed wiped.
+		// The hub already handles a client that really left: no heartbeat for
+		// CLAIM_TIMEOUT_SEC frees the claims on its own.
+		//
+		// Park the session instead and remember the code, so the next tick in the new world
+		// rejoins it. The feed is kept for the same reason: it describes the gather, not the
+		// connection.
+		pausedCode = current.code;
 		session = null;
 		lastError = null;
-		ClanEventLog.clear();
 		ClanAuth.clear();
 	}
+
+	/**
+	 * Rejoin the gather that was interrupted by a world change.
+	 * <p>
+	 * Called from the tick once a player is in a world again. Silent on purpose: this is the
+	 * same gather the player was already in, so announcing a join every portal trip would be
+	 * noise.
+	 */
+	private static void resumePausedAsync(Minecraft mc) {
+		String code = pausedCode;
+		if (code == null || code.isBlank() || session != null) {
+			return;
+		}
+		if (!client().isConfigured() || !busy.compareAndSet(false, true)) {
+			return;
+		}
+		pausedCode = null;
+		JsonObject body = new JsonObject();
+		body.addProperty("name", localName(mc));
+		body.addProperty("uuid", localUuid(mc));
+		IO.execute(() -> {
+			try {
+				ClanHubClient c = client();
+				ClanAuth.ensureAuthenticated(c, mc);
+				var res = c.join(code, body);
+				mc.execute(() -> {
+					busy.set(false);
+					if (res.ok && res.value != null) {
+						session = res.value;
+						lastError = null;
+						lastPollMillis = System.currentTimeMillis();
+						applyClanStagingKeys(session);
+					} else if (res.isNotFound()) {
+						// Gather ended while we were between worlds.
+						ClanRoster.forget(code);
+					}
+				});
+			} catch (Exception e) {
+				mc.execute(() -> busy.set(false));
+				ChestMemoryMod.LOGGER.debug("Clan resume: {}", e.toString());
+			}
+		});
+	}
+
 
 	public static void clearLocal() {
 		session = null;
