@@ -231,4 +231,105 @@ class ClanFlowTest {
 			return idx;
 		}
 	}
+
+	@Nested
+	@DisplayName("Each gather has its own warehouse")
+	class PerGatherWarehouse {
+
+		@Test
+		@DisplayName("Creating a gather does not upload the previous build's chest")
+		void createStartsWithNoWarehouse() throws Exception {
+			// Reported: "на все схемы назначает один склад". createAsync pushed the local marks
+			// into the fresh session with replace=true, so the farm's drop-off became the
+			// house's.
+			String body = methodBody(read(CLAN), "public static void createAsync(");
+			assertTrue(
+				!body.contains("pushStagingKeysAsync(mc, true)"),
+				"a new gather must not inherit the previous one's warehouse"
+			);
+			assertTrue(body.contains("clearStaging()"), "and must start from a clean slate");
+		}
+
+		@Test
+		@DisplayName("Joining adopts the gather's warehouse instead of pushing your own")
+		void joinAdoptsWarehouse() throws Exception {
+			String body = methodBody(read(CLAN), "public static void joinAsync(");
+			assertTrue(
+				!body.contains("pushStagingKeysAsync(mc, false)"),
+				"merging local marks into someone else's gather is how one chest leaked everywhere"
+			);
+			assertTrue(body.contains("applyClanStagingKeys("), "the session's own marks are adopted");
+		}
+
+		@Test
+		@DisplayName("Replacing a session stops marking quietly, or the old chest is uploaded anyway")
+		void quietStopWhenReplacingSession() throws Exception {
+			// stop(false) syncs the full local warehouse to the active session. Calling it while
+			// swapping sessions uploaded the previous build's chest into the new gather — the fix
+			// would have looked right locally and been wrong on the hub.
+			String staging = read("src/client/java/com/chestmemory/client/data/StagingPickMode.java");
+			assertTrue(staging.contains("public static void stopQuiet()"), "a non-syncing stop is needed");
+			int quiet = staging.indexOf("public static void stopQuiet()");
+			String quietBody = staging.substring(quiet, staging.indexOf("\n\tpublic static void stop(", quiet));
+			assertTrue(
+				!quietBody.contains("pushStagingKeysAsync"),
+				"stopQuiet must not sync to the hub"
+			);
+
+			String clan = read(CLAN);
+			for (String method : new String[] {"createAsync(", "joinAsync(", "switchToAsync("}) {
+				String body = methodBody(clan, "public static void " + method);
+				assertTrue(
+					!body.contains("StagingPickMode.stop(false)"),
+					method + " must use stopQuiet, otherwise the old warehouse is uploaded"
+				);
+			}
+		}
+
+		@Test
+		@DisplayName("Marking a chest still shares it with the clan")
+		void markingStillSyncs() throws Exception {
+			// The point of the shared warehouse: everyone glows the same drop-off. Only the
+			// session-swap paths went quiet; finishing a marking run still uploads.
+			String staging = read("src/client/java/com/chestmemory/client/data/StagingPickMode.java");
+			assertTrue(
+				staging.contains("pushStagingKeysAsync"),
+				"marking must still reach the hub, or the clan cannot see the drop-off"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("The gather button stays usable")
+	class ButtonStaysAlive {
+
+		@Test
+		@DisplayName("Finishing a gather does not throw away what the schematic needs")
+		void cacheOutlivesGather() throws Exception {
+			// Reported: after a world change the «Сбор» button was dead. hasActiveMaterialList()
+			// falls back to the cached list, the cache was dropped when a gather ended, and
+			// Litematica only recreates its own list when the player opens it by hand — so
+			// neither side had one and the button could not be pressed again.
+			String body = methodBody(
+				read("src/client/java/com/chestmemory/client/litematica/MaterialListCache.java"),
+				"public static void setArmed(boolean on)"
+			);
+			assertTrue(
+				!body.contains("clear()"),
+				"disarming must keep the copy, or the gather cannot be restarted"
+			);
+		}
+
+		@Test
+		@DisplayName("Serving the copy no longer requires an active gather")
+		void servesWithoutArmed() throws Exception {
+			String src = read("src/client/java/com/chestmemory/client/litematica/MaterialListCache.java");
+			int r = src.indexOf("public static List<LitematicaCompat.MaterialNeed> resolve(\n\t\tList");
+			assertTrue(r > 0, "resolve not found");
+			assertTrue(
+				!src.substring(r).contains("if (!armed || cached == null)"),
+				"the copy has to be served after a gather ends too"
+			);
+		}
+	}
 }

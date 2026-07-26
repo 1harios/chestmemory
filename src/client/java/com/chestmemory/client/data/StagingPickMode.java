@@ -54,6 +54,20 @@ public final class StagingPickMode {
 		}
 	}
 
+	/**
+	 * Stop marking without syncing anything to the hub.
+	 * <p>
+	 * {@link #stop(boolean)} pushes the full local warehouse to the active session, which is
+	 * right when the player finishes marking — and wrong when the session is being replaced:
+	 * the previous build's chest would be uploaded into the new gather. Callers that are
+	 * switching gathers use this instead.
+	 */
+	public static void stopQuiet() {
+		active = false;
+		markedThisSession = 0;
+		announcedKeys.clear();
+	}
+
 	public static void stop(boolean announce) {
 		if (!active) {
 			return;

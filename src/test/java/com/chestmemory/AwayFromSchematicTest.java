@@ -27,6 +27,7 @@ class AwayFromSchematicTest {
 	@BeforeEach
 	void reset() {
 		MaterialListCache.setArmed(false);
+		MaterialListCache.clear();
 	}
 
 	@Test
@@ -66,9 +67,10 @@ class AwayFromSchematicTest {
 	}
 
 	@Test
-	@DisplayName("Not armed: never warns")
-	void notArmedNeverWarns() {
-		MaterialListCache.resolve(DIRT, "Build", OVERWORLD);
+	@DisplayName("Nothing cached: never warns")
+	void nothingCachedNeverWarns() {
+		// The warning needs a captured schematic to compare against; with none it must stay off.
+		MaterialListCache.clear();
 		assertFalse(MaterialListCache.isAwayFromSchematic(NETHER));
 	}
 

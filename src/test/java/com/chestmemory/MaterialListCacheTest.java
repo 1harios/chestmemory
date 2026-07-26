@@ -27,13 +27,16 @@ class MaterialListCacheTest {
 
 	@BeforeEach
 	void reset() {
+		// setArmed(false) no longer wipes the copy, so tests have to clear it explicitly.
 		MaterialListCache.setArmed(false);
+		MaterialListCache.clear();
 	}
 
 	@Test
-	@DisplayName("Not armed: an empty list stays empty (user closed their list on purpose)")
-	void notArmedPassesThrough() {
-		MaterialListCache.resolve(DIRT_AND_PEONY, "Build");
+	@DisplayName("Nothing cached yet: an empty list stays empty")
+	void nothingCachedPassesThrough() {
+		// With no copy taken there is nothing to serve, so an empty list is the honest answer.
+		MaterialListCache.clear();
 		assertEquals(List.of(), MaterialListCache.resolve(List.of(), null));
 	}
 
@@ -88,12 +91,28 @@ class MaterialListCacheTest {
 	}
 
 	@Test
-	@DisplayName("Stopping the gather clears the cache, so an empty list reads as empty")
-	void disarmClears() {
+	@DisplayName("Stopping the gather keeps the copy, so the gather can be started again")
+	void disarmKeepsCache() {
+		// Changed deliberately. Litematica only recreates a material list when the player opens
+		// it by hand, so throwing the copy away when a gather finished left no list from either
+		// side — and after a portal the «Сбор» button could no longer be pressed. The copy now
+		// survives until the schematic changes.
 		MaterialListCache.setArmed(true);
 		MaterialListCache.resolve(DIRT_AND_PEONY, "Build");
 
 		MaterialListCache.setArmed(false);
+
+		assertEquals(2, MaterialListCache.resolve(List.of(), null).size(),
+			"the build must still be known after the gather ends");
+	}
+
+	@Test
+	@DisplayName("clear() still drops everything, for a real reset")
+	void explicitClearDrops() {
+		MaterialListCache.setArmed(true);
+		MaterialListCache.resolve(DIRT_AND_PEONY, "Build");
+
+		MaterialListCache.clear();
 
 		assertEquals(List.of(), MaterialListCache.resolve(List.of(), null));
 	}

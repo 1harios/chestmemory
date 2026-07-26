@@ -17,8 +17,10 @@ import java.util.List;
  * between worlds. Gathering had to survive the trip.
  * <p>
  * The cache mirrors the last non-empty list Litematica reported and serves it while
- * Litematica has none. It is not a permanent store: it is dropped when the session ends or
- * the schematic changes, so two builds can never be mixed — the same hazard the
+ * Litematica has none. It outlives a single gather on purpose: Litematica only recreates a
+ * list when the player opens it by hand, so dropping the copy when a gather finished left no
+ * list from either side and the «Сбор» button could not be pressed again. It is replaced when
+ * the schematic changes, so two builds are never mixed — the same hazard the
  * {@code snapshotListName} reset already guards against.
  * <p>
  * <b>Known limitation.</b> While Litematica has no list, it also stops counting blocks you
@@ -30,7 +32,12 @@ public final class MaterialListCache {
 	private static @Nullable List<LitematicaCompat.MaterialNeed> cached;
 	/** Name of the schematic the cache belongs to, so a different build never reuses it. */
 	private static @Nullable String cachedListName;
-	/** True while a gather session wants the cache kept alive. */
+	/**
+	 * True while a gather is running.
+	 * <p>
+	 * No longer gates serving the copy — see {@link #setArmed(boolean)} — but still records
+	 * whether a gather is in progress for callers that ask.
+	 */
 	private static boolean armed;
 	/**
 	 * Dimension the list was captured in.
@@ -47,14 +54,16 @@ public final class MaterialListCache {
 	/**
 	 * Called by the gather session when it starts or stops.
 	 * <p>
-	 * The cache only serves a running session. Outside one, an empty list from Litematica is
-	 * the honest answer — the user closed the material list and expects the panel to be empty.
+	 * Note what this does <em>not</em> do: it no longer throws the copy away when a gather
+	 * stops. See the note in the body.
 	 */
 	public static void setArmed(boolean on) {
 		armed = on;
-		if (!on) {
-			clear();
-		}
+		// Deliberately does NOT clear on disarm any more. Litematica drops its list on every
+		// world load and only recreates it when the player opens it by hand, so after
+		// finishing a gather and walking through a portal there was no list from either side —
+		// hasActiveMaterialList() went false and the «Сбор» button could not be pressed again.
+		// The copy is kept until the schematic changes; it describes the build, not the gather.
 	}
 
 	public static void clear() {
@@ -99,7 +108,7 @@ public final class MaterialListCache {
 			}
 			return live;
 		}
-		if (!armed || cached == null) {
+		if (cached == null) {
 			return live;
 		}
 		// Litematica has no list but a gather is running: serve the copy so a portal trip
@@ -117,7 +126,7 @@ public final class MaterialListCache {
 	 * @param dimension where the player is standing now
 	 */
 	public static boolean isAwayFromSchematic(@Nullable String dimension) {
-		if (!armed || cached == null || cachedDimension == null || dimension == null) {
+		if (cached == null || cachedDimension == null || dimension == null) {
 			return false;
 		}
 		return !cachedDimension.equals(dimension);

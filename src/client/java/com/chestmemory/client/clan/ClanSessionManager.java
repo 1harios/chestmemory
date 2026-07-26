@@ -151,8 +151,11 @@ public final class ClanSessionManager {
 						session = res.value;
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
-						// Upload existing warehouse marks so clan sees drop-off
-						pushStagingKeysAsync(mc, true);
+						// A new gather starts with no warehouse. Uploading the local marks here
+						// handed the farm's drop-off chest to the house build — every schematic
+						// ended up sharing one warehouse. The host marks a chest for this build.
+						com.chestmemory.client.data.StagingPickMode.stopQuiet();
+						ChestMemoryStorage.get().clearStaging();
 						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed());
 						ModSettings.get().setClanActiveCode(session.code);
 						chat(mc, Component.translatable("message.chestmemory.clan_created", session.code));
@@ -210,9 +213,12 @@ public final class ClanSessionManager {
 						session = res.value;
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
+						// Adopt this gather's warehouse; do not push our own marks into it. A
+						// member joining used to merge whatever they had marked locally into the
+						// session, which is how one chest leaked across every schematic.
+						com.chestmemory.client.data.StagingPickMode.stopQuiet();
+						ChestMemoryStorage.get().clearStaging();
 						applyClanStagingKeys(session);
-						// Merge our local warehouse marks into clan list
-						pushStagingKeysAsync(mc, false);
 						ClanRoster.remember(session.code, session.schemaName, session.totalDelivered(), session.totalNeed());
 						ModSettings.get().setClanActiveCode(session.code);
 						chat(mc, Component.translatable("message.chestmemory.clan_joined", session.code));
@@ -278,7 +284,7 @@ public final class ClanSessionManager {
 		}
 		// Drop what belonged to the previous gather before the new one arrives, so a failed
 		// switch cannot leave the old warehouse glowing under the new build's name.
-		com.chestmemory.client.data.StagingPickMode.stop(false);
+		com.chestmemory.client.data.StagingPickMode.stopQuiet();
 		ChestMemoryStorage.get().clearStaging();
 		// The feed is NOT cleared here. Switching gathers used to wipe it, and since a portal
 		// also rejoins, activity never survived long enough to be read. Entries name the item
@@ -331,8 +337,9 @@ public final class ClanSessionManager {
 				ClanEventLog.clear();
 				// Warehouse marks came from this gather — shared ones from the clan, local ones
 				// made for it. Leaving means they are no longer drop-off points, so stop
-				// glowing over them.
-				com.chestmemory.client.data.StagingPickMode.stop(false);
+				// glowing over them. Quiet: session is already null, and pushing here would
+				// only be an upload into a gather we just left.
+				com.chestmemory.client.data.StagingPickMode.stopQuiet();
 				ChestMemoryStorage.get().clearStaging();
 				chat(mc, Component.translatable(
 					host ? "message.chestmemory.clan_closed" : "message.chestmemory.clan_left"
@@ -641,7 +648,7 @@ public final class ClanSessionManager {
 						// The host ended the gather: the shared warehouse is no longer a
 						// drop-off point, so it must stop glowing for everyone, not just for
 						// whoever pressed the button.
-						com.chestmemory.client.data.StagingPickMode.stop(false);
+						com.chestmemory.client.data.StagingPickMode.stopQuiet();
 						ChestMemoryStorage.get().clearStaging();
 						chat(mc, Component.translatable("message.chestmemory.clan_ended"));
 					});
