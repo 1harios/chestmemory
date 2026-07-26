@@ -27,15 +27,32 @@ import java.util.List;
 public class ClanGatherScreen extends Screen {
 	/** Tabs shown while in a session. Index order matches {@link #TAB_KEYS}. */
 	private static final int TAB_GATHER = 0;
-	private static final int TAB_MEMBERS = 1;
-	private static final int TAB_FEED = 2;
-	private static final int TAB_LIST = 3;
+	/** What the build needs, with icons — the view this screen was missing entirely. */
+	private static final int TAB_MATERIALS = 1;
+	private static final int TAB_MEMBERS = 2;
+	private static final int TAB_FEED = 3;
+	private static final int TAB_LIST = 4;
 	private static final String[] TAB_KEYS = {
 		"screen.chestmemory.clan.tab_gather",
+		"screen.chestmemory.clan.tab_materials",
 		"screen.chestmemory.clan.tab_members",
 		"screen.chestmemory.clan.tab_feed",
 		"screen.chestmemory.clan.tab_list"
 	};
+
+	/** Scroll state per list, so switching tabs does not lose your place. */
+	private final ScrollList materialScroll = new ScrollList();
+	private final ScrollList memberScroll = new ScrollList();
+	private final ScrollList feedScroll = new ScrollList();
+	private final ScrollList gatherScroll = new ScrollList();
+	/** Item ids drawn in the materials tab this frame, for hit-testing clicks. */
+	private java.util.List<String> materialIds = java.util.List.of();
+	/** Pointer position from the last render, so painted rows can show a hover. */
+	private int hoverX = -1;
+	private int hoverY = -1;
+	/** Icons are resolved once per item: building a stack hits the registry. */
+	private final java.util.Map<String, net.minecraft.world.item.ItemStack> iconCache =
+		new java.util.HashMap<>();
 
 	private final Screen parent;
 	private EditBox hubBox;
@@ -102,6 +119,13 @@ public class ClanGatherScreen extends Screen {
 		// in the same comparison as the rest.
 		boolean hasCode = !this.codeDraft.isBlank();
 		ClanSessionManager.HubState hub = ClanSessionManager.hubState();
+		if (!java.util.Objects.equals(code, this.builtForCode)) {
+			// A different gather means a different material list and roster; keeping the old
+			// offset would drop the player into the middle of a list they have not seen.
+			this.materialScroll.reset();
+			this.memberScroll.reset();
+			this.iconCache.clear();
+		}
 		if (!java.util.Objects.equals(switching, this.builtForSwitching)
 			|| busy != this.builtForBusy
 			|| !java.util.Objects.equals(code, this.builtForCode)
@@ -508,6 +532,38 @@ public class ClanGatherScreen extends Screen {
 	}
 
 	/**
+	 * Reserve the clicked material, or give it up when it is already yours.
+	 * <p>
+	 * Claiming used to live only on the chest panel, so a player had to leave the clan screen
+	 * to say what they were working on. The rules are the hub's, not this screen's: someone
+	 * else's claim is refused, and a finished item is not claimable at all.
+	 */
+	private void claimFromList(String itemId) {
+		if (this.minecraft == null) {
+			return;
+		}
+		ClanSession s = ClanSessionManager.session();
+		if (s == null) {
+			return;
+		}
+		if (s.remaining(itemId) <= 0) {
+			this.status = Component.translatable("screen.chestmemory.clan.mat_already_done").getString();
+			return;
+		}
+		ClanSession.ClanMaterial m = s.material(itemId);
+		String me = ClanSessionManager.localUuid(this.minecraft);
+		if (m != null && m.claimedBy != null && !m.claimedBy.isBlank() && !m.claimedBy.equals(me)) {
+			this.status = Component.translatable(
+				"screen.chestmemory.clan.mat_taken_by",
+				m.claimedName != null ? m.claimedName : "?"
+			).getString();
+			return;
+		}
+		this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+		ClanSessionManager.claimToggleAsync(this.minecraft, itemId, this::rebuildWidgets);
+	}
+
+	/**
 	 * Pull a CM-XXXX code out of the clipboard into the code box.
 	 * <p>
 	 * The code arrives in chat, and a player who copies that line gets a whole sentence, not
@@ -542,9 +598,33 @@ public class ClanGatherScreen extends Screen {
 	}
 
 	@Override
+	public boolean mouseScrolled(double x, double y, double scrollX, double scrollY) {
+		// Every list scrolls. Before this the rows simply stopped when they ran out of room,
+		// so a long roster or a big material list was unreachable past the first screenful.
+		ScrollList active = switch (this.tab) {
+			case TAB_MATERIALS -> this.materialScroll;
+			case TAB_MEMBERS -> this.memberScroll;
+			case TAB_FEED -> this.feedScroll;
+			case TAB_LIST -> this.gatherScroll;
+			default -> null;
+		};
+		if (active != null && active.scrolled(x, y, scrollY)) {
+			return true;
+		}
+		return super.mouseScrolled(x, y, scrollX, scrollY);
+	}
+
+	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
 		// Tabs are painted, not widgets, so they are hit-tested here — before the default
 		// handling, which would otherwise swallow the click on the panel background.
+		if (this.tab == TAB_MATERIALS && this.minecraft != null) {
+			int idx = this.materialScroll.rowAt(event.x(), event.y(), 20);
+			if (idx >= 0 && idx < this.materialIds.size()) {
+				claimFromList(this.materialIds.get(idx));
+				return true;
+			}
+		}
 		String pick = gatherAt(event.x(), event.y());
 		if (pick != null) {
 			if (ClanSessionManager.switchingTo() != null) {
@@ -577,29 +657,18 @@ public class ClanGatherScreen extends Screen {
 	 * recorded during the last render.
 	 */
 	private @org.jspecify.annotations.Nullable String gatherAt(double mx, double my) {
-		if (this.tab != TAB_LIST || this.listRowsTop < 0 || this.listCodes.isEmpty()) {
+		if (this.tab != TAB_LIST) {
 			return null;
 		}
-		if (mx < this.tabsLeft || mx > this.tabsLeft + this.tabsWidth) {
+		// Delegated to the scroll state, which knows the offset. Doing the arithmetic here
+		// broke the moment the list could scroll: listCodes holds only the visible rows, so a
+		// scrolled list mapped every click to the wrong gather.
+		int idx = this.gatherScroll.rowAt(mx, my, 20);
+		if (idx < 0) {
 			return null;
 		}
-		// Anything above the first row belongs to the tab strip. Without this the (int) cast
-		// below turned a negative offset into row 0 — so clicking a tab switched gathers and
-		// never reached tabAt(), which is why the Gathers tab could not be left.
-		if (my < this.listRowsTop) {
-			return null;
-		}
-		int idx = (int) ((my - this.listRowsTop) / Math.max(1, this.listRowH));
-		if (idx < 0 || idx >= this.listCodes.size()) {
-			return null;
-		}
-		// Guard the gap between rows: a click in the 2px seam should do nothing rather than
-		// switch a gather the player was not aiming at.
-		int rowTop = this.listRowsTop + idx * this.listRowH;
-		if (my > rowTop + 20) {
-			return null;
-		}
-		return this.listCodes.get(idx);
+		var entries = com.chestmemory.client.clan.ClanRoster.all();
+		return idx < entries.size() ? entries.get(idx).code() : null;
 	}
 
 	/** Tab index under the cursor, or -1. */
@@ -641,6 +710,8 @@ public class ClanGatherScreen extends Screen {
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
 		super.extractRenderState(graphics, mouseX, mouseY, a);
+		this.hoverX = mouseX;
+		this.hoverY = mouseY;
 		ChestGuiStyle.drawCentered(
 			graphics, this.font, this.title,
 			this.panelLeft + this.panelW / 2, this.panelTop + 10,
@@ -677,6 +748,7 @@ public class ClanGatherScreen extends Screen {
 
 
 				switch (this.tab) {
+					case TAB_MATERIALS -> drawMaterials(graphics, s, left, contentW);
 					case TAB_MEMBERS -> drawMembers(graphics, s, left, contentW);
 					case TAB_FEED -> drawFeed(graphics, left, contentW);
 					case TAB_LIST -> drawGatherList(graphics, s, left, contentW);
@@ -749,39 +821,209 @@ public class ClanGatherScreen extends Screen {
 		int need = s.totalNeed();
 		int delivered = s.totalDelivered();
 		float f = need > 0 ? delivered / (float) need : 0F;
-		// Rows are stacked from the back button upwards with explicit gaps: the summary line
-		// and the status line used to be computed independently and overlapped by 12px.
-		int barY = this.panelTop + this.panelH - 72;
+		int y = this.tabsY + 24;
 
-		ChestGuiStyle.drawProgressBar(graphics, left, barY, contentW, 8, f);
+		// Headline: the schematic being built. It was nowhere on this tab, so two gathers
+		// looked identical apart from their code.
+		String schema = s.schemaName == null || s.schemaName.isBlank()
+			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
+			: s.schemaName;
+		ChestGuiStyle.drawCentered(
+			graphics, this.font, ChestGuiStyle.ellipsize(this.font, schema, contentW),
+			centerX, y, ChestGuiStyle.TEXT_GOLD
+		);
+		y += 14;
+
+		ChestGuiStyle.drawProgressBar(graphics, left, y, contentW, 8, f);
 		String amount = Component.translatable(
 			"screen.chestmemory.clan.progress",
 			delivered, need, need > 0 ? (int) (f * 100) : 0
 		).getString();
-		ChestGuiStyle.drawCentered(graphics, this.font, amount, centerX, barY + 11, ChestGuiStyle.TEXT_LIGHT);
+		ChestGuiStyle.drawCentered(graphics, this.font, amount, centerX, y + 11, ChestGuiStyle.TEXT_LIGHT);
+		y += 26;
 
-		// Counts that answer "is anyone actually working on this?" without switching tabs.
 		int online = 0;
-		int claimed = 0;
 		for (ClanSession.ClanMember m : s.members) {
 			if (!m.isAway()) {
 				online++;
 			}
 		}
-		for (ClanSession.ClanMaterial m : s.materials.values()) {
+		int claimed = 0;
+		int left0 = 0;
+		for (var e : s.materials.entrySet()) {
+			ClanSession.ClanMaterial m = e.getValue();
 			if (m.claimedBy != null && !m.claimedBy.isBlank()) {
 				claimed++;
 			}
+			if (s.remaining(e.getKey()) > 0) {
+				left0++;
+			}
 		}
-		String summary = Component.translatable(
-			"screen.chestmemory.clan.summary",
-			online, s.members.size(), claimed
-		).getString();
+
+		// Three numbers as tiles rather than one run-on sentence: this is the line a player
+		// glances at, and "3/5 · взято 2" was doing a table's job as prose.
+		int tileW = (contentW - 8) / 3;
+		drawTile(graphics, left, y, tileW, "screen.chestmemory.clan.tile_online",
+			online + "/" + s.members.size(),
+			online > 0 ? ChestGuiStyle.LAMP_ONLINE : ChestGuiStyle.TEXT_ON_WOOD_MUTED);
+		drawTile(graphics, left + tileW + 4, y, tileW, "screen.chestmemory.clan.tile_claimed",
+			String.valueOf(claimed), ChestGuiStyle.TEXT_GOLD);
+		drawTile(graphics, left + (tileW + 4) * 2, y, tileW, "screen.chestmemory.clan.tile_left",
+			String.valueOf(left0),
+			left0 == 0 ? ChestGuiStyle.LAMP_ONLINE : ChestGuiStyle.TEXT_LIGHT);
+		y += 32;
+
+		// The next few unclaimed items, as icons. Answers "what should I go get?" without
+		// switching tabs — previously this screen never showed a single item.
+		List<String> next = new java.util.ArrayList<>();
+		for (var e : s.materials.entrySet()) {
+			ClanSession.ClanMaterial m = e.getValue();
+			boolean free = m.claimedBy == null || m.claimedBy.isBlank();
+			if (free && s.remaining(e.getKey()) > 0) {
+				next.add(e.getKey());
+			}
+			if (next.size() == 8) {
+				break;
+			}
+		}
+		if (!next.isEmpty()) {
+			graphics.text(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.next_up").getString(),
+				left, y, ChestGuiStyle.TEXT_MUTED, false
+			);
+			y += 11;
+			for (int i = 0; i < next.size(); i++) {
+				int sx = left + i * 20;
+				ChestGuiStyle.drawSlot(graphics, sx, y);
+				graphics.item(icon(next.get(i)), sx + 1, y + 1);
+			}
+		} else if (need > 0) {
+			ChestGuiStyle.drawCentered(
+				graphics, this.font,
+				Component.translatable("screen.chestmemory.clan.all_claimed").getString(),
+				centerX, y + 4, ChestGuiStyle.LAMP_ONLINE
+			);
+		}
+	}
+
+	/** One labelled number on the summary tab. */
+	private void drawTile(
+		GuiGraphicsExtractor graphics, int x, int y, int w, String labelKey, String value, int colour
+	) {
+		graphics.fill(x, y, x + w, y + 28, ChestGuiStyle.WOOD_DARK);
+		graphics.fill(x + 1, y + 1, x + w - 1, y + 27, 0xFF2A1B0D);
+		String label = Component.translatable(labelKey).getString();
 		ChestGuiStyle.drawCentered(
-			graphics, this.font,
-			ChestGuiStyle.ellipsize(this.font, summary, contentW),
-			centerX, barY + 22, ChestGuiStyle.TEXT_LIGHT
+			graphics, this.font, ChestGuiStyle.ellipsize(this.font, label, w - 6),
+			x + w / 2, y + 4, ChestGuiStyle.TEXT_ON_WOOD_MUTED
 		);
+		ChestGuiStyle.drawCentered(graphics, this.font, value, x + w / 2, y + 15, colour);
+	}
+
+	private net.minecraft.world.item.ItemStack icon(String itemId) {
+		return this.iconCache.computeIfAbsent(
+			itemId, com.chestmemory.client.data.ItemStackKeys::toStack
+		);
+	}
+
+	/**
+	 * Materials tab: what the build still needs, with icons, and a claim on every row.
+	 * <p>
+	 * The clan screen used to show a percentage and nothing else — to see what was actually
+	 * missing you had to leave it, open the chest panel and read the gather list there. This
+	 * is the same information where it belongs, and clicking a row reserves the item without
+	 * going anywhere.
+	 */
+	private void drawMaterials(GuiGraphicsExtractor graphics, ClanSession s, int left, int contentW) {
+		int top = this.tabsY + 22;
+		int bottom = this.panelTop + this.panelH - 30;
+		int rowH = 20;
+		int gapH = 2;
+
+		// Unfinished first, then the largest remainder: the top of the list is always the
+		// work that matters most, instead of whatever order the hub happened to send.
+		List<java.util.Map.Entry<String, ClanSession.ClanMaterial>> rows =
+			new java.util.ArrayList<>(s.materials.entrySet());
+		rows.sort((a, b) -> {
+			int ra = s.remaining(a.getKey());
+			int rb = s.remaining(b.getKey());
+			if ((ra == 0) != (rb == 0)) {
+				return ra == 0 ? 1 : -1;
+			}
+			return Integer.compare(rb, ra);
+		});
+
+		this.materialScroll.layout(left, top, contentW, bottom, rowH + gapH, rows.size());
+		int rowW = this.materialScroll.rowWidth();
+		this.materialIds = new java.util.ArrayList<>(rows.size());
+		for (var e : rows) {
+			this.materialIds.add(e.getKey());
+		}
+
+		if (rows.isEmpty()) {
+			ChestGuiStyle.drawCentered(
+				graphics, this.font,
+				Component.translatable("screen.chestmemory.clan.no_materials").getString(),
+				left + contentW / 2, top + Math.max(0, (bottom - top) / 2 - 4),
+				ChestGuiStyle.TEXT_MUTED
+			);
+			return;
+		}
+
+		String me = this.minecraft != null ? ClanSessionManager.localUuid(this.minecraft) : "";
+		for (int i = this.materialScroll.firstVisible(); i < this.materialScroll.lastVisible(); i++) {
+			var e = rows.get(i);
+			ClanSession.ClanMaterial m = e.getValue();
+			int y = this.materialScroll.rowY(i);
+			int remaining = s.remaining(e.getKey());
+			boolean done = remaining <= 0;
+			boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
+			boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
+
+			// Accent encodes state at a glance: green done, gold yours, muted someone else's.
+			int accent = done
+				? ChestGuiStyle.LAMP_ONLINE
+				: mine ? ChestGuiStyle.TEXT_GOLD
+				: taken ? ChestGuiStyle.WOOD_LIGHT
+				: ChestGuiStyle.LATCH;
+			boolean hovered = !done
+				&& this.materialScroll.rowAt(this.hoverX, this.hoverY, rowH) == i;
+			ChestGuiStyle.drawMemberRow(graphics, left, y, rowW, rowH, accent, done);
+			if (hovered) {
+				graphics.fill(left + 1, y + 1, left + rowW - 1, y + rowH - 1,
+					ChestGuiStyle.withAlpha(0xFFFFFF, 0.08F));
+			}
+
+			graphics.item(icon(e.getKey()), left + 4, y + 2);
+
+			// Right side carries the number, which is what a gatherer scans for.
+			String count = done
+				? Component.translatable("screen.chestmemory.clan.mat_done").getString()
+				: String.valueOf(remaining);
+			int countW = this.font.width(count);
+			int textY = y + (rowH - this.font.lineHeight) / 2 + 1;
+			graphics.text(
+				this.font, count, left + rowW - 6 - countW, textY,
+				done ? ChestGuiStyle.LAMP_ONLINE : ChestGuiStyle.TEXT_GOLD, false
+			);
+
+			String name = com.chestmemory.client.data.ChestMemoryStorage
+				.itemDisplayName(e.getKey());
+			String owner = mine
+				? Component.translatable("screen.chestmemory.clan.mat_mine").getString()
+				: taken ? m.claimedName : null;
+			String label = owner == null ? name : name + " · " + owner;
+			graphics.text(
+				this.font,
+				ChestGuiStyle.ellipsize(this.font, label, rowW - 30 - countW),
+				left + 24, textY,
+				done ? ChestGuiStyle.TEXT_ON_WOOD_MUTED
+					: mine ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
+				false
+			);
+		}
+		this.materialScroll.drawScrollbar(graphics);
 	}
 
 	/**
@@ -791,45 +1033,40 @@ public class ClanGatherScreen extends Screen {
 	 * was no way to tell who was on the glass and who had already delivered.
 	 */
 	private void drawMembers(GuiGraphicsExtractor graphics, ClanSession s, int left, int contentW) {
-		int y = this.tabsY + 22;
-		int bottom = this.panelTop + this.panelH - 32;
+		int top = this.tabsY + 22;
+		int bottom = this.panelTop + this.panelH - 30;
 		int rowH = 20;
 
 		if (s.members.isEmpty()) {
-			graphics.text(
-				this.font,
+			ChestGuiStyle.drawCentered(
+				graphics, this.font,
 				Component.translatable("screen.chestmemory.clan.no_members").getString(),
-				left, y, ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+				left + contentW / 2, top + Math.max(0, (bottom - top) / 2 - 4),
+				ChestGuiStyle.TEXT_MUTED
 			);
 			return;
 		}
 
-		int shown = 0;
-		for (ClanSession.ClanMember m : s.members) {
-			if (y + rowH > bottom) {
-				// Count what is left explicitly; deriving it from pixel positions worked but
-				// silently depends on the row/gap constants staying in sync.
-				int rest = s.members.size() - shown;
-				if (rest > 0) {
-					graphics.text(
-						this.font,
-						Component.translatable("screen.chestmemory.clan.more_members", rest).getString(),
-						left, y + 2, ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
-					);
-				}
-				break;
-			}
+		// Scrolls now: the roster used to stop at the panel edge and print "+3 more", which
+		// named a number the player had no way to reach.
+		this.memberScroll.layout(left, top, contentW, bottom, rowH + 2, s.members.size());
+		int rowW = this.memberScroll.rowWidth();
+		for (int i = this.memberScroll.firstVisible(); i < this.memberScroll.lastVisible(); i++) {
+			ClanSession.ClanMember m = s.members.get(i);
+			int y = this.memberScroll.rowY(i);
 			boolean host = m.uuid != null && m.uuid.equalsIgnoreCase(s.hostUuid);
 			boolean away = m.isAway();
 
 			// What this member is holding, and how much of it already reached the warehouse.
 			String claimItem = null;
+			String claimId = null;
 			int claimDone = 0;
 			int claimNeed = 0;
 			for (var e : s.materials.entrySet()) {
 				ClanSession.ClanMaterial mat = e.getValue();
 				if (mat.claimedBy != null && m.uuid != null && mat.claimedBy.equalsIgnoreCase(m.uuid)) {
 					claimItem = ChestMemoryStorage.itemDisplayName(e.getKey());
+					claimId = e.getKey();
 					claimDone = Math.max(0, mat.delivered);
 					claimNeed = Math.max(0, mat.need);
 					break;
@@ -839,7 +1076,11 @@ public class ClanGatherScreen extends Screen {
 			int accent = away
 				? ChestGuiStyle.TEXT_ON_WOOD_MUTED
 				: (host ? ChestGuiStyle.LATCH : (claimItem != null ? 0xFF5FD068 : ChestGuiStyle.WOOD_LIGHT));
-			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, away);
+			ChestGuiStyle.drawMemberRow(graphics, left, y, rowW, rowH, accent, away);
+			if (claimId != null) {
+				// The item they are on, as an icon: faster to read than its name in the text.
+				graphics.item(icon(claimId), left + rowW - 20, y + 2);
+			}
 
 			String name = (host ? "★ " : "") + (m.name == null || m.name.isBlank() ? "?" : m.name);
 			int nameColour = away
@@ -867,41 +1108,49 @@ public class ClanGatherScreen extends Screen {
 			rightW = this.font.width(right);
 
 			int textY = y + (rowH - this.font.lineHeight) / 2 + 1;
+			// Reserve the icon's width too, or a long name runs underneath it.
+			int iconW = claimId != null ? 20 : 0;
 			graphics.text(
 				this.font,
-				ChestGuiStyle.ellipsize(this.font, name, contentW - rightW - 18),
+				ChestGuiStyle.ellipsize(this.font, name, rowW - rightW - 18 - iconW),
 				left + 7, textY, nameColour, false
 			);
-			graphics.text(this.font, right, left + contentW - 6 - rightW, textY, rightColour, false);
-			y += rowH + 2;
-			shown++;
+			graphics.text(
+				this.font, right, left + rowW - 6 - iconW - rightW, textY, rightColour, false
+			);
 		}
+		this.memberScroll.drawScrollbar(graphics);
 	}
 
 	/** Feed tab: recent claims, deliveries and arrivals, newest first. */
 	private void drawFeed(GuiGraphicsExtractor graphics, int left, int contentW) {
-		int y = this.tabsY + 22;
-		int bottom = this.panelTop + this.panelH - 32;
+		int top = this.tabsY + 22;
+		int bottom = this.panelTop + this.panelH - 30;
 		int lineH = 11;
-		int rows = Math.max(1, (bottom - y) / lineH);
 
-		List<ClanEventLog.Entry> events = ClanEventLog.recent(rows);
+		// The whole log, scrolled — it used to show only as many entries as happened to fit,
+		// and the rest were simply unreachable.
+		List<ClanEventLog.Entry> events = ClanEventLog.all();
 		// Recessed panel behind the feed. Without it the light text sat on the light panel at
 		// 1.19:1 contrast — the "barely visible" the user reported. On this backing it is 10.8:1.
-		int feedH = Math.max(lineH, Math.min(rows, Math.max(1, events.size())) * lineH) + 4;
-		graphics.fill(left - 2, y - 3, left + contentW + 2, y + feedH, ChestGuiStyle.WOOD_DARK);
-		graphics.fill(left - 1, y - 2, left + contentW + 1, y + feedH - 1, ChestGuiStyle.ROW_WOOD);
+		graphics.fill(left - 2, top - 3, left + contentW + 2, bottom + 1, ChestGuiStyle.WOOD_DARK);
+		graphics.fill(left - 1, top - 2, left + contentW + 1, bottom, ChestGuiStyle.ROW_WOOD);
 		if (events.isEmpty()) {
-			graphics.text(
-				this.font,
+			ChestGuiStyle.drawCentered(
+				graphics, this.font,
 				Component.translatable("screen.chestmemory.clan.no_events").getString(),
-				left, y, ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
+				left + contentW / 2, top + Math.max(0, (bottom - top) / 2 - 4),
+				ChestGuiStyle.TEXT_ON_WOOD_MUTED
 			);
 			return;
 		}
 
+		this.feedScroll.layout(left, top, contentW, bottom, lineH, events.size());
+		int rowW = this.feedScroll.rowWidth();
 		long now = System.currentTimeMillis();
-		for (ClanEventLog.Entry e : events) {
+		for (int i = this.feedScroll.firstVisible(); i < this.feedScroll.lastVisible(); i++) {
+			ClanEventLog.Entry e = events.get(i);
+			int y = this.feedScroll.rowY(i);
 			int dot = switch (e.kind()) {
 				case CLAIM -> 0xFFE0A83C;
 				case RELEASE -> 0xFF9A8A70;
@@ -915,15 +1164,15 @@ public class ClanGatherScreen extends Screen {
 			String age = ageLabel(now - e.at());
 			int ageW = this.font.width(age);
 			String text = ChestGuiStyle.ellipsize(
-				this.font, e.text().getString(), contentW - 10 - ageW - 6
+				this.font, e.text().getString(), rowW - 10 - ageW - 6
 			);
 			graphics.text(this.font, text, left + 8, y, ChestGuiStyle.TEXT_LIGHT, false);
 			graphics.text(
-				this.font, age, left + contentW - ageW, y,
+				this.font, age, left + rowW - ageW, y,
 				ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
 			);
-			y += lineH;
 		}
+		this.feedScroll.drawScrollbar(graphics);
 	}
 
 	/**
@@ -949,6 +1198,8 @@ public class ClanGatherScreen extends Screen {
 			com.chestmemory.client.clan.ClanRoster.all();
 		this.listRowsTop = y;
 		this.listRowH = rowH + 2;
+		this.gatherScroll.layout(left, y, contentW, bottom, rowH + 2, entries.size());
+		int rowW = this.gatherScroll.rowWidth();
 		this.listCodes = new java.util.ArrayList<>();
 
 		if (entries.isEmpty()) {
@@ -970,10 +1221,9 @@ public class ClanGatherScreen extends Screen {
 		}
 
 		String pending = ClanSessionManager.switchingTo();
-		for (com.chestmemory.client.clan.ClanRoster.Entry e : entries) {
-			if (y + rowH > bottom) {
-				break;
-			}
+		for (int i = this.gatherScroll.firstVisible(); i < this.gatherScroll.lastVisible(); i++) {
+			com.chestmemory.client.clan.ClanRoster.Entry e = entries.get(i);
+			y = this.gatherScroll.rowY(i);
 			boolean active = current != null && e.code().equalsIgnoreCase(current.code);
 			// The row being switched to is marked while the hub answers. Without it the click
 			// produced no visible change at all, and the switch landed as a sudden jump.
@@ -982,7 +1232,7 @@ public class ClanGatherScreen extends Screen {
 			int accent = loading
 				? ChestGuiStyle.TEXT_GOLD
 				: (active ? ChestGuiStyle.LATCH : ChestGuiStyle.WOOD_LIGHT);
-			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, !active && !loading);
+			ChestGuiStyle.drawMemberRow(graphics, left, y, rowW, rowH, accent, !active && !loading);
 
 			boolean iAmHost = active && this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
 			// Mark ownership: only the creator can delete a gather, so it should be visible
@@ -1002,20 +1252,20 @@ public class ClanGatherScreen extends Screen {
 			String main = label.isBlank() ? name : name + " · " + label;
 			graphics.text(
 				this.font,
-				ChestGuiStyle.ellipsize(this.font, main, contentW - rightW - 16),
+				ChestGuiStyle.ellipsize(this.font, main, rowW - rightW - 16),
 				left + 7, textY,
 				active || loading ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_LIGHT,
 				false
 			);
 			if (rightW > 0) {
 				graphics.text(
-					this.font, right, left + contentW - 6 - rightW, textY,
+					this.font, right, left + rowW - 6 - rightW, textY,
 					active || loading ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_ON_WOOD_MUTED, false
 				);
 			}
 			this.listCodes.add(e.code());
-			y += rowH + 2;
 		}
+		this.gatherScroll.drawScrollbar(graphics);
 	}
 
 	/** Compact age: seconds under a minute, then minutes, then hours. */

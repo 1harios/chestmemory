@@ -68,6 +68,11 @@ public final class ClanEventLog {
 		return out;
 	}
 
+	/** Every entry, newest first — the feed scrolls now, so it needs the whole log. */
+	public static synchronized List<Entry> all() {
+		return recent(CAPACITY);
+	}
+
 	public static synchronized boolean isEmpty() {
 		return entries.isEmpty();
 	}
