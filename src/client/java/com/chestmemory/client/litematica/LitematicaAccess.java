@@ -55,14 +55,30 @@ public final class LitematicaAccess {
 			return List.of();
 		}
 		List<LitematicaCompat.MaterialNeed> live = LitematicaCompat.getMissingMaterialsSafe();
-		return MaterialListCache.resolve(live, LitematicaCompat.getActiveListNameSafe());
+		return MaterialListCache.resolve(
+			live, LitematicaCompat.getActiveListNameSafe(), currentDimension()
+		);
 	}
 
-	/** True when the materials being served are cached because Litematica has no list. */
-	public static boolean isUsingCachedList() {
+	/**
+	 * True when the player is away from the dimension the schematic list was captured in.
+	 * <p>
+	 * Keyed on the dimension rather than on "Litematica has no list": Litematica never
+	 * recreates a list by itself, so the empty-list condition stays true after coming home
+	 * and the HUD warning would never clear.
+	 */
+	public static boolean isAwayFromSchematic() {
 		if (!isAvailable()) {
 			return false;
 		}
-		return MaterialListCache.isServingCache(LitematicaCompat.getMissingMaterialsSafe());
+		return MaterialListCache.isAwayFromSchematic(currentDimension());
+	}
+
+	private static @Nullable String currentDimension() {
+		var mc = net.minecraft.client.Minecraft.getInstance();
+		if (mc == null || mc.level == null) {
+			return null;
+		}
+		return com.chestmemory.client.data.ChestMemoryStorage.dimensionId(mc.level);
 	}
 }

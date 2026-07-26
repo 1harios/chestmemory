@@ -101,7 +101,7 @@
 	"screen.chestmemory.tooltip.clan_claim_free": "§aКлан: свободно — клик = взять§r",
 	"screen.chestmemory.tooltip.clan_delivered": "Клан сдано: ×%s",
 	"hud.chestmemory.clan": "Клан %s · %s%%",
-	"hud.chestmemory.list_cached": "Схема в другом мире — список сохранён",
+	"hud.chestmemory.list_cached": "Схема в другом мире",
 	"hud.chestmemory.clan_you": "Занято: ты",
 	"hud.chestmemory.clan_who": "Занято: %s",
 	"hud.chestmemory.clan_free": "Свободно",

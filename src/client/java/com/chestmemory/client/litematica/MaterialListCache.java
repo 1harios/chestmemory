@@ -32,6 +32,14 @@ public final class MaterialListCache {
 	private static @Nullable String cachedListName;
 	/** True while a gather session wants the cache kept alive. */
 	private static boolean armed;
+	/**
+	 * Dimension the list was captured in.
+	 * <p>
+	 * Litematica never recreates a material list on its own — only the player does, from its
+	 * menu. So "Litematica has no list" stays true after coming home, and cannot be used to
+	 * tell whether we are away from the schematic. The captured dimension can.
+	 */
+	private static @Nullable String cachedDimension;
 
 	private MaterialListCache() {
 	}
@@ -52,6 +60,7 @@ public final class MaterialListCache {
 	public static void clear() {
 		cached = null;
 		cachedListName = null;
+		cachedDimension = null;
 	}
 
 	/**
@@ -65,6 +74,17 @@ public final class MaterialListCache {
 		List<LitematicaCompat.MaterialNeed> live,
 		@Nullable String listName
 	) {
+		return resolve(live, listName, null);
+	}
+
+	/**
+	 * @param dimension dimension the player is standing in right now, or null when unknown
+	 */
+	public static List<LitematicaCompat.MaterialNeed> resolve(
+		List<LitematicaCompat.MaterialNeed> live,
+		@Nullable String listName,
+		@Nullable String dimension
+	) {
 		if (!live.isEmpty()) {
 			// A different schematic must never inherit the previous one's cache.
 			if (listName != null && cachedListName != null && !listName.equals(cachedListName)) {
@@ -73,6 +93,9 @@ public final class MaterialListCache {
 			cached = List.copyOf(live);
 			if (listName != null) {
 				cachedListName = listName;
+			}
+			if (dimension != null) {
+				cachedDimension = dimension;
 			}
 			return live;
 		}
@@ -84,9 +107,25 @@ public final class MaterialListCache {
 		return cached;
 	}
 
-	/** True when the list currently being served came from the cache, not from Litematica. */
-	public static boolean isServingCache(List<LitematicaCompat.MaterialNeed> live) {
-		return armed && live.isEmpty() && cached != null && !cached.isEmpty();
+	/**
+	 * True when we are away from the dimension the schematic's list was captured in.
+	 * <p>
+	 * This — not "Litematica has no list" — is what the HUD warning must key on. Litematica
+	 * only ever recreates a list when the player opens it, so an empty live list stays empty
+	 * after coming home and the warning would never clear.
+	 *
+	 * @param dimension where the player is standing now
+	 */
+	public static boolean isAwayFromSchematic(@Nullable String dimension) {
+		if (!armed || cached == null || cachedDimension == null || dimension == null) {
+			return false;
+		}
+		return !cachedDimension.equals(dimension);
+	}
+
+	/** Dimension the cached list was captured in, or null. */
+	public static @Nullable String cachedDimension() {
+		return cachedDimension;
 	}
 
 	/** Schematic name the cache belongs to, for the HUD. */

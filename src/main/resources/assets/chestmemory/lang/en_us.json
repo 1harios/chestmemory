@@ -101,7 +101,7 @@
 	"screen.chestmemory.tooltip.clan_claim_free": "§aClan: free — click to claim§r",
 	"screen.chestmemory.tooltip.clan_delivered": "Clan delivered: ×%s",
 	"hud.chestmemory.clan": "Clan %s · %s%%",
-	"hud.chestmemory.list_cached": "Schematic is in another world — list kept",
+	"hud.chestmemory.list_cached": "Schematic elsewhere",
 	"hud.chestmemory.clan_you": "Claimed: you",
 	"hud.chestmemory.clan_who": "Claimed: %s",
 	"hud.chestmemory.clan_free": "Free",

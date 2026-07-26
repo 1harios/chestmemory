@@ -630,6 +630,11 @@ public class ChestMemoryScreen extends Screen {
 		this.litematicaBuildMode = false;
 		BuildGatherSession.clear();
 		ChestHighlighter.clear();
+		// A warehouse mark belongs to the build it was made for, so finishing the gather must
+		// drop it. It used to survive and keep glowing over a chest that was no longer a
+		// drop-off point for anything.
+		com.chestmemory.client.data.StagingPickMode.stop(false);
+		ChestMemoryStorage.get().clearStaging();
 		this.clearConfirmPending = false;
 		this.statusLine = Component.translatable("screen.chestmemory.status.gather_finished").getString();
 		this.rebuildWidgets();
@@ -1022,9 +1027,23 @@ public class ChestMemoryScreen extends Screen {
 					));
 					return;
 				}
-				if (!com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(client, summary.itemId())) {
-					com.chestmemory.client.clan.ClanSessionManager.claimToggleAsync(client, summary.itemId(), null);
+				if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(client, summary.itemId())) {
+					// Clicking your own claim gives it up. Without this there was no way to
+					// change your mind: the item stayed reserved for the rest of the gather.
+					com.chestmemory.client.clan.ClanSessionManager.claimToggleAsync(
+						client, summary.itemId(), this::rebuildWidgets
+					);
+					// Do not start gathering something we just dropped.
+					if (summary.itemId().equals(BuildGatherSession.currentItemId())) {
+						BuildGatherSession.dropCurrentClaimFocus(client);
+					}
+					return;
 				}
+				com.chestmemory.client.clan.ClanSessionManager.claimToggleAsync(
+					client, summary.itemId(), null
+				);
+				// Follow the claim we just made, instead of whatever the ranking preferred.
+				BuildGatherSession.focusClaimed(client, summary.itemId());
 			}
 			// Queue order from ALL filter so path is always: ready → partial → none
 			// (ignore current UI filter for the queue contents after the clicked item)

@@ -614,6 +614,13 @@ public final class BuildGatherSession {
 	}
 
 	private static @Nullable String bestIdForPhase(Minecraft client, GatherPhase forPhase, @Nullable String exclude) {
+		// What you claimed in the clan wins over the mod's own ranking: taking an item is a
+		// promise to bring it, and the mod used to ignore that and walk you to whatever it
+		// thought was most needed — so the HUD named an item you had never picked.
+		String claimed = firstOwnClaim(client, exclude);
+		if (claimed != null) {
+			return claimed;
+		}
 		for (RankedItem r : rankPhase(client, forPhase)) {
 			if (exclude != null && exclude.equals(r.itemId)) {
 				continue;
@@ -627,6 +634,68 @@ public final class BuildGatherSession {
 			return r.itemId;
 		}
 		return null;
+	}
+
+	/**
+	 * First material this player has claimed in the clan session that still needs work.
+	 * <p>
+	 * Deliberately ignores whether any of it sits in a chest: the user asked to stay on a
+	 * claimed item even when there is none to be found, so they can decide themselves whether
+	 * to go mine it or give the claim up. Auto-switching is what made the HUD confusing.
+	 */
+	private static @Nullable String firstOwnClaim(Minecraft client, @Nullable String exclude) {
+		if (client == null || !com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+			return null;
+		}
+		var session = com.chestmemory.client.clan.ClanSessionManager.session();
+		if (session == null) {
+			return null;
+		}
+		for (var e : session.materials.entrySet()) {
+			String itemId = e.getKey();
+			if (exclude != null && exclude.equals(itemId)) {
+				continue;
+			}
+			if (skipped.contains(itemId)) {
+				continue;
+			}
+			if (!com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(client, itemId)) {
+				continue;
+			}
+			if (remainingNeed(itemId, client.player) <= 0) {
+				continue;
+			}
+			return itemId;
+		}
+		return null;
+	}
+
+	/**
+	 * Point the gather at an item the player just claimed.
+	 * <p>
+	 * Called straight from the panel click so the HUD updates on the item you picked instead
+	 * of lagging behind on the previous target until the next auto-advance.
+	 */
+	public static void focusClaimed(Minecraft client, String itemId) {
+		if (!active || itemId == null) {
+			return;
+		}
+		skipped.remove(itemId);
+		focusItem(client, itemId, true);
+	}
+
+	/**
+	 * Give up the current target after its claim was released, and move to the next thing
+	 * worth doing — the player said they no longer want this one.
+	 */
+	public static void dropCurrentClaimFocus(Minecraft client) {
+		currentItemId = null;
+		currentRoute = List.of();
+		highlightPaused = false;
+		if (!focusBestInPhase(client, false)) {
+			hudLines = List.of();
+		}
+		refreshHud(client);
 	}
 
 	private static boolean focusBestInPhase(Minecraft client, boolean announce) {

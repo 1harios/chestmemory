@@ -260,6 +260,11 @@ public final class ClanSessionManager {
 				session = null;
 				lastError = null;
 				ClanEventLog.clear();
+				// Warehouse marks came from this gather — shared ones from the clan, local ones
+				// made for it. Leaving means they are no longer drop-off points, so stop
+				// glowing over them.
+				com.chestmemory.client.data.StagingPickMode.stop(false);
+				ChestMemoryStorage.get().clearStaging();
 				chat(mc, Component.translatable(
 					host ? "message.chestmemory.clan_closed" : "message.chestmemory.clan_left"
 				));
@@ -524,6 +529,11 @@ public final class ClanSessionManager {
 					mc.execute(() -> {
 						session = null;
 						ClanEventLog.clear();
+						// The host ended the gather: the shared warehouse is no longer a
+						// drop-off point, so it must stop glowing for everyone, not just for
+						// whoever pressed the button.
+						com.chestmemory.client.data.StagingPickMode.stop(false);
+						ChestMemoryStorage.get().clearStaging();
 						chat(mc, Component.translatable("message.chestmemory.clan_ended"));
 					});
 				}

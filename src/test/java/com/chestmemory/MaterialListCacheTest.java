@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -49,7 +48,6 @@ class MaterialListCacheTest {
 
 		assertEquals(2, served.size(), "materials must survive the portal");
 		assertEquals("minecraft:dirt", served.getFirst().itemId());
-		assertTrue(MaterialListCache.isServingCache(List.of()));
 	}
 
 	@Test
@@ -73,7 +71,6 @@ class MaterialListCacheTest {
 
 		List<MaterialNeed> back = MaterialListCache.resolve(DIRT_AND_PEONY, "Build");
 		assertEquals(DIRT_AND_PEONY, back);
-		assertFalse(MaterialListCache.isServingCache(DIRT_AND_PEONY));
 	}
 
 	@Test
@@ -99,7 +96,6 @@ class MaterialListCacheTest {
 		MaterialListCache.setArmed(false);
 
 		assertEquals(List.of(), MaterialListCache.resolve(List.of(), null));
-		assertFalse(MaterialListCache.isServingCache(List.of()));
 	}
 
 	@Test
