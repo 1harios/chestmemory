@@ -17,24 +17,52 @@ public final class LitematicaAccess {
 		return FabricLoader.getInstance().isModLoaded("litematica");
 	}
 
+	/**
+	 * True when a material list is available — from Litematica, or from the cache while a
+	 * gather survives a dimension change.
+	 */
 	public static boolean hasActiveMaterialList() {
 		if (!isAvailable()) {
 			return false;
 		}
-		return LitematicaCompat.hasActiveMaterialListSafe();
+		if (LitematicaCompat.hasActiveMaterialListSafe()) {
+			return true;
+		}
+		return !missingMaterials().isEmpty();
 	}
 
+	/**
+	 * Name of the active schematic. Falls back to the cached name, so the HUD keeps its
+	 * caption instead of blanking out mid-portal.
+	 */
 	public static @Nullable String activeListName() {
 		if (!isAvailable()) {
 			return null;
 		}
-		return LitematicaCompat.getActiveListNameSafe();
+		String live = LitematicaCompat.getActiveListNameSafe();
+		return live != null ? live : MaterialListCache.cachedListName();
 	}
 
+	/**
+	 * Schematic materials.
+	 * <p>
+	 * Litematica drops its list on every world load, so stepping through a Nether portal
+	 * used to empty this and make a running gather look finished. The cache serves the last
+	 * known list until Litematica has one again — see {@link MaterialListCache}.
+	 */
 	public static List<LitematicaCompat.MaterialNeed> missingMaterials() {
 		if (!isAvailable()) {
 			return List.of();
 		}
-		return LitematicaCompat.getMissingMaterialsSafe();
+		List<LitematicaCompat.MaterialNeed> live = LitematicaCompat.getMissingMaterialsSafe();
+		return MaterialListCache.resolve(live, LitematicaCompat.getActiveListNameSafe());
+	}
+
+	/** True when the materials being served are cached because Litematica has no list. */
+	public static boolean isUsingCachedList() {
+		if (!isAvailable()) {
+			return false;
+		}
+		return MaterialListCache.isServingCache(LitematicaCompat.getMissingMaterialsSafe());
 	}
 }

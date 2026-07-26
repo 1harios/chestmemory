@@ -78,6 +78,17 @@ public final class BuildGatherHud {
 		int titleCol = 0xFF000000 | ModSettings.get().hudTitleColor();
 		rows.add(new Row(ellipsize(font, title, textMax), titleCol, false));
 
+		// Litematica drops its material list on a world load, so while we are away from the
+		// schematic's world the counts come from our own copy and stop tracking blocks placed.
+		// Say so, otherwise frozen numbers read as a bug.
+		if (com.chestmemory.client.litematica.LitematicaAccess.isUsingCachedList()) {
+			rows.add(new Row(
+				ellipsize(font, Component.translatable("hud.chestmemory.list_cached").getString(), textMax),
+				0xFFFFC864,
+				false
+			));
+		}
+
 		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
 			var cs = com.chestmemory.client.clan.ClanSessionManager.session();
 			if (cs != null) {

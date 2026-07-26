@@ -122,6 +122,10 @@ public final class BuildGatherSession {
 
 	public static void setActive(boolean on) {
 		active = on;
+		// Keep the material list alive across dimension changes, but only while gathering:
+		// Litematica clears its own list on every world load, so a portal trip would
+		// otherwise look like a finished build. See MaterialListCache.
+		MaterialListCache.setArmed(on);
 		if (!on) {
 			resetState();
 		} else {
