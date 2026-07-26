@@ -178,11 +178,19 @@ public final class BuildGatherSession {
 		if (itemId == null) {
 			return 0;
 		}
-		int inPlayer = countInPlayer(player, itemId);
 		int inStaging = countInStaging(itemId);
 		// Clan delivered (shared warehouse progress) merges as max with local staging
 		int clanDel = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(itemId);
 		int warehouse = Math.max(inStaging, clanDel);
+		// A clan gather counts what reached the warehouse, nothing else. Counting the
+		// backpack marked an item finished the moment it was picked up: the gather advanced
+		// to the next target while the hub was still told delivered = 0, because the report
+		// reads the warehouse. Locally done, clan-wise nothing happened.
+		//
+		// Solo it stays as it was — there is no warehouse to require, and carrying the
+		// material IS having gathered it.
+		boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInActiveGather(itemId);
+		int inPlayer = clanGather ? 0 : countInPlayer(player, itemId);
 		int covered = inPlayer + warehouse;
 		for (LitematicaCompat.MaterialNeed n : LitematicaAccess.missingMaterials()) {
 			if (itemId.equals(n.itemId())) {

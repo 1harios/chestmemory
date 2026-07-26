@@ -187,6 +187,16 @@ public final class ContainerScanner {
 		// removes this chest from the highlight on the next tick.
 		ChestMemoryStorage.get().rememberBlockContainer(client.level, dimension, pos, type, items);
 
+		// If this chest is the clan's warehouse, tell the hub what is in it now. The periodic
+		// push runs every ~10s, so dropping a stack off and looking at the panel showed
+		// nothing counted yet — which reads as "it did not register". Deliveries are the one
+		// thing that has to land immediately, because the whole clan is watching that number.
+		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()
+			&& ChestMemoryStorage.get().isStagingKey(
+				ContainerKeys.blockKey(dimension, ContainerKeys.canonicalPos(client.level, pos)))) {
+			com.chestmemory.client.clan.ClanSessionManager.pushStagingProgress(client);
+		}
+
 		// Warehouse pick: once per open GUI (scanner runs every tick while chest is open)
 		BlockPos canonical = ContainerKeys.canonicalPos(client.level, pos);
 		String stagingKey = ContainerKeys.blockKey(dimension, canonical);

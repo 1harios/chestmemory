@@ -569,6 +569,7 @@ public final class ClanSessionManager {
 		body.addProperty("uuid", localUuid(mc));
 		body.addProperty("name", localName(mc));
 		String code = session.code;
+		int before = clanDelivered(itemId);
 		IO.execute(() -> {
 			try {
 				var res = client().deliver(code, body);
@@ -576,6 +577,31 @@ public final class ClanSessionManager {
 					mc.execute(() -> {
 						session = res.value;
 						lastError = null;
+						// Deliveries were the one thing the feed never mentioned: it logged
+						// claims and arrivals, so a gather where everyone was actually working
+						// looked idle. Only real progress is logged — the periodic push
+						// re-reports the same warehouse totals and would otherwise spam it.
+						ClanSession.ClanMaterial m = session.material(itemId);
+						int now = m == null ? 0 : Math.max(0, m.delivered);
+						if (now > before) {
+							int added = now - before;
+							ClanEventLog.add(
+								ClanEventLog.Kind.DELIVER,
+								Component.translatable(
+									"message.chestmemory.clan_feed_delivered",
+									localName(mc),
+									added,
+									ChestMemoryStorage.itemDisplayName(itemId)
+								)
+							);
+							boolean finished = m != null && m.delivered >= m.need && m.need > 0;
+							if (finished) {
+								chat(mc, Component.translatable(
+									"message.chestmemory.clan_item_complete",
+									ChestMemoryStorage.itemDisplayName(itemId)
+								));
+							}
+						}
 					});
 				}
 			} catch (Exception e) {
