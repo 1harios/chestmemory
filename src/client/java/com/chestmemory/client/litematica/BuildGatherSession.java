@@ -378,9 +378,23 @@ public final class BuildGatherSession {
 			lastAdvanceMillis = now;
 			highlightPaused = false;
 			String doneName = ChestMemoryStorage.itemDisplayName(currentItemId);
+			// Report the delivery now instead of waiting for the 10s staging tick. The target
+			// switched the instant the warehouse covered the need, so the player saw a new item
+			// before the hub knew anything had been handed in — it read as "not counted".
+			com.chestmemory.client.clan.ClanSessionManager.reportStagedNow(client, currentItemId);
+			boolean wasClaimed = com.chestmemory.client.clan.ClanSessionManager
+				.isClaimedByMe(client, currentItemId);
 			currentItemId = null;
 			currentRoute = List.of();
 			chat(client, Component.translatable("message.chestmemory.build_got_enough", doneName));
+			// Auto-advance only to something the player actually signed up for. Finishing a
+			// claimed item used to fall through to the ranking and jump to a material they never
+			// picked; in a clan the next move is theirs.
+			if (wasClaimed && firstOwnClaim(client, null) == null) {
+				hudLines = List.of();
+				refreshHud(client);
+				return;
+			}
 			// Auto only within same phase — never auto-jump into craft
 			if (!focusBestInPhase(client, true)) {
 				onPhaseExhausted(client, true);

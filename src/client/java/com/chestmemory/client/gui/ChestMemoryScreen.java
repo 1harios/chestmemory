@@ -791,13 +791,11 @@ public class ChestMemoryScreen extends Screen {
 		}
 		// Do NOT force litematicaBuildMode=true just because session is active —
 		// user may be browsing full list while gather continues in background.
-		boolean clickable;
-		if (this.litematicaBuildMode) {
-			clickable = true; // Назад always works
-		} else {
-			clickable = canEnableSchemeMode() || isGatherRunning();
-		}
-		this.litematicaButton.active = clickable;
+		// Always clickable. Gating it on "is there a material list right now" left a clan
+		// member unable to continue a gather after relogging: Litematica had no list yet, so
+		// the one button that opens the materials view was dead. Pressing it without a list
+		// just reports why, which the player can act on — a disabled button explains nothing.
+		this.litematicaButton.active = true;
 		this.litematicaButton.setMessage(litematicaButtonLabel());
 		if (this.leftBarButton != null) {
 			this.leftBarButton.setMessage(leftBarLabel());

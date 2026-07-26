@@ -44,6 +44,8 @@ public class ClanGatherScreen extends Screen {
 	private String status = "";
 	/** Two-step guard for "say in chat": the code is readable by everyone on the server. */
 	private boolean sayCodeArmed;
+	/** Two-step guard for the host's "delete gather": it ends the build for everyone. */
+	private boolean deleteArmed;
 	/** Selected tab; kept across rebuildWidgets so polling does not snap you back. */
 	private int tab = TAB_GATHER;
 	private int hoveredTab = -1;
@@ -167,11 +169,38 @@ public class ClanGatherScreen extends Screen {
 						ClanSessionManager.switchToAsync(this.minecraft, this.codeBox.getValue(), this::rebuildWidgets);
 					}
 				));
-				this.addRenderableWidget(new SettingRowButton(
-					left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
-					Component.translatable("screen.chestmemory.clan.back"),
-					this::onClose
-				));
+				boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
+				if (host) {
+					// Only the creator can end a gather for everyone, and until now there was no way to
+					// do it from here — the hub already enforces host-only close.
+					this.addRenderableWidget(new SettingRowButton(
+						left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
+						this.deleteArmed
+							? Component.translatable("screen.chestmemory.clan.delete_confirm")
+							: Component.translatable("screen.chestmemory.clan.delete"),
+						() -> {
+							if (this.minecraft == null) {
+								return;
+							}
+							// Ending a gather throws away everyone's progress, so ask twice.
+							if (!this.deleteArmed) {
+								this.deleteArmed = true;
+								this.status = Component.translatable("screen.chestmemory.clan.delete_hint").getString();
+								this.rebuildWidgets();
+								return;
+							}
+							this.deleteArmed = false;
+							this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+							ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
+						}
+					));
+				} else {
+					this.addRenderableWidget(new SettingRowButton(
+						left + halfL + gap, this.panelTop + this.panelH - 26, halfL, rowH,
+						Component.translatable("screen.chestmemory.clan.back"),
+						this::onClose
+					));
+				}
 				return;
 			}
 			if (this.tab != TAB_GATHER) {
@@ -184,8 +213,17 @@ public class ClanGatherScreen extends Screen {
 				return;
 			}
 		} else {
-			this.tabsY = -1;
-			this.tab = TAB_GATHER;
+			// Not in a session, but the Gathers tab still has to be reachable: after leaving one
+			// gather there was no way back to another you had already joined — the list only
+			// existed while in a session, so the codes were remembered and unreachable.
+			this.tabsLeft = left;
+			this.tabsWidth = w;
+			this.tabsY = y;
+			y += 20;
+			if (this.tab != TAB_GATHER && this.tab != TAB_LIST) {
+				// Members / feed describe a session we are not in.
+				this.tab = TAB_LIST;
+			}
 		}
 
 		if (!in) {
@@ -397,6 +435,23 @@ public class ClanGatherScreen extends Screen {
 		int centerX = this.panelLeft + this.panelW / 2;
 		int contentW = this.panelW - 24;
 
+		// The tab strip is drawn whether or not we are in a session: the Gathers list has to
+		// stay reachable after leaving one, or codes already joined become unreachable.
+		if (this.tabsY >= 0) {
+			this.hoveredTab = tabAt(mouseX, mouseY);
+			Component[] labels = new Component[TAB_KEYS.length];
+			for (int i = 0; i < TAB_KEYS.length; i++) {
+				labels[i] = Component.translatable(TAB_KEYS[i]);
+			}
+			ChestGuiStyle.drawTabs(
+				graphics, this.font, labels,
+				this.tabsLeft, this.tabsY, this.tabsWidth, this.tab, this.hoveredTab
+			);
+		}
+		if (!ClanSessionManager.isInSession() && this.tab == TAB_LIST) {
+			// Outside a session the list is the whole screen; nothing is "active".
+			drawGatherList(graphics, null, left, contentW);
+		}
 		if (ClanSessionManager.isInSession()) {
 			ClanSession s = ClanSessionManager.session();
 			if (s != null) {
@@ -404,17 +459,6 @@ public class ClanGatherScreen extends Screen {
 				// of its own instead of being buried in a status sentence.
 				ChestGuiStyle.drawCodePlate(graphics, this.font, s.code, centerX, this.panelTop + 22, 90);
 
-				if (this.tabsY >= 0) {
-					this.hoveredTab = tabAt(mouseX, mouseY);
-					Component[] labels = new Component[TAB_KEYS.length];
-					for (int i = 0; i < TAB_KEYS.length; i++) {
-						labels[i] = Component.translatable(TAB_KEYS[i]);
-					}
-					ChestGuiStyle.drawTabs(
-						graphics, this.font, labels,
-						this.tabsLeft, this.tabsY, this.tabsWidth, this.tab, this.hoveredTab
-					);
-				}
 
 				switch (this.tab) {
 					case TAB_MEMBERS -> drawMembers(graphics, s, left, contentW);
@@ -683,7 +727,10 @@ public class ClanGatherScreen extends Screen {
 			int accent = active ? ChestGuiStyle.LATCH : ChestGuiStyle.WOOD_LIGHT;
 			ChestGuiStyle.drawMemberRow(graphics, left, y, contentW, rowH, accent, !active);
 
-			String name = (active ? "▶ " : "") + e.code();
+			boolean iAmHost = active && this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
+			// Mark ownership: only the creator can delete a gather, so it should be visible
+			// which of them are yours.
+			String name = (active ? "▶ " : "") + (iAmHost ? "★ " : "") + e.code();
 			String right = e.need() > 0
 				? Component.translatable("screen.chestmemory.clan.list_progress", e.percent()).getString()
 				: "";

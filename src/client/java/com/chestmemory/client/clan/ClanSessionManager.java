@@ -41,6 +41,8 @@ public final class ClanSessionManager {
 	 * than abandoned.
 	 */
 	private static @Nullable String pausedCode;
+	/** Throttle for resume attempts; the tick fires 20×/s. */
+	private static long lastResumeAttemptMillis;
 
 	private ClanSessionManager() {
 	}
@@ -456,6 +458,24 @@ public final class ClanSessionManager {
 	 * Push local staging warehouse counts into session (max merge).
 	 * Call after opening staging chests / periodically while in session.
 	 */
+	/**
+	 * Report one item's warehouse total immediately.
+	 * <p>
+	 * The periodic push runs every ~10s, which is fine for background sync and far too slow
+	 * when the gather has just switched away from a finished item: the player saw a new target
+	 * before the hub had been told anything was delivered.
+	 */
+	public static void reportStagedNow(Minecraft mc, @Nullable String itemId) {
+		if (session == null || itemId == null) {
+			return;
+		}
+		int staged = ChestMemoryStorage.get().countInStaging(itemId);
+		ClanSession.ClanMaterial m = session.material(itemId);
+		if (staged > 0 && m != null && staged > m.delivered) {
+			reportDeliveredAsync(mc, itemId, staged);
+		}
+	}
+
 	public static void pushStagingProgress(Minecraft mc) {
 		if (session == null) {
 			return;
@@ -903,7 +923,17 @@ public final class ClanSessionManager {
 		if (!client().isConfigured() || !busy.compareAndSet(false, true)) {
 			return;
 		}
-		pausedCode = null;
+		// Rate-limit the retry: the tick runs 20×/s, and a hub that is briefly unreachable
+		// would otherwise be hammered while the player stands in the new world.
+		long now = System.currentTimeMillis();
+		if (now - lastResumeAttemptMillis < 3000L) {
+			busy.set(false);
+			return;
+		}
+		lastResumeAttemptMillis = now;
+		// pausedCode is deliberately NOT cleared here. Clearing before the answer meant one
+		// failed attempt lost the session for good: no session means no heartbeat, and after
+		// CLAIM_TIMEOUT_SEC the hub released the claims and the player showed up as offline.
 		JsonObject body = new JsonObject();
 		body.addProperty("name", localName(mc));
 		body.addProperty("uuid", localUuid(mc));
@@ -915,14 +945,17 @@ public final class ClanSessionManager {
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
+						pausedCode = null;
 						session = res.value;
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
 						applyClanStagingKeys(session);
 					} else if (res.isNotFound()) {
-						// Gather ended while we were between worlds.
+						// Gather really ended while we were between worlds: stop retrying.
+						pausedCode = null;
 						ClanRoster.forget(code);
 					}
+					// Any other failure keeps pausedCode so the next attempt tries again.
 				});
 			} catch (Exception e) {
 				mc.execute(() -> busy.set(false));

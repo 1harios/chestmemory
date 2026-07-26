@@ -332,4 +332,152 @@ class ClanFlowTest {
 			);
 		}
 	}
+
+	@Nested
+	@DisplayName("Delivering a claimed item")
+	class Delivery {
+
+		@Test
+		@DisplayName("The hand-in is reported at once, not on the 10s tick")
+		void deliveryReportedImmediately() throws Exception {
+			// Reported: "сдал на склад, но мне не засчитало". The target switched the instant the
+			// warehouse covered the need, while the hub only heard about it up to 10s later.
+			String session = read("src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java");
+			assertTrue(
+				session.contains("ClanSessionManager.reportStagedNow("),
+				"finishing an item must push the delivery straight away"
+			);
+			String clan = read(CLAN);
+			assertTrue(clan.contains("public static void reportStagedNow("), "the immediate path must exist");
+		}
+
+		@Test
+		@DisplayName("Finishing a claimed item does not jump to something you never picked")
+		void noAutoJumpAfterClaim() throws Exception {
+			// Reported: "автоматом перекидывает на новый предмет хотя я не выбирал его".
+			String session = read("src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java");
+			int tick = session.indexOf("gatherAutoAdvance()");
+			assertTrue(tick > 0, "auto-advance block not found");
+			String block = session.substring(tick, Math.min(session.length(), tick + 1800));
+			assertTrue(
+				block.contains("isClaimedByMe(") && block.contains("firstOwnClaim("),
+				"auto-advance must stop instead of falling through to the ranking"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("Rejoining after a world change")
+	class Resume {
+
+		@Test
+		@DisplayName("A failed rejoin keeps trying instead of losing the session")
+		void failedResumeKeepsCode() throws Exception {
+			// This is what kicked the player off their claim: pausedCode was cleared before the
+			// answer, so one failed attempt meant no session, no heartbeat, and after
+			// CLAIM_TIMEOUT_SEC the hub freed the claims and showed them as offline.
+			String body = methodBody(read(CLAN), "private static void resumePausedAsync(");
+			int ok = body.indexOf("res.ok && res.value != null");
+			int firstClear = body.indexOf("pausedCode = null");
+			assertTrue(ok > 0 && firstClear > ok, "the code must only be dropped after a definite answer");
+			assertTrue(
+				body.contains("res.isNotFound()"),
+				"a gather that really ended should stop the retries"
+			);
+		}
+
+		@Test
+		@DisplayName("Retries are throttled — the tick runs 20 times a second")
+		void resumeThrottled() throws Exception {
+			String body = methodBody(read(CLAN), "private static void resumePausedAsync(");
+			assertTrue(
+				body.contains("lastResumeAttemptMillis"),
+				"without a throttle an unreachable hub is hammered every tick"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("Reaching your gathers")
+	class Reachability {
+
+		@Test
+		@DisplayName("The gather button is always clickable")
+		void gatherButtonAlwaysClickable() throws Exception {
+			// A clan member who relogged could not continue: Litematica had no material list
+			// yet, so the only button that opens the materials view was disabled with no
+			// explanation. Pressing it now reports why.
+			String body = methodBody(read(SCREEN), "private void updateLitematicaButtonState()");
+			assertTrue(
+				body.contains("this.litematicaButton.active = true"),
+				"the button must not be gated on having a list right now"
+			);
+		}
+
+		@Test
+		@DisplayName("The gathers list is reachable when not in a session")
+		void listReachableOutsideSession() throws Exception {
+			// Reported: after leaving one gather there was no way to pick another already joined.
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("drawGatherList(graphics, null, left, contentW)"),
+				"the list has to render with no active gather"
+			);
+			int init = src.indexOf("boolean in = ClanSessionManager.isInSession();");
+			assertTrue(init > 0, "init not found");
+			String tail = src.substring(init, src.indexOf("if (!in) {", init));
+			assertTrue(
+				!tail.contains("this.tabsY = -1;"),
+				"the tab strip must exist outside a session, or the list cannot be opened"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("Host rights")
+	class HostRights {
+
+		@Test
+		@DisplayName("Only the creator sees the delete button, and it asks twice")
+		void hostCanDelete() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("ClanSessionManager.isHost("), "the button is host-only");
+			assertTrue(src.contains("clan.delete_confirm"), "deleting ends the build for everyone");
+			// Check the two-step guard in the button body, not just anywhere in the file: the
+			// field name alone still matched after the arming logic was gutted.
+			int del = src.indexOf("clan.delete_confirm");
+			assertTrue(del > 0, "delete button not found");
+			String around = src.substring(Math.max(0, del - 400), Math.min(src.length(), del + 1200));
+			assertTrue(
+				around.contains("if (!this.deleteArmed)") && around.contains("this.deleteArmed = true"),
+				"a single misclick must not end a gather for everyone"
+			);
+		}
+
+		@Test
+		@DisplayName("The hub already enforces host-only close")
+		void hubEnforcesHost() throws Exception {
+			// Worth pinning: the client-side button is convenience, not the security boundary.
+			String hub = read("hub/clan_hub.py");
+			assertTrue(hub.contains("only host can close"), "the hub must reject a non-host close");
+		}
+
+		@Test
+		@DisplayName("Delete labels fit the half-width row")
+		void deleteLabelsFit() throws Exception {
+			// 316px content, two columns with a 4px gap, minus padding.
+			String ru = read("src/main/resources/assets/chestmemory/lang/ru_ru.json");
+			for (String key : new String[] {"delete", "delete_confirm"}) {
+				java.util.regex.Matcher m = java.util.regex.Pattern
+					.compile("\"screen\\.chestmemory\\.clan\\." + key + "\":\\s*\"([^\"]*)\"")
+					.matcher(ru);
+				assertTrue(m.find(), "missing lang key: " + key);
+				String text = m.group(1);
+				assertTrue(
+					text.length() * 6 <= 144,
+					"label too wide: '" + text + "' ~" + (text.length() * 6) + "px of 144"
+				);
+			}
+		}
+	}
 }
