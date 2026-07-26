@@ -75,8 +75,16 @@ processResources {
 	// Set clan_hub_url / clan_hub_token in gradle.properties, or pass
 	//   ./gradlew build -Pclan_hub_url=https://my.hub -Pclan_hub_token=secret
 	// Left empty in a public build: the mod then shows the manual fields as before.
-	def hubUrl = project.findProperty("clan_hub_url") ?: ""
-	def hubToken = project.findProperty("clan_hub_token") ?: ""
+	// gradle.local.properties is git-ignored, so the token never reaches the repo while
+	// the URL can stay in gradle.properties and be applied on every build.
+	def localProps = new Properties()
+	file("gradle.local.properties").with { f ->
+		if (f.exists()) {
+			f.withInputStream { localProps.load(it) }
+		}
+	}
+	def hubUrl = project.findProperty("clan_hub_url") ?: localProps.getProperty("clan_hub_url") ?: ""
+	def hubToken = project.findProperty("clan_hub_token") ?: localProps.getProperty("clan_hub_token") ?: ""
 	inputs.property "clanHubUrl", hubUrl
 	inputs.property "clanHubToken", hubToken
 	filesMatching("assets/chestmemory/clan_hub.json") {

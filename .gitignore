@@ -50,3 +50,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Clan hub token — never commit
+gradle.local.properties
