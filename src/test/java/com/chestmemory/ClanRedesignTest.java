@@ -232,7 +232,8 @@ class ClanRedesignTest {
 		@DisplayName("It names the build being gathered")
 		void showsTheSchematic() throws Exception {
 			String src = read(CLAN_SCREEN);
-			int decl = src.indexOf("private void drawClanGather");
+			int decl = src.indexOf("private void drawClanInfo");
+			assertTrue(decl > 0, "the info tab body is missing");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
 				body.contains("s.schemaName"),
@@ -241,21 +242,23 @@ class ClanRedesignTest {
 		}
 
 		@Test
-		@DisplayName("The facts are one composed line — rows that overlapped are gone")
-		void factsAreOneLine() throws Exception {
-			// Six label:value rows cost the grid its room, and two of them drew on the same
-			// y — «Склад» under «В сети», the overlap on the user's screenshot. One composed
-			// line cannot overlap itself.
+		@DisplayName("The facts live on the Info tab, drawn by a cursor that cannot overlap")
+		void factsCannotOverlap() throws Exception {
+			// The original bug: two detail rows drew on the same y — «Склад» under «В сети».
+			// The info rows advance their own cursor (return y + 12), so a forgotten
+			// increment is impossible by construction, not by discipline.
 			String src = read(CLAN_SCREEN);
 			assertFalse(
 				src.contains("ChestGuiStyle.drawDetailRow("),
-				"detail rows are gone from this screen"
+				"the old manually-advanced rows must stay gone"
 			);
 			assertTrue(
-				src.contains("screen.chestmemory.clan.meta"),
-				"who created it, how fresh it is and where the warehouse is must still show"
+				src.contains("private int infoRow(") && src.contains("return y + 12;"),
+				"info rows must advance their own cursor"
 			);
-			for (String key : new String[]{"detail_no_warehouse", "detail_chests"}) {
+			for (String key : new String[]{
+				"info_host", "info_updated", "info_warehouse", "info_last_delivery"
+			}) {
 				assertTrue(src.contains("screen.chestmemory.clan." + key), "missing: " + key);
 			}
 		}
@@ -277,17 +280,17 @@ class ClanRedesignTest {
 		}
 
 		@Test
-		@DisplayName("Measured: plate, bar, meta and two grid rows fit above the buttons")
+		@DisplayName("Measured: the grid owns the tab — six rows fit at the smallest height")
 		void gatherTabFits() {
 			int panelH = 300;
-			int tabsY = 36 + 8 + 18 + 4 + 2;          // header + hub strip
-			int gridTop = tabsY + 22 + 20 + 17 + 13;  // identity plate, bar, meta line
+			int tabsY = 36 + 8;              // header only: the hub strip became a lamp
+			int gridTop = tabsY + 22;        // no plate, no bar, no meta — all on Инфо
 			int row2 = panelH - 26;
-			int row1 = row2 - 18 - 4;
-			int gridBottom = row1 - 30;               // hover strip above the buttons
+			int row0 = row2 - 2 * (18 + 4);  // warehouse row above the two session rows
+			int gridBottom = row0 - 34;      // three hover lines above the buttons
 			assertTrue(
-				gridTop + 6 + 2 * 18 <= gridBottom,
-				"two rows of slots must fit at the smallest panel height"
+				gridTop + 6 + 6 * 18 <= gridBottom,
+				"six rows of slots must fit at the smallest panel height"
 			);
 		}
 
@@ -431,11 +434,11 @@ class ClanRedesignTest {
 	@DisplayName("Four tabs fit, and read differently")
 	class Tabs {
 		@Test
-		@DisplayName("Measured: every caption fits its quarter of the strip")
+		@DisplayName("Measured: every caption fits its fifth of the strip")
 		void captionsFit() throws Exception {
-			int tabW = (340 - 24) / 4;
+			int tabW = (340 - 24) / 5;
 			for (String key : new String[]{
-				"tab_gather", "tab_members", "tab_feed", "tab_list"
+				"tab_gather", "tab_info", "tab_members", "tab_feed", "tab_list"
 			}) {
 				String label = lang("screen.chestmemory.clan." + key);
 				assertTrue(px(label) <= tabW - 6, "tab caption clipped: " + label);
@@ -559,8 +562,9 @@ class ClanRedesignTest {
 		void sessionTabsHideSolo() throws Exception {
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("? new int[]{TAB_GATHER, TAB_MEMBERS, TAB_FEED, TAB_LIST}")
-					&& src.contains(": new int[]{TAB_GATHER, TAB_LIST}"),
+				src.contains("new int[]{TAB_GATHER, TAB_INFO, TAB_MEMBERS, TAB_FEED, TAB_LIST}")
+					&& src.contains("new int[]{TAB_GATHER, TAB_INFO, TAB_LIST}")
+					&& src.contains("return new int[]{TAB_GATHER, TAB_LIST};"),
 				"tabs describing a session must vanish with it, not sit empty"
 			);
 		}

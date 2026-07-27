@@ -31,11 +31,14 @@ public class ClanGatherScreen extends Screen {
 	 * gather" from "what the gather needs" made players hop between two tabs to do one job.
 	 */
 	private static final int TAB_GATHER = 0;
-	private static final int TAB_MEMBERS = 1;
-	private static final int TAB_FEED = 2;
-	private static final int TAB_LIST = 3;
+	/** Identity, progress and the facts — off the working tab, so the grid gets the room. */
+	private static final int TAB_INFO = 1;
+	private static final int TAB_MEMBERS = 2;
+	private static final int TAB_FEED = 3;
+	private static final int TAB_LIST = 4;
 	private static final String[] TAB_KEYS = {
 		"screen.chestmemory.clan.tab_gather",
+		"screen.chestmemory.clan.tab_info",
 		"screen.chestmemory.clan.tab_members",
 		"screen.chestmemory.clan.tab_feed",
 		"screen.chestmemory.clan.tab_list"
@@ -56,9 +59,13 @@ public class ClanGatherScreen extends Screen {
 	 * session, so outside one they are not offered at all instead of being shown empty.
 	 */
 	private int[] visibleTabs() {
-		return ClanSessionManager.isInSession()
-			? new int[]{TAB_GATHER, TAB_MEMBERS, TAB_FEED, TAB_LIST}
-			: new int[]{TAB_GATHER, TAB_LIST};
+		if (ClanSessionManager.isInSession()) {
+			return new int[]{TAB_GATHER, TAB_INFO, TAB_MEMBERS, TAB_FEED, TAB_LIST};
+		}
+		if (gatherMode() == GatherMode.SOLO) {
+			return new int[]{TAB_GATHER, TAB_INFO, TAB_LIST};
+		}
+		return new int[]{TAB_GATHER, TAB_LIST};
 	}
 
 	/** Current gather-tab mode; the grid, the header and the buttons all follow it. */
@@ -121,8 +128,9 @@ public class ClanGatherScreen extends Screen {
 	private int tabsLeft;
 	private int tabsWidth;
 	/** Gather-list geometry, filled while rendering so clicks can be mapped to a code. */
-	/** Y of the painted hub status strip, or -1 when the build has no baked hub. */
-	private int hubStripY = -1;
+	/** Live chest stock per item, briefly cached — the grid asks per cell per frame. */
+	private final java.util.Map<String, Integer> stockCache = new java.util.HashMap<>();
+	private long stockCacheAt;
 	/** Y where the material grid must stop, set by init() next to the controls below it. */
 	private int gridBottom = -1;
 	private int listRowsTop = -1;
@@ -240,16 +248,28 @@ public class ClanGatherScreen extends Screen {
 		this.hubBox = null;
 		this.tokenBox = null;
 		if (ClanDefaults.hasBakedHub()) {
-			// Painted, not a widget: it reports state and cannot be pressed. It used to be a
-			// SettingRowButton with an empty handler, which looked exactly like the buttons
-			// below it and did nothing — the single most confusing thing on this screen.
-			this.hubStripY = y;
+			// A corner lamp instead of a full-width strip: the strip spent a whole row on
+			// one word. The word lives in the tooltip now, the colour is read live every
+			// frame, and clicking the lamp re-asks the hub — it doubles as the retry.
+			ClanSessionManager.HubState hubNow = ClanSessionManager.hubState();
+			Component lampTip = switch (hubNow) {
+				case ONLINE -> Component.translatable("screen.chestmemory.clan.hub_lamp_online");
+				case OFFLINE -> Component.translatable("screen.chestmemory.clan.hub_lamp_offline");
+				case UNKNOWN -> Component.translatable("screen.chestmemory.clan.hub_checking");
+			};
+			this.addRenderableWidget(new HubLampButton(
+				this.panelLeft + 8, this.panelTop + 12, 10, lampTip,
+				() -> switch (ClanSessionManager.hubState()) {
+					case ONLINE -> ChestGuiStyle.LAMP_ONLINE;
+					case OFFLINE -> ChestGuiStyle.LAMP_OFFLINE;
+					case UNKNOWN -> ChestGuiStyle.LAMP_CHECKING;
+				},
+				this::retryHubCheck
+			));
 			if (this.minecraft != null) {
 				ClanSessionManager.checkHubAsync(this.minecraft, null);
 			}
-			y += rowH + gap + 2;
 		} else {
-			this.hubStripY = -1;
 			this.hubBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.clan.hub"));
 			this.hubBox.setMaxLength(256);
 			this.hubBox.setHint(Component.translatable("screen.chestmemory.clan.hub_hint"));
@@ -284,6 +304,27 @@ public class ClanGatherScreen extends Screen {
 		}
 		if (!tabVisible) {
 			this.tab = TAB_GATHER;
+		}
+
+		// The gather's own settings sit behind a corner pencil — the same place the main
+		// screen keeps its gear, so the hand already knows where to look. Host only: the
+		// view behind it renames, resets and closes the shared session.
+		if (!this.hostSettings && gatherMode() == GatherMode.CLAN
+			&& this.minecraft != null && ClanSessionManager.isHost(this.minecraft)) {
+			this.addRenderableWidget(new PencilIconButton(
+				this.panelLeft + 22, this.panelTop + 9, 16,
+				Component.translatable("screen.chestmemory.clan.settings_icon_tip"),
+				() -> {
+					ClanSession cur = ClanSessionManager.session();
+					this.renameDraft = cur != null && cur.schemaName != null ? cur.schemaName : "";
+					this.hostSettings = true;
+					this.releaseArmed = false;
+					this.closeArmed = false;
+					this.tab = TAB_GATHER;
+					this.status = "";
+					this.rebuildWidgets();
+				}
+			));
 		}
 
 		// The tab strip is always there: the Gathers list must stay reachable outside a
@@ -420,7 +461,7 @@ public class ClanGatherScreen extends Screen {
 			return;
 		}
 
-		if (this.tab == TAB_MEMBERS || this.tab == TAB_FEED) {
+		if (this.tab == TAB_INFO || this.tab == TAB_MEMBERS || this.tab == TAB_FEED) {
 			// Members / feed: no controls, just the back row at the bottom.
 			this.addRenderableWidget(new SettingRowButton(
 				left, this.panelTop + this.panelH - 26, w, rowH,
@@ -447,7 +488,7 @@ public class ClanGatherScreen extends Screen {
 			// Warehouse row above the session rows: marking drop-off chests is part of
 			// running a gather, not a detour through the old panel's schematic mode.
 			int row0 = row1 - rowH - gap;
-			this.gridBottom = row0 - 30;
+			this.gridBottom = row0 - 34;
 			this.renameBox = null;
 			this.addRenderableWidget(new SettingRowButton(
 				left, row0, half, rowH, stagingButtonLabel(), this::toggleStagingPick
@@ -497,20 +538,11 @@ public class ClanGatherScreen extends Screen {
 				}
 			));
 			if (host) {
-				// The host's row: closing the session moved into the settings view, so the
-				// everyday row is not one misclick away from ending the build for everyone.
+				// Settings live behind the corner pencil; the host's bottom row is «Назад».
 				this.addRenderableWidget(new SettingRowButton(
-					left, row2, half, rowH,
-					Component.translatable("screen.chestmemory.clan.settings_btn"),
-					() -> {
-						ClanSession cur = ClanSessionManager.session();
-						this.renameDraft = cur != null && cur.schemaName != null ? cur.schemaName : "";
-						this.hostSettings = true;
-						this.releaseArmed = false;
-						this.closeArmed = false;
-						this.status = "";
-						this.rebuildWidgets();
-					}
+					left, row2, w, rowH,
+					Component.translatable("screen.chestmemory.clan.back"),
+					this::onClose
 				));
 			} else {
 				this.addRenderableWidget(new SettingRowButton(
@@ -524,12 +556,12 @@ public class ClanGatherScreen extends Screen {
 						ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
 					}
 				));
+				this.addRenderableWidget(new SettingRowButton(
+					left + half + gap, row2, half, rowH,
+					Component.translatable("screen.chestmemory.clan.back"),
+					this::onClose
+				));
 			}
-			this.addRenderableWidget(new SettingRowButton(
-				left + half + gap, row2, half, rowH,
-				Component.translatable("screen.chestmemory.clan.back"),
-				this::onClose
-			));
 			return;
 		}
 
@@ -538,7 +570,7 @@ public class ClanGatherScreen extends Screen {
 			// Same warehouse row solo: staging chests measure the build's progress, so
 			// assigning them belongs right where the progress is shown.
 			int row0 = row1 - rowH - gap;
-			this.gridBottom = row0 - 30;
+			this.gridBottom = row0 - 34;
 			this.addRenderableWidget(new SettingRowButton(
 				left, row0, half, rowH, stagingButtonLabel(), this::toggleStagingPick
 			));
@@ -696,6 +728,23 @@ public class ClanGatherScreen extends Screen {
 				this.status = Component.translatable("screen.chestmemory.clan.working").getString();
 				ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
 			}
+		));
+		y += rowH + 6;
+
+		// The two gather toggles players reach for mid-build, surfaced here so the host
+		// does not have to leave for the main gear to flip them.
+		this.addRenderableWidget(new ToggleSwitchRow(
+			left, y, w, rowH,
+			Component.translatable("screen.chestmemory.clan.set_chat"),
+			() -> ModSettings.get().gatherChatMessages(),
+			() -> ModSettings.get().setGatherChatMessages(!ModSettings.get().gatherChatMessages())
+		));
+		y += rowH + 4;
+		this.addRenderableWidget(new ToggleSwitchRow(
+			left, y, w, rowH,
+			Component.translatable("screen.chestmemory.clan.set_autonext"),
+			() -> ModSettings.get().gatherAutoAdvance(),
+			() -> ModSettings.get().setGatherAutoAdvance(!ModSettings.get().gatherAutoAdvance())
 		));
 
 		this.addRenderableWidget(new SettingRowButton(
@@ -1067,6 +1116,7 @@ public class ClanGatherScreen extends Screen {
 		}
 		ClanSession s = ClanSessionManager.session();
 		switch (this.tab) {
+			case TAB_INFO -> drawInfoBody(graphics, s, left, centerX, contentW);
 			case TAB_MEMBERS -> {
 				if (s != null) {
 					drawMembers(graphics, s, left, contentW);
@@ -1077,27 +1127,6 @@ public class ClanGatherScreen extends Screen {
 			default -> drawGatherBody(graphics, s, left, centerX, contentW);
 		}
 
-		if (this.hubStripY >= 0) {
-			ClanSessionManager.HubState st = ClanSessionManager.hubState();
-			int lamp = switch (st) {
-				case ONLINE -> ChestGuiStyle.LAMP_ONLINE;
-				case OFFLINE -> ChestGuiStyle.LAMP_OFFLINE;
-				case UNKNOWN -> ChestGuiStyle.LAMP_CHECKING;
-			};
-			// The state is spelled out as well as coloured — a red/green lamp alone is no
-			// help to a colour-blind player, and "unreachable" is the one state that matters.
-			String label = Component.translatable(switch (st) {
-				case ONLINE -> "screen.chestmemory.clan.hub_online";
-				case OFFLINE -> "screen.chestmemory.clan.hub_offline";
-				case UNKNOWN -> "screen.chestmemory.clan.hub_checking";
-			}).getString();
-			String detail = st == ClanSessionManager.HubState.ONLINE
-				? Component.translatable("screen.chestmemory.clan.hub_builtin_short").getString()
-				: null;
-			ChestGuiStyle.drawStatusStrip(
-				graphics, this.font, left, this.hubStripY, contentW, 18, label, detail, lamp
-			);
-		}
 
 		// Status line last, so a fresh message always wins over the standing hints.
 		String line;
@@ -1176,7 +1205,7 @@ public class ClanGatherScreen extends Screen {
 		}
 	}
 
-	/** Clan mode: shared progress, one meta line, and the claimable grid. */
+	/** Clan mode: the claimable grid, wall to wall — identity and facts live on Инфо. */
 	private void drawClanGather(
 		GuiGraphicsExtractor graphics,
 		ClanSession s,
@@ -1185,50 +1214,6 @@ public class ClanGatherScreen extends Screen {
 		int contentW
 	) {
 		int y = this.tabsY + 22;
-		String schema = s.schemaName == null || s.schemaName.isBlank()
-			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
-			: s.schemaName;
-		drawIdentityPlate(
-			graphics, left, y, contentW,
-			Component.translatable("screen.chestmemory.clan.mode_clan").getString(),
-			ChestGuiStyle.LATCH, schema
-		);
-		y += 20;
-
-		int need = s.totalNeed();
-		int delivered = s.totalDelivered();
-		float f = need > 0 ? delivered / (float) need : 0F;
-		drawProgressWithLabel(
-			graphics, left, y, contentW, f,
-			Component.translatable(
-				"screen.chestmemory.clan.progress",
-				delivered, need, need > 0 ? (int) (f * 100) : 0
-			).getString()
-		);
-		y += 17;
-
-		// One muted line instead of six label:value rows. The old block drew "Склад" and
-		// "Участники" on the same y — a single composed line cannot overlap itself.
-		long now = System.currentTimeMillis();
-		boolean iAmHost = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
-		String host = (s.hostName == null || s.hostName.isBlank() ? "?" : s.hostName)
-			+ (iAmHost ? " " + Component.translatable("screen.chestmemory.clan.you_marker").getString() : "");
-		String updated = s.updatedAt > 0
-			? Component.translatable("screen.chestmemory.clan.ago", ageLabel(now - s.updatedAt)).getString()
-			: "—";
-		String warehouse = s.stagingKeys == null || s.stagingKeys.isEmpty()
-			? Component.translatable("screen.chestmemory.clan.detail_no_warehouse").getString()
-			: Component.translatable("screen.chestmemory.clan.detail_chests", s.stagingKeys.size()).getString();
-		ChestGuiStyle.drawCentered(
-			graphics, this.font,
-			ChestGuiStyle.ellipsize(
-				this.font,
-				Component.translatable("screen.chestmemory.clan.meta", host, updated, warehouse).getString(),
-				contentW
-			),
-			centerX, y, ChestGuiStyle.TEXT_MUTED
-		);
-		y += 13;
 
 		// Unfinished first, biggest remainder at the front: the top-left of the grid is
 		// always the work that matters most, not whatever order the hub sent.
@@ -1251,8 +1236,15 @@ public class ClanGatherScreen extends Screen {
 			boolean done = remaining <= 0;
 			boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 			boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
-			int tint = done ? 0x4430E060 : mine ? 0x55FFAA20 : taken ? 0x66101010 : 0;
-			int countColour = done ? 0xFF80FFA0 : mine ? 0xFFFFEE66 : taken ? 0xFFBBBBBB : 0xFFFFFFFF;
+			// Blue marks "the chests already hold enough": walk a route, hand it in, and
+			// this item is closed — the pick most worth making.
+			boolean ready = !done && chestStock(e.getKey()) >= remaining;
+			int tint = done ? 0x4430E060 : mine ? 0x55FFAA20 : taken ? 0x66101010 : ready ? 0x445CB8E8 : 0;
+			int countColour = done ? 0xFF80FFA0
+				: mine ? 0xFFFFEE66
+				: taken ? 0xFFBBBBBB
+				: ready ? 0xFFA8DCFF
+				: 0xFFFFFFFF;
 			String badge = null;
 			int badgeColour = 0;
 			if (mine || taken) {
@@ -1266,14 +1258,15 @@ public class ClanGatherScreen extends Screen {
 		}
 		int hoverIdx = drawMaterialGrid(graphics, cells, left, y, contentW);
 
-		// Hovered item named in the strip between the tray and the buttons: a slot cannot
-		// carry a label, and a grid of unfamiliar blocks is unreadable without one.
-		int hy = this.gridBottom + 5;
+		// Hovered item named in the strip between the tray and the buttons: name and
+		// progress, then LIVE stock — the numbers a player gathers by — then the action.
+		int hy = this.gridBottom + 4;
 		if (hoverIdx >= 0 && hoverIdx < rows.size()) {
 			var e = rows.get(hoverIdx);
 			ClanSession.ClanMaterial m = e.getValue();
 			int remaining = s.remaining(e.getKey());
 			String name = ChestMemoryStorage.itemDisplayName(e.getKey());
+			boolean ready = remaining > 0 && chestStock(e.getKey()) >= remaining;
 			String detail;
 			int colour;
 			if (remaining <= 0) {
@@ -1287,6 +1280,9 @@ public class ClanGatherScreen extends Screen {
 					"screen.chestmemory.clan.mat_taken_by", m.claimedName != null ? m.claimedName : "?"
 				).getString();
 				colour = ChestGuiStyle.TEXT_MUTED;
+			} else if (ready) {
+				detail = Component.translatable("screen.chestmemory.clan.mat_ready_hint").getString();
+				colour = 0xFF2E7CA8;
 			} else {
 				detail = Component.translatable("screen.chestmemory.clan.mat_take_hint").getString();
 				colour = ChestGuiStyle.TEXT_MUTED;
@@ -1304,8 +1300,13 @@ public class ClanGatherScreen extends Screen {
 				centerX, hy, ChestGuiStyle.TEXT_TITLE
 			);
 			ChestGuiStyle.drawCentered(
+				graphics, this.font,
+				ChestGuiStyle.ellipsize(this.font, stockLine(e.getKey()), contentW),
+				centerX, hy + 10, ChestGuiStyle.TEXT_MUTED
+			);
+			ChestGuiStyle.drawCentered(
 				graphics, this.font, ChestGuiStyle.ellipsize(this.font, detail, contentW),
-				centerX, hy + 10, colour
+				centerX, hy + 20, colour
 			);
 		} else {
 			// Standing summary when nothing is hovered: the numbers that used to be six
@@ -1336,7 +1337,7 @@ public class ClanGatherScreen extends Screen {
 					).getString(),
 					contentW
 				),
-				centerX, hy + 5, ChestGuiStyle.TEXT_MUTED
+				centerX, hy + 10, ChestGuiStyle.TEXT_MUTED
 			);
 		}
 	}
@@ -1348,20 +1349,6 @@ public class ClanGatherScreen extends Screen {
 	 */
 	private void drawSoloGather(GuiGraphicsExtractor graphics, int left, int centerX, int contentW) {
 		int y = this.tabsY + 22;
-		String listLabel = com.chestmemory.client.litematica.BuildGatherSession.listName();
-		if (listLabel == null || listLabel.isBlank()) {
-			listLabel = LitematicaAccess.activeListName();
-		}
-		if (listLabel == null || listLabel.isBlank()) {
-			listLabel = Component.translatable("screen.chestmemory.clan.unnamed_build").getString();
-		}
-		drawIdentityPlate(
-			graphics, left, y, contentW,
-			Component.translatable("screen.chestmemory.clan.mode_solo").getString(),
-			ChestGuiStyle.LAMP_ONLINE, listLabel
-		);
-		y += 20;
-
 		// Filter-independent list: the Ё-panel filter is that panel's state, and hiding
 		// rows here because of it would look like lost materials.
 		List<com.chestmemory.client.data.ItemSummary> rows = this.minecraft == null
@@ -1373,57 +1360,17 @@ public class ClanGatherScreen extends Screen {
 				0,
 				com.chestmemory.client.litematica.BuildFilter.ALL
 			);
-
-		long total = 0;
-		long collected = 0;
 		int doneItems = 0;
 		int stocked = 0;
 		for (var r : rows) {
-			int t = Math.max(0, r.schematicTotal());
 			int missing = Math.max(0, r.neededForBuild());
-			total += t;
-			collected += Math.max(0, t - missing);
 			if (missing <= 0) {
 				doneItems++;
 			} else if (r.totalCount() > 0) {
 				stocked++;
 			}
 		}
-		float f = total > 0 ? collected / (float) total : 0F;
-		drawProgressWithLabel(
-			graphics, left, y, contentW, f,
-			Component.translatable(
-				"screen.chestmemory.clan.solo_progress",
-				collected, total, total > 0 ? (int) (f * 100) : 0
-			).getString()
-		);
-		y += 17;
-
-		// Meta: the phase and the current target — exactly what the HUD keys off.
-		boolean soloActive = com.chestmemory.client.litematica.BuildGatherSession.isActive();
 		String focus = com.chestmemory.client.litematica.BuildGatherSession.currentItemId();
-		String meta;
-		if (!soloActive) {
-			meta = Component.translatable("screen.chestmemory.clan.solo_idle").getString();
-		} else {
-			String phaseLabel = Component.translatable(
-				com.chestmemory.client.litematica.BuildGatherSession.phase()
-					== com.chestmemory.client.litematica.BuildGatherSession.GatherPhase.CHESTS
-					? "hud.chestmemory.phase_chests"
-					: "hud.chestmemory.phase_craft"
-			).getString();
-			meta = focus != null
-				? Component.translatable(
-					"screen.chestmemory.clan.solo_meta",
-					phaseLabel, ChestMemoryStorage.itemDisplayName(focus)
-				).getString()
-				: Component.translatable("screen.chestmemory.clan.solo_meta_no_target", phaseLabel).getString();
-		}
-		ChestGuiStyle.drawCentered(
-			graphics, this.font, ChestGuiStyle.ellipsize(this.font, meta, contentW),
-			centerX, y, ChestGuiStyle.TEXT_MUTED
-		);
-		y += 13;
 
 		List<MatCell> cells = new java.util.ArrayList<>(rows.size());
 		for (var r : rows) {
@@ -1431,20 +1378,26 @@ public class ClanGatherScreen extends Screen {
 			boolean done = missing <= 0;
 			boolean isFocus = r.itemId().equals(focus);
 			boolean craftOnly = !done && r.totalCount() <= 0;
-			// Gold marks the current target, dark marks craft-only (nothing to route to);
-			// the same palette the clan grid uses, so one visual language covers both.
-			int tint = done ? 0x4430E060 : isFocus ? 0x55FFAA20 : craftOnly ? 0x66101010 : 0;
-			int countColour = done ? 0xFF80FFA0 : isFocus ? 0xFFFFEE66 : craftOnly ? 0xFFBBBBBB : 0xFFFFFFFF;
+			// Gold marks the current target, dark marks craft-only, blue marks "the chests
+			// already hold enough" — the same palette the clan grid uses.
+			boolean ready = !done && !craftOnly && r.totalCount() >= missing;
+			int tint = done ? 0x4430E060 : isFocus ? 0x55FFAA20 : craftOnly ? 0x66101010 : ready ? 0x445CB8E8 : 0;
+			int countColour = done ? 0xFF80FFA0
+				: isFocus ? 0xFFFFEE66
+				: craftOnly ? 0xFFBBBBBB
+				: ready ? 0xFFA8DCFF
+				: 0xFFFFFFFF;
 			cells.add(new MatCell(r.itemId(), done ? 0 : missing, tint, countColour, null, 0));
 		}
 		int hoverIdx = drawMaterialGrid(graphics, cells, left, y, contentW);
 
-		int hy = this.gridBottom + 5;
+		int hy = this.gridBottom + 4;
 		if (hoverIdx >= 0 && hoverIdx < rows.size()) {
 			var r = rows.get(hoverIdx);
 			int missing = Math.max(0, r.neededForBuild());
 			int t = Math.max(0, r.schematicTotal());
 			String name = ChestMemoryStorage.itemDisplayName(r.itemId());
+			boolean ready = missing > 0 && r.totalCount() >= missing;
 			String detail;
 			int colour;
 			if (missing <= 0) {
@@ -1453,6 +1406,9 @@ public class ClanGatherScreen extends Screen {
 			} else if (r.itemId().equals(focus)) {
 				detail = Component.translatable("screen.chestmemory.clan.solo_hover_focus").getString();
 				colour = ChestGuiStyle.TEXT_GOLD;
+			} else if (ready) {
+				detail = Component.translatable("screen.chestmemory.clan.solo_hover_ready").getString();
+				colour = 0xFF2E7CA8;
 			} else if (r.totalCount() > 0) {
 				detail = Component.translatable(
 					"screen.chestmemory.clan.solo_hover_route", r.totalCount()
@@ -1462,6 +1418,17 @@ public class ClanGatherScreen extends Screen {
 				detail = Component.translatable("screen.chestmemory.clan.solo_hover_craft").getString();
 				colour = ChestGuiStyle.TEXT_MUTED;
 			}
+			// Line 2: live stock through the ItemSummary the list already carries —
+			// chests, the nearest one, and the backpack. The numbers a player plans by.
+			String dist = r.hasDistance()
+				? Component.translatable(
+					"screen.chestmemory.clan.dist_m", (int) Math.round(r.nearestDistance())
+				).getString()
+				: "—";
+			String stock = Component.translatable(
+				"screen.chestmemory.clan.hover_stock_solo",
+				r.totalCount(), dist, Math.max(0, r.inPlayer())
+			).getString();
 			ChestGuiStyle.drawCentered(
 				graphics, this.font,
 				ChestGuiStyle.ellipsize(
@@ -1475,8 +1442,12 @@ public class ClanGatherScreen extends Screen {
 				centerX, hy, ChestGuiStyle.TEXT_TITLE
 			);
 			ChestGuiStyle.drawCentered(
+				graphics, this.font, ChestGuiStyle.ellipsize(this.font, stock, contentW),
+				centerX, hy + 10, ChestGuiStyle.TEXT_MUTED
+			);
+			ChestGuiStyle.drawCentered(
 				graphics, this.font, ChestGuiStyle.ellipsize(this.font, detail, contentW),
-				centerX, hy + 10, colour
+				centerX, hy + 20, colour
 			);
 		} else {
 			ChestGuiStyle.drawCentered(
@@ -1489,7 +1460,7 @@ public class ClanGatherScreen extends Screen {
 					).getString(),
 					contentW
 				),
-				centerX, hy, ChestGuiStyle.TEXT_MUTED
+				centerX, hy + 5, ChestGuiStyle.TEXT_MUTED
 			);
 			ChestGuiStyle.drawCentered(
 				graphics, this.font,
@@ -1498,7 +1469,7 @@ public class ClanGatherScreen extends Screen {
 					Component.translatable("screen.chestmemory.clan.solo_hint_share").getString(),
 					contentW
 				),
-				centerX, hy + 10, ChestGuiStyle.TEXT_MUTED
+				centerX, hy + 15, ChestGuiStyle.TEXT_MUTED
 			);
 		}
 	}
@@ -1533,6 +1504,297 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
+	/** Live chest stock, briefly cached — the grid asks for it per cell per frame. */
+	private int chestStock(String itemId) {
+		long now = System.currentTimeMillis();
+		if (now - this.stockCacheAt > 500L) {
+			this.stockCache.clear();
+			this.stockCacheAt = now;
+		}
+		return this.stockCache.computeIfAbsent(
+			itemId, com.chestmemory.client.litematica.BuildGatherSession::countInChestsLive
+		);
+	}
+
+	/** «В сундуках: N · этот мир: M · ближайший: 35м» — the numbers a player gathers by. */
+	private String stockLine(String itemId) {
+		int total = chestStock(itemId);
+		if (total <= 0) {
+			return Component.translatable("screen.chestmemory.clan.hover_stock_none").getString();
+		}
+		String dim = this.minecraft != null && this.minecraft.level != null
+			? ChestMemoryStorage.dimensionId(this.minecraft.level)
+			: null;
+		int here = com.chestmemory.client.litematica.BuildGatherSession.countInChestsLive(
+			itemId, com.chestmemory.client.data.DimensionChoice.CURRENT, dim
+		);
+		double dist = com.chestmemory.client.litematica.BuildGatherSession
+			.nearestChestDistance(this.minecraft, itemId);
+		String distLabel = dist >= 0
+			? Component.translatable("screen.chestmemory.clan.dist_m", (int) Math.round(dist)).getString()
+			: "—";
+		return Component.translatable(
+			"screen.chestmemory.clan.hover_stock", total, here, distLabel
+		).getString();
+	}
+
+	/** Info tab: identity, progress and the facts — everything the grid tab gave up. */
+	private void drawInfoBody(
+		GuiGraphicsExtractor graphics,
+		ClanSession s,
+		int left,
+		int centerX,
+		int contentW
+	) {
+		GatherMode mode = gatherMode();
+		if (mode == GatherMode.CLAN && s != null) {
+			drawClanInfo(graphics, s, left, centerX, contentW);
+		} else if (mode == GatherMode.SOLO) {
+			drawSoloInfo(graphics, left, centerX, contentW);
+		}
+	}
+
+	/** One fact line; the cursor advances itself, so two rows can never share a y. */
+	private int infoRow(
+		GuiGraphicsExtractor graphics,
+		int left,
+		int contentW,
+		int y,
+		String label,
+		String value,
+		int colour
+	) {
+		graphics.text(this.font, label, left + 2, y, ChestGuiStyle.TEXT_MUTED, false);
+		String v = ChestGuiStyle.ellipsize(this.font, value, contentW - this.font.width(label) - 14);
+		graphics.text(this.font, v, left + contentW - 2 - this.font.width(v), y, colour, false);
+		return y + 12;
+	}
+
+	private void drawClanInfo(
+		GuiGraphicsExtractor graphics,
+		ClanSession s,
+		int left,
+		int centerX,
+		int contentW
+	) {
+		int y = this.tabsY + 22;
+		String schema = s.schemaName == null || s.schemaName.isBlank()
+			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
+			: s.schemaName;
+		drawIdentityPlate(
+			graphics, left, y, contentW,
+			Component.translatable("screen.chestmemory.clan.mode_clan").getString(),
+			ChestGuiStyle.LATCH, schema
+		);
+		y += 20;
+		int need = s.totalNeed();
+		int delivered = s.totalDelivered();
+		float f = need > 0 ? delivered / (float) need : 0F;
+		drawProgressWithLabel(
+			graphics, left, y, contentW, f,
+			Component.translatable(
+				"screen.chestmemory.clan.progress",
+				delivered, need, need > 0 ? (int) (f * 100) : 0
+			).getString()
+		);
+		y += 20;
+
+		long now = System.currentTimeMillis();
+		boolean iAmHost = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
+		String host = (s.hostName == null || s.hostName.isBlank() ? "?" : s.hostName)
+			+ (iAmHost ? " " + Component.translatable("screen.chestmemory.clan.you_marker").getString() : "");
+		int online = 0;
+		for (ClanSession.ClanMember m : s.members) {
+			if (!s.isMemberAway(m)) {
+				online++;
+			}
+		}
+		int free = 0;
+		int doneItems = 0;
+		int claimed = 0;
+		for (var e : s.materials.entrySet()) {
+			ClanSession.ClanMaterial m = e.getValue();
+			if (m.claimedBy != null && !m.claimedBy.isBlank()) {
+				claimed++;
+			}
+			if (s.remaining(e.getKey()) <= 0) {
+				doneItems++;
+			} else if (m.claimedBy == null || m.claimedBy.isBlank()) {
+				free++;
+			}
+		}
+		String warehouse = s.stagingKeys == null || s.stagingKeys.isEmpty()
+			? Component.translatable("screen.chestmemory.clan.detail_no_warehouse").getString()
+			: Component.translatable("screen.chestmemory.clan.detail_chests", s.stagingKeys.size()).getString();
+
+		y = infoRow(graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_code").getString(), s.code, ChestGuiStyle.TEXT_TITLE);
+		y = infoRow(graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_host").getString(), host, ChestGuiStyle.TEXT_TITLE);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_created").getString(),
+			s.createdAt > 0
+				? Component.translatable("screen.chestmemory.clan.ago", ageLabel(now - s.createdAt)).getString()
+				: "—",
+			ChestGuiStyle.TEXT_TITLE
+		);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_updated").getString(),
+			s.updatedAt > 0
+				? Component.translatable("screen.chestmemory.clan.ago", ageLabel(now - s.updatedAt)).getString()
+				: "—",
+			ChestGuiStyle.TEXT_TITLE
+		);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_items").getString(),
+			Component.translatable(
+				"screen.chestmemory.clan.info_items_value",
+				s.materials.size(), doneItems, free
+			).getString(),
+			ChestGuiStyle.TEXT_TITLE
+		);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_members").getString(),
+			Component.translatable(
+				"screen.chestmemory.clan.info_members_value",
+				online, s.members.size(), claimed
+			).getString(),
+			online > 0 ? ChestGuiStyle.TEXT_TITLE : ChestGuiStyle.TEXT_MUTED
+		);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_warehouse").getString(), warehouse,
+			s.stagingKeys == null || s.stagingKeys.isEmpty() ? 0xFFA04030 : ChestGuiStyle.TEXT_TITLE
+		);
+
+		// The last delivery, straight from the feed — who is actually hauling right now.
+		String lastDelivery = null;
+		long lastAt = 0;
+		for (com.chestmemory.client.clan.ClanEventLog.Entry e
+			: com.chestmemory.client.clan.ClanEventLog.all()) {
+			if (e.kind() == com.chestmemory.client.clan.ClanEventLog.Kind.DELIVER) {
+				lastDelivery = e.text().getString();
+				lastAt = e.at();
+				break;
+			}
+		}
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_last_delivery").getString(),
+			lastDelivery == null
+				? Component.translatable("screen.chestmemory.clan.info_none").getString()
+				: lastDelivery + " · " + Component.translatable(
+					"screen.chestmemory.clan.ago", ageLabel(now - lastAt)
+				).getString(),
+			lastDelivery == null ? ChestGuiStyle.TEXT_MUTED : ChestGuiStyle.TEXT_TITLE
+		);
+
+		ChestGuiStyle.drawCentered(
+			graphics, this.font,
+			ChestGuiStyle.ellipsize(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.info_hint").getString(),
+				contentW
+			),
+			centerX, y + 6, ChestGuiStyle.TEXT_MUTED
+		);
+	}
+
+	private void drawSoloInfo(GuiGraphicsExtractor graphics, int left, int centerX, int contentW) {
+		int y = this.tabsY + 22;
+		String listLabel = com.chestmemory.client.litematica.BuildGatherSession.listName();
+		if (listLabel == null || listLabel.isBlank()) {
+			listLabel = LitematicaAccess.activeListName();
+		}
+		if (listLabel == null || listLabel.isBlank()) {
+			listLabel = Component.translatable("screen.chestmemory.clan.unnamed_build").getString();
+		}
+		drawIdentityPlate(
+			graphics, left, y, contentW,
+			Component.translatable("screen.chestmemory.clan.mode_solo").getString(),
+			ChestGuiStyle.LAMP_ONLINE, listLabel
+		);
+		y += 20;
+
+		List<com.chestmemory.client.data.ItemSummary> rows = this.minecraft == null
+			? java.util.List.of()
+			: com.chestmemory.client.litematica.BuildGatherSession.buildPanelList(
+				this.minecraft, "",
+				com.chestmemory.client.data.ListScope.WORLD_TOTAL,
+				com.chestmemory.client.data.DimensionChoice.ALL,
+				0,
+				com.chestmemory.client.litematica.BuildFilter.ALL
+			);
+		long total = 0;
+		long collected = 0;
+		int doneItems = 0;
+		int stocked = 0;
+		for (var r : rows) {
+			int t = Math.max(0, r.schematicTotal());
+			int missing = Math.max(0, r.neededForBuild());
+			total += t;
+			collected += Math.max(0, t - missing);
+			if (missing <= 0) {
+				doneItems++;
+			} else if (r.totalCount() > 0) {
+				stocked++;
+			}
+		}
+		float f = total > 0 ? collected / (float) total : 0F;
+		drawProgressWithLabel(
+			graphics, left, y, contentW, f,
+			Component.translatable(
+				"screen.chestmemory.clan.solo_progress",
+				collected, total, total > 0 ? (int) (f * 100) : 0
+			).getString()
+		);
+		y += 20;
+
+		boolean soloActive = com.chestmemory.client.litematica.BuildGatherSession.isActive();
+		String focus = com.chestmemory.client.litematica.BuildGatherSession.currentItemId();
+		String phaseLabel = !soloActive
+			? Component.translatable("screen.chestmemory.clan.solo_idle_short").getString()
+			: Component.translatable(
+				com.chestmemory.client.litematica.BuildGatherSession.phase()
+					== com.chestmemory.client.litematica.BuildGatherSession.GatherPhase.CHESTS
+					? "hud.chestmemory.phase_chests"
+					: "hud.chestmemory.phase_craft"
+			).getString();
+
+		y = infoRow(graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_schematic").getString(), listLabel, ChestGuiStyle.TEXT_TITLE);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_items").getString(),
+			Component.translatable(
+				"screen.chestmemory.clan.info_items_value_solo",
+				rows.size(), doneItems, Math.max(0, rows.size() - doneItems)
+			).getString(),
+			ChestGuiStyle.TEXT_TITLE
+		);
+		y = infoRow(graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_stock").getString(), String.valueOf(stocked), ChestGuiStyle.TEXT_TITLE);
+		y = infoRow(graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_phase").getString(), phaseLabel, ChestGuiStyle.TEXT_TITLE);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_target").getString(),
+			focus != null
+				? ChestMemoryStorage.itemDisplayName(focus)
+				: Component.translatable("screen.chestmemory.clan.info_none").getString(),
+			focus != null ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_MUTED
+		);
+		y = infoRow(
+			graphics, left, contentW, y, Component.translatable("screen.chestmemory.clan.info_warehouse").getString(),
+			Component.translatable(
+				"screen.chestmemory.clan.detail_chests",
+				ChestMemoryStorage.get().stagingCount()
+			).getString(),
+			ChestGuiStyle.TEXT_TITLE
+		);
+
+		ChestGuiStyle.drawCentered(
+			graphics, this.font,
+			ChestGuiStyle.ellipsize(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.info_hint").getString(),
+				contentW
+			),
+			centerX, y + 6, ChestGuiStyle.TEXT_MUTED
+		);
+	}
+
 	/** Settings body: the plate for context, captions for the rows init() built. */
 	private void drawHostSettings(
 		GuiGraphicsExtractor graphics,
@@ -1551,7 +1813,7 @@ public class ClanGatherScreen extends Screen {
 			ChestGuiStyle.TEXT_GOLD, schema
 		);
 		// The rows are widgets; what needs text is the one action that is NOT here.
-		int hintY = this.tabsY + 20 + 18 + 18 + 6 + 18 + 4 + 18 + 8;
+		int hintY = this.tabsY + 20 + 18 + 18 + 6 + 18 + 4 + 18 + 6 + 18 + 4 + 18 + 8;
 		ChestGuiStyle.drawCentered(
 			graphics, this.font,
 			ChestGuiStyle.ellipsize(

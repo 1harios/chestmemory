@@ -242,6 +242,17 @@ public final class BuildGatherSession {
 		return ChestMemoryStorage.get().countInSourceChests(itemId, dimFilter, playerDim);
 	}
 
+	/** Nearest live source chest holding the item, in blocks — or -1 when unknown. */
+	public static double nearestChestDistance(@Nullable Minecraft client, String itemId) {
+		if (client == null || client.player == null || client.level == null || itemId == null) {
+			return -1;
+		}
+		return nearestLiveDist(
+			itemId, client.player.position(),
+			ChestMemoryStorage.dimensionId(client.level), DimensionChoice.ALL
+		);
+	}
+
 	/** Source containers (not staging) for routes / glow — all dimensions. */
 	private static List<ContainerRecord> liveHighlightableWithItem(String itemId) {
 		return ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId);

@@ -467,7 +467,7 @@ class ClanFlowTest {
 				"the list has to render with no active gather (s is null then)"
 			);
 			assertTrue(
-				src.contains(": new int[]{TAB_GATHER, TAB_LIST}"),
+				src.contains("return new int[]{TAB_GATHER, TAB_LIST};"),
 				"outside a session the strip still offers the gathers list"
 			);
 			assertFalse(

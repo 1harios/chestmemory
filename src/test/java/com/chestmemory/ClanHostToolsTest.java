@@ -174,6 +174,56 @@ class ClanHostToolsTest {
 		}
 
 		@Test
+		@DisplayName("READY is marked: blue tint when the chests already hold enough")
+		void readyMarkExists() throws Exception {
+			String src = read(CLAN_SCREEN);
+			int clanBody = src.indexOf("private void drawClanGather");
+			int soloBody = src.indexOf("private void drawSoloGather");
+			assertTrue(
+				src.indexOf("0x445CB8E8", clanBody) > 0 && src.indexOf("0x445CB8E8", soloBody) > 0,
+				"both grids must mark items whose need is fully covered by chest stock"
+			);
+			assertTrue(
+				src.contains("screen.chestmemory.clan.mat_ready_hint")
+					&& src.contains("screen.chestmemory.clan.solo_hover_ready"),
+				"the hover line must say it in words, not only in colour"
+			);
+		}
+
+		@Test
+		@DisplayName("Hover carries live stock: chests, this world, nearest, backpack")
+		void hoverCarriesStock() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("screen.chestmemory.clan.hover_stock")
+					&& src.contains("screen.chestmemory.clan.hover_stock_solo"),
+				"the numbers a player gathers by must be one hover away"
+			);
+			// The grid asks per cell per frame; an uncached walk over every container
+			// per cell is a stutter waiting to happen.
+			assertTrue(
+				src.contains("stockCacheAt > 500L"),
+				"chest stock must be briefly cached"
+			);
+			assertTrue(
+				read("src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java")
+					.contains("public static double nearestChestDistance("),
+				"the nearest-chest distance helper must exist"
+			);
+		}
+
+		@Test
+		@DisplayName("The pencil in the corner is the settings entry, like the main screen's gear")
+		void pencilIsTheSettingsEntry() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("new PencilIconButton("), "the corner pencil is missing");
+			assertTrue(
+				src.contains("screen.chestmemory.clan.settings_icon_tip"),
+				"an icon without a tooltip is a guessing game"
+			);
+		}
+
+		@Test
 		@DisplayName("The panel lost its scheme tools — the gather screen is the only home")
 		void panelHasNoStagingLeft() throws Exception {
 			String panel = read(PANEL);
