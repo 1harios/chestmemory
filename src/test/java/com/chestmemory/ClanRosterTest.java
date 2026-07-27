@@ -104,8 +104,8 @@ class ClanRosterTest {
 		void pollRefreshesProgress() throws Exception {
 			String src = read(MANAGER);
 			assertTrue(
-				src.contains("recordDeliveryDiffs(prev, session)")
-					&& src.indexOf("ClanRoster.remember(", src.indexOf("recordDeliveryDiffs(prev, session)")) > 0,
+				src.contains("recordDeliveryDiffs(prev, adopted)")
+					&& src.indexOf("ClanRoster.remember(", src.indexOf("recordDeliveryDiffs(prev, adopted)")) > 0,
 				"the poll must refresh the switcher's numbers for the gather being followed"
 			);
 		}

@@ -88,13 +88,22 @@ public final class WorldBreakdown {
 		return total;
 	}
 
-	/** Items inside shulker boxes carried in the inventory. */
+	/**
+	 * Items inside shulker boxes — both the ones carried in the inventory and the ones
+	 * standing inside remembered chests (the scanner keeps their origin per container).
+	 */
 	public static int shulkerCount(Iterable<ContainerRecord> records, String itemId) {
 		int total = 0;
 		for (ContainerRecord r : records) {
-			if (r != null && r.isVirtual() && r.virtualId() != null
-				&& r.virtualId().startsWith("inv_shulker")) {
-				total += r.countOf(itemId);
+			if (r == null) {
+				continue;
+			}
+			if (r.isVirtual()) {
+				if (r.virtualId() != null && r.virtualId().startsWith("inv_shulker")) {
+					total += r.countOf(itemId);
+				}
+			} else {
+				total += r.shulkerCountOf(itemId);
 			}
 		}
 		return total;

@@ -67,7 +67,7 @@ public class ClearMemoryIconButton extends AbstractWidget {
 			? (hover ? 0xFFB05040 : 0xFF9A4636)
 			: (hover ? ChestGuiStyle.ROW_WOOD_HOVER : ChestGuiStyle.ROW_WOOD);
 		graphics.fill(x0 + 1, y0 + 1, x1 - 1, y1 - 1, fill);
-		graphics.fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, confirmMode ? 0xFF5A2018 : 0xFF3E2814);
+		graphics.fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, confirmMode ? 0xFF5A2018 : 0xFF565656);
 
 		// Trash can icon
 		int cx = x0 + this.width / 2;

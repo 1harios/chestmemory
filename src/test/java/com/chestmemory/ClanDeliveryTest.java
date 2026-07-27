@@ -121,7 +121,7 @@ class ClanDeliveryTest {
 			String src = read(SCANNER);
 			assertTrue(
 				src.contains("ClanSessionManager.isInSession()")
-					&& src.contains("isStagingKey(")
+					&& src.contains("isStagingAt(")
 					&& src.contains("pushStagingProgress(client)"),
 				"the periodic push is every ~10s, so dropping a stack off and opening the "
 					+ "panel showed nothing counted — which reads as 'it did not register'"
@@ -136,7 +136,7 @@ class ClanDeliveryTest {
 			assertTrue(at > 0, "the push is missing");
 			String around = src.substring(Math.max(0, at - 400), at);
 			assertTrue(
-				around.contains("isStagingKey("),
+				around.contains("isStagingAt("),
 				"pushing on every chest open would hammer the hub while a player loots"
 			);
 		}

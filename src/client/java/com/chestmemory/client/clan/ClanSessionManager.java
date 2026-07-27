@@ -166,11 +166,18 @@ public final class ClanSessionManager {
 		ModSettings s = ModSettings.get();
 		// A build can ship the clan's hub, so members only ever type a session code.
 		// An explicit setting still wins, for anyone pointing at a different hub.
-		return new ClanHubClient(
+		return ClanHubClient.of(
 			ClanDefaults.effectiveUrl(s.clanHubUrl()),
 			ClanDefaults.effectiveToken(s.clanToken())
 		);
 	}
+
+	/**
+	 * Stable last-resort identity. A fresh random UUID per call meant a client without a
+	 * player/user (title screen edge cases) changed identity between requests — its own
+	 * claims read as someone else's and the host check never matched.
+	 */
+	private static final String FALLBACK_UUID = UUID.randomUUID().toString();
 
 	public static String localUuid(Minecraft mc) {
 		if (mc.player != null && mc.player.getUUID() != null) {
@@ -179,7 +186,7 @@ public final class ClanSessionManager {
 		if (mc.getUser() != null && mc.getUser().getProfileId() != null) {
 			return mc.getUser().getProfileId().toString();
 		}
-		return UUID.randomUUID().toString();
+		return FALLBACK_UUID;
 	}
 
 	public static String localName(Minecraft mc) {
@@ -248,7 +255,7 @@ public final class ClanSessionManager {
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
-						session = res.value;
+						adoptSession(res.value);
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
 						// A new gather starts with no warehouse. Uploading the local marks here
@@ -318,7 +325,7 @@ public final class ClanSessionManager {
 						ClanSession previous = session;
 						boolean differentGather = previous != null
 							&& !previous.code.equalsIgnoreCase(res.value.code);
-						session = res.value;
+						adoptSession(res.value);
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
 						if (differentGather) {
@@ -525,7 +532,7 @@ public final class ClanSessionManager {
 					busy.set(false);
 					if (res.ok && res.value != null) {
 						ClanSession prev = session;
-						session = res.value;
+						adoptSession(res.value);
 						lastError = null;
 						// Always confirm locally with clear who/what
 						String itemName = ChestMemoryStorage.itemDisplayName(itemId);
@@ -575,7 +582,7 @@ public final class ClanSessionManager {
 				var res = client().deliver(code, body);
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
-						session = res.value;
+						adoptSession(res.value);
 						lastError = null;
 						// Deliveries were the one thing the feed never mentioned: it logged
 						// claims and arrivals, so a gather where everyone was actually working
@@ -633,19 +640,47 @@ public final class ClanSessionManager {
 	}
 
 	public static void pushStagingProgress(Minecraft mc) {
-		if (session == null) {
+		ClanSession cur = session;
+		if (cur == null) {
 			return;
 		}
-		for (String itemId : session.materials.keySet()) {
+		// One request for the whole warehouse. The per-item loop used to fire an HTTP POST
+		// for every material with progress — a 30-material gather pushed 30 requests every
+		// ten seconds into the hub's rate-limit bucket.
+		JsonObject amounts = new JsonObject();
+		ClanSession prev = cur;
+		for (String itemId : cur.materials.keySet()) {
 			int staging = ChestMemoryStorage.get().countInStaging(itemId);
 			if (staging <= 0) {
 				continue;
 			}
-			ClanSession.ClanMaterial m = session.material(itemId);
+			ClanSession.ClanMaterial m = cur.material(itemId);
 			if (m != null && staging > m.delivered) {
-				reportDeliveredAsync(mc, itemId, staging);
+				amounts.addProperty(itemId, staging);
 			}
 		}
+		if (amounts.isEmpty()) {
+			return;
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("uuid", localUuid(mc));
+		body.addProperty("name", localName(mc));
+		body.add("amounts", amounts);
+		String code = cur.code;
+		IO.execute(() -> {
+			try {
+				var res = client().deliverBatch(code, body);
+				if (res.ok && res.value != null) {
+					mc.execute(() -> {
+						ClanSession adopted = adoptSession(res.value);
+						lastError = null;
+						recordDeliveryDiffs(prev, adopted);
+					});
+				}
+			} catch (Exception e) {
+				ChestMemoryMod.LOGGER.debug("Clan staging batch: {}", e.toString());
+			}
+		});
 	}
 
 	/**
@@ -701,6 +736,32 @@ public final class ClanSessionManager {
 	}
 
 	/**
+	 * Adopt a session snapshot from the hub, unless it is older than what we already have.
+	 * <p>
+	 * Poll, claim, deliver and staging responses all race on the single IO thread; a slow
+	 * claim response landing after a fresher poll used to rewind the whole session — claims
+	 * flickered back, delivered counts dropped for a few seconds. The hub increments
+	 * {@code revision} on every change, so "older" is a plain comparison.
+	 *
+	 * @return the session now in effect
+	 */
+	private static @Nullable ClanSession adoptSession(@Nullable ClanSession next) {
+		ClanSession cur = session;
+		if (next == null) {
+			return cur;
+		}
+		if (cur != null && cur.code.equalsIgnoreCase(next.code)
+			&& next.revision > 0 && cur.revision > next.revision) {
+			return cur;
+		}
+		if (next.receivedAt == 0) {
+			next.receivedAt = System.currentTimeMillis();
+		}
+		session = next;
+		return next;
+	}
+
+	/**
 	 * True when the item is part of the gather currently being followed.
 	 * <p>
 	 * The panel lists whatever schematic Litematica has open, which is not necessarily the
@@ -753,6 +814,10 @@ public final class ClanSessionManager {
 		if (mc.player == null) {
 			return;
 		}
+		// Keep the heartbeat identity fresh: it rides every hub request as headers, so
+		// offline-mode clients (who can never pass the Mojang handshake) still refresh
+		// their lastSeen by polling — without it their claims timed out mid-game.
+		ClanHubClient.setIdentityHint(localUuid(mc), localName(mc));
 		if (session == null) {
 			// A world change on a multiworld server disconnects us; pick the gather back up
 			// instead of silently dropping out of the clan.
@@ -783,27 +848,35 @@ public final class ClanSessionManager {
 			return;
 		}
 		lastPollMillis = now;
+		int sinceRevision = session != null ? session.revision : 0;
 		IO.execute(() -> {
 			try {
 				ClanHubClient c = client();
-				var res = c.get(code);
+				// since-poll: the hub answers a tiny stub when nothing changed, which is the
+				// steady state — no snapshot parse, no diffing, just the heartbeat.
+				var res = sinceRevision > 0 ? c.getSince(code, sinceRevision) : c.get(code);
+				if (res.isUnchanged()) {
+					return;
+				}
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
 						ClanSession prev = session;
-						session = res.value;
+						ClanSession adopted = adoptSession(res.value);
 						lastError = null;
-						applyClanStagingKeys(session);
-						// Tell player when someone else claimed / released items
-						announceClaimDiffs(mc, prev, session, false);
-						// Roster and delivery changes are feed-only: they are useful when you
-						// open the screen, but not worth a chat line every few seconds.
-						recordMemberDiffs(prev, session);
-						recordDeliveryDiffs(prev, session);
-						// Keep the switcher's progress numbers current for the active gather.
-						ClanRoster.remember(
-							session.code, session.schemaName,
-							session.totalDelivered(), session.totalNeed()
-						);
+						if (adopted != prev) {
+							applyClanStagingKeys(adopted);
+							// Tell player when someone else claimed / released items
+							announceClaimDiffs(mc, prev, adopted, false);
+							// Roster and delivery changes are feed-only: they are useful when
+							// you open the screen, but not worth a chat line every few seconds.
+							recordMemberDiffs(prev, adopted);
+							recordDeliveryDiffs(prev, adopted);
+							// Keep the switcher's progress numbers current for this gather.
+							ClanRoster.remember(
+								adopted.code, adopted.schemaName,
+								adopted.totalDelivered(), adopted.totalNeed()
+							);
+						}
 					});
 				} else if (res.status == 401) {
 					// Session token expired or the hub restarted: re-run the handshake once
@@ -995,9 +1068,11 @@ public final class ClanSessionManager {
 				continue;
 			}
 			String itemName = ChestMemoryStorage.itemDisplayName(e.getKey());
-			// Name the carrier when the hub knows it; otherwise report the amount alone
-			// rather than inventing an attribution.
-			String who = nm.claimedName != null && !nm.claimedName.isBlank() ? nm.claimedName : null;
+			// The hub records who actually raised the count; the claim holder is only a
+			// guess (anyone can carry to the warehouse), so it is the fallback.
+			String who = nm.lastDeliveredBy != null && !nm.lastDeliveredBy.isBlank()
+				? nm.lastDeliveredBy
+				: (nm.claimedName != null && !nm.claimedName.isBlank() ? nm.claimedName : null);
 			ClanEventLog.add(
 				ClanEventLog.Kind.DELIVER,
 				who != null
@@ -1102,7 +1177,7 @@ public final class ClanSessionManager {
 					busy.set(false);
 					if (res.ok && res.value != null) {
 						pausedCode = null;
-						session = res.value;
+						adoptSession(res.value);
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
 						applyClanStagingKeys(session);

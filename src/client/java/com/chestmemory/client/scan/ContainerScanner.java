@@ -121,7 +121,8 @@ public final class ContainerScanner {
 			trackedMenuHadContents = false;
 		}
 
-		Map<String, Integer> items = readSlots(menu, target.containerSlots());
+		SlotScan scan = readSlots(menu, target.containerSlots());
+		Map<String, Integer> items = scan.items();
 
 		if (!items.isEmpty()) {
 			trackedMenuHadContents = true;
@@ -187,7 +188,8 @@ public final class ContainerScanner {
 		// from the highlight on the next tick. Returns false when nothing changed — the
 		// scanner runs every tick while the GUI is open, and an idle open chest used to
 		// re-dirty the profile (and below, re-ping the clan hub) twenty times a second.
-		boolean changed = ChestMemoryStorage.get().rememberBlockContainer(client.level, dimension, pos, type, items);
+		boolean changed = ChestMemoryStorage.get().rememberBlockContainer(
+			client.level, dimension, pos, type, items, scan.shulkerItems());
 
 		// If this chest is the clan's warehouse, tell the hub what is in it now. The periodic
 		// push runs every ~10s, so dropping a stack off and looking at the panel showed
@@ -195,8 +197,7 @@ public final class ContainerScanner {
 		// thing that has to land immediately, because the whole clan is watching that number.
 		if (changed
 			&& com.chestmemory.client.clan.ClanSessionManager.isInSession()
-			&& ChestMemoryStorage.get().isStagingKey(
-				ContainerKeys.blockKey(dimension, ContainerKeys.canonicalPos(client.level, pos)))) {
+			&& ChestMemoryStorage.get().isStagingAt(client.level, dimension, pos)) {
 			com.chestmemory.client.clan.ClanSessionManager.pushStagingProgress(client);
 		}
 
@@ -305,8 +306,13 @@ public final class ContainerScanner {
 		return id != null && id.getPath().contains("shulker_box") && stack.has(DataComponents.CONTAINER);
 	}
 
-	private static Map<String, Integer> readSlots(AbstractContainerMenu menu, int containerSlots) {
+	/** Flat totals plus the portion of them that lies inside nested shulker boxes. */
+	private record SlotScan(Map<String, Integer> items, Map<String, Integer> shulkerItems) {
+	}
+
+	private static SlotScan readSlots(AbstractContainerMenu menu, int containerSlots) {
 		Map<String, Integer> items = new LinkedHashMap<>();
+		Map<String, Integer> shulkerItems = new LinkedHashMap<>();
 		int limit = Math.min(containerSlots, menu.slots.size());
 		for (int i = 0; i < limit; i++) {
 			Slot slot = menu.slots.get(i);
@@ -326,12 +332,15 @@ public final class ContainerScanner {
 						String innerKey = com.chestmemory.client.data.ItemStackKeys.keyOf(inner);
 						if (!"minecraft:air".equals(innerKey)) {
 							items.merge(innerKey, inner.getCount(), Integer::sum);
+							// Remember where it came from: "how much sits in shulkers"
+							// is a question the panel gets asked.
+							shulkerItems.merge(innerKey, inner.getCount(), Integer::sum);
 						}
 					});
 				}
 			}
 		}
-		return items;
+		return new SlotScan(items, shulkerItems);
 	}
 
 	/**

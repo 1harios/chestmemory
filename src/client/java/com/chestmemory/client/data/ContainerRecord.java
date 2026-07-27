@@ -28,6 +28,13 @@ public final class ContainerRecord {
 	private String virtualId;
 	/** item id -> total count */
 	private Map<String, Integer> items = new LinkedHashMap<>();
+	/**
+	 * item id -> the part of {@link #items} that lies inside shulker boxes stored in this
+	 * container. Nested shulker contents are merged into the flat totals at scan time; this
+	 * keeps their origin, so the panel can answer "how much of it is in shulkers". Null on
+	 * records written before the field existed and on containers with no shulkers.
+	 */
+	private Map<String, Integer> shulkerItems;
 	private long lastSeenMillis;
 	/** Display name for inventory shulkers, etc. */
 	private String displayName;
@@ -121,6 +128,22 @@ public final class ContainerRecord {
 
 	public void setItems(Map<String, Integer> items) {
 		this.items = items != null ? new LinkedHashMap<>(items) : new LinkedHashMap<>();
+	}
+
+	/** Portion of the totals that lies inside shulker boxes stored in this container. */
+	public Map<String, Integer> shulkerItems() {
+		return shulkerItems == null ? Collections.emptyMap() : shulkerItems;
+	}
+
+	public void setShulkerItems(Map<String, Integer> shulkerItems) {
+		this.shulkerItems = shulkerItems == null || shulkerItems.isEmpty()
+			? null
+			: new LinkedHashMap<>(shulkerItems);
+	}
+
+	/** How many of this item lie inside shulker boxes stored in this container. */
+	public int shulkerCountOf(String itemId) {
+		return shulkerItems == null ? 0 : shulkerItems.getOrDefault(itemId, 0);
 	}
 
 	public long lastSeenMillis() {

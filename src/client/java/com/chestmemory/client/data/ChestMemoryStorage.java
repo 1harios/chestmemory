@@ -671,6 +671,18 @@ public final class ChestMemoryStorage {
 		String type,
 		Map<String, Integer> items
 	) {
+		return rememberBlockContainer(level, dimension, rawPos, type, items, null);
+	}
+
+	/** @param shulkerItems portion of {@code items} that lies inside nested shulker boxes */
+	public synchronized boolean rememberBlockContainer(
+		BlockGetter level,
+		String dimension,
+		BlockPos rawPos,
+		String type,
+		Map<String, Integer> items,
+		@Nullable Map<String, Integer> shulkerItems
+	) {
 		if (liveWorldId == null) {
 			return false;
 		}
@@ -681,6 +693,7 @@ public final class ChestMemoryStorage {
 
 		ContainerRecord record = new ContainerRecord(finalType, dimension, canonical.getX(), canonical.getY(), canonical.getZ());
 		record.setItems(items);
+		record.setShulkerItems(shulkerItems);
 		// Stamp the world, so a multiworld server's two overworlds / Nethers can be told
 		// apart even though both report the same vanilla dimension id.
 		record.setWorldTag(worldTag);
@@ -731,7 +744,8 @@ public final class ChestMemoryStorage {
 				|| (existing.otherX() == fresh.otherX()
 					&& existing.otherY() == fresh.otherY()
 					&& existing.otherZ() == fresh.otherZ()))
-			&& existing.items().equals(fresh.items());
+			&& existing.items().equals(fresh.items())
+			&& existing.shulkerItems().equals(fresh.shulkerItems());
 	}
 
 	private void forgetUnlessOwn(String key, String ownKey) {
@@ -881,6 +895,34 @@ public final class ChestMemoryStorage {
 	}
 
 	/**
+	 * Staging key for a block: canonical double-chest position plus the current world tag
+	 * when one is known. Untagged keys collide across a multiworld server's worlds — a
+	 * warehouse mark in the build world matched a chest at the same coordinates in the
+	 * farm world, and the farm chest's contents were then reported as clan deliveries.
+	 */
+	public synchronized String stagingKeyFor(@Nullable BlockGetter level, String dimension, BlockPos rawPos) {
+		BlockPos canonical = level != null
+			? ContainerKeys.canonicalPos(level, rawPos)
+			: rawPos.immutable();
+		String tag = WorldFingerprint.current(Minecraft.getInstance());
+		return ContainerRecord.makeKey(dimension, canonical.getX(), canonical.getY(), canonical.getZ(), tag);
+	}
+
+	/** True when this block is marked as staging — under its tagged or legacy key. */
+	public synchronized boolean isStagingAt(@Nullable BlockGetter level, String dimension, BlockPos rawPos) {
+		if (dimension == null || rawPos == null || liveStagingKeys.isEmpty()) {
+			return false;
+		}
+		if (liveStagingKeys.contains(stagingKeyFor(level, dimension, rawPos))) {
+			return true;
+		}
+		BlockPos canonical = level != null
+			? ContainerKeys.canonicalPos(level, rawPos)
+			: rawPos.immutable();
+		return liveStagingKeys.contains(ContainerKeys.blockKey(dimension, canonical));
+	}
+
+	/**
 	 * Add a world block as staging (idempotent). Double-chest → canonical key.
 	 * @return true if newly added, false if already staging / invalid
 	 */
@@ -895,7 +937,9 @@ public final class ChestMemoryStorage {
 		BlockPos canonical = level != null
 			? ContainerKeys.canonicalPos(level, rawPos)
 			: rawPos.immutable();
-		String key = ContainerKeys.blockKey(dimension, canonical);
+		String key = stagingKeyFor(level, dimension, rawPos);
+		// A legacy untagged mark for the same block is superseded by the tagged one.
+		liveStagingKeys.remove(ContainerKeys.blockKey(dimension, canonical));
 		// Already marked (idempotent — do not remove/re-add; that spammed chat every tick)
 		if (liveStagingKeys.contains(key)) {
 			return false;
@@ -938,7 +982,8 @@ public final class ChestMemoryStorage {
 		BlockPos canonical = level != null
 			? ContainerKeys.canonicalPos(level, rawPos)
 			: rawPos.immutable();
-		String key = ContainerKeys.blockKey(dimension, canonical);
+		String key = stagingKeyFor(level, dimension, rawPos);
+		liveStagingKeys.remove(ContainerKeys.blockKey(dimension, canonical));
 		if (level != null) {
 			BlockPos other = ContainerKeys.otherHalf(level, rawPos);
 			if (other != null) {

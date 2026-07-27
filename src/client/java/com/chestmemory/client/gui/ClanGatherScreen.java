@@ -854,7 +854,7 @@ public class ClanGatherScreen extends Screen {
 			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
 			: s.schemaName;
 		graphics.fill(left, y, left + contentW, y + 16, ChestGuiStyle.WOOD_DARK);
-		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 15, 0xFF32200E);
+		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 15, 0xFF2E2E2E);
 		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 2,
 			ChestGuiStyle.withAlpha(0xFFFFFF, 0.18F));
 		ChestGuiStyle.drawCentered(
@@ -873,7 +873,7 @@ public class ClanGatherScreen extends Screen {
 
 		int online = 0;
 		for (ClanSession.ClanMember m : s.members) {
-			if (!m.isAway()) {
+			if (!s.isMemberAway(m)) {
 				online++;
 			}
 		}
@@ -1218,7 +1218,7 @@ public class ClanGatherScreen extends Screen {
 			ClanSession.ClanMember m = s.members.get(i);
 			int y = this.memberScroll.rowY(i);
 			boolean host = m.uuid != null && m.uuid.equalsIgnoreCase(s.hostUuid);
-			boolean away = m.isAway();
+			boolean away = s.isMemberAway(m);
 
 			// What this member is holding, and how much of it already reached the warehouse.
 			String claimItem = null;

@@ -222,6 +222,22 @@ class Handler(BaseHTTPRequestHandler):
         """
         return clan_auth.resolve(self.headers.get("X-Clan-Session", ""))
 
+    def _hint_identity(self) -> dict[str, str] | None:
+        """
+        Unverified identity hint from headers, honoured only while REQUIRE_AUTH is off.
+
+        Offline-mode launchers can never complete the Mojang handshake, so without this a
+        plain poll carried no identity at all — lastSeen never moved, and the hub released
+        the player's claims after CLAIM_TIMEOUT_SEC while they were actively online.
+        """
+        if REQUIRE_AUTH:
+            return None
+        uuid = (self.headers.get("X-Clan-Uuid", "") or "").strip()
+        if not uuid:
+            return None
+        name = (self.headers.get("X-Clan-Name", "") or "?").strip() or "?"
+        return {"uuid": uuid, "name": name}
+
     def _actor(self, body: dict[str, Any]) -> tuple[str, str]:
         """
         (uuid, name) to act as.
@@ -230,13 +246,20 @@ class Handler(BaseHTTPRequestHandler):
         REQUIRE_AUTH is off, so an existing clan can upgrade the hub before every
         member has updated the mod. Turn REQUIRE_AUTH on once they have.
         """
-        who = self._identity()
+        who = self._identity() or self._hint_identity()
         if who is not None:
             return who["uuid"], who["name"]
         return (
             str(body.get("uuid") or body.get("hostUuid") or ""),
             str(body.get("name") or body.get("hostName") or "?"),
         )
+
+    def _send_session(self, sess: dict[str, Any]) -> None:
+        """Session snapshot + the hub's clock, so clients can judge staleness without
+        trusting their own wall clock to agree with ours."""
+        payload = dict(sess)
+        payload["now"] = _now()
+        self._send(200, payload)
 
     def _check_token(self) -> bool:
         if not CLAN_TOKEN:
@@ -304,6 +327,14 @@ class Handler(BaseHTTPRequestHandler):
             # Guessing codes happens here, so this is the tight bucket.
             if not self._rate_ok("lookup"):
                 return
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            since = 0
+            for part in query.split("&"):
+                if part.startswith("since="):
+                    try:
+                        since = int(part[len("since="):])
+                    except ValueError:
+                        since = 0
             code = _normalize_code(path[len("/v1/sessions/") :].split("/")[0])
             with _lock:
                 _purge_old()
@@ -311,11 +342,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not sess:
                     self._send(404, {"error": "not found"})
                     return
-                # The poll IS the heartbeat. It used to refresh nothing, so lastSeen only
-                # moved when a player claimed or delivered — which would have marked
-                # someone mining for an hour as gone. Polling continues across dimension
-                # changes (same connection), so this measures the client being alive.
-                who = self._identity()
+                # The poll IS the heartbeat. Verified identity first; the header hint
+                # covers offline-mode clients while REQUIRE_AUTH is off — without it
+                # their lastSeen never moved and their claims timed out mid-game.
+                who = self._identity() or self._hint_identity()
                 changed = False
                 if who is not None:
                     _member_upsert(sess, who["name"], who["uuid"])
@@ -329,8 +359,21 @@ class Handler(BaseHTTPRequestHandler):
                     _touch(sess)
                     changed = True
                 if changed:
-                    _save_sessions()
-                self._send(200, sess)
+                    # Heartbeats land every ~3s per member; rewriting the whole store to
+                    # disk for each would grind. lastSeen precision on restart is worth
+                    # seconds, not fsyncs — persist it opportunistically with real changes.
+                    if released:
+                        _save_sessions()
+                # since-poll: nothing the client does not already have — answer a stub.
+                if since > 0 and int(sess.get("revision", 0)) == since:
+                    self._send(200, {
+                        "code": sess.get("code"),
+                        "revision": since,
+                        "unchanged": True,
+                        "now": _now(),
+                    })
+                    return
+                self._send_session(sess)
             return
         self._send(404, {"error": "not found"})
 
@@ -401,9 +444,14 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(materials_in, dict) or not materials_in:
             self._send(400, {"error": "materials required"})
             return
-        host_uuid, host_name = self._actor(body)
-        if host_name == "?":
-            host_name = str(body.get("hostName") or body.get("name") or "Host")
+        # NOT _actor(body): in the create body "name" is the BUILD's name, so the generic
+        # fallback registered the host in the roster as "Castle" instead of their nick.
+        who = self._identity() or self._hint_identity()
+        if who is not None:
+            host_uuid, host_name = who["uuid"], who["name"]
+        else:
+            host_uuid = str(body.get("hostUuid") or body.get("uuid") or "")
+            host_name = str(body.get("hostName") or "Host")
         if not host_uuid:
             self._send(400, {"error": "hostUuid required"})
             return
@@ -455,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             _sessions[code] = sess
             _save_sessions()
-            self._send(200, sess)
+            self._send_session(sess)
 
     def _join(self, code: str, body: dict[str, Any]) -> None:
         if not _ok_code(code):
@@ -476,7 +524,7 @@ class Handler(BaseHTTPRequestHandler):
             _member_upsert(sess, name, uuid)
             _touch(sess)
             _save_sessions()
-            self._send(200, sess)
+            self._send_session(sess)
 
     def _claim(self, code: str, body: dict[str, Any]) -> None:
         uuid, actor_name = self._actor(body)
@@ -515,19 +563,35 @@ class Handler(BaseHTTPRequestHandler):
             _member_upsert(sess, name, uuid)
             _touch(sess)
             _save_sessions()
-            self._send(200, sess)
+            self._send_session(sess)
 
     def _deliver(self, code: str, body: dict[str, Any]) -> None:
         uuid, actor_name = self._actor(body)
         # Display name comes from the verified identity too, otherwise a member could
         # show up in the roster under someone else's name.
         name = actor_name if actor_name != "?" else str(body.get("name") or "?")
-        item = str(body.get("itemId") or "")
-        try:
-            amount = int(body.get("amount") or 0)
-        except Exception:
-            amount = 0
-        if not uuid or not item or amount <= 0:
+        # Two shapes: single {"itemId", "amount"} and batch {"amounts": {item: n}}.
+        # The batch is what the periodic warehouse push sends — one request instead of
+        # one per material.
+        amounts: dict[str, int] = {}
+        raw_amounts = body.get("amounts")
+        if isinstance(raw_amounts, dict):
+            for k, v in raw_amounts.items():
+                try:
+                    n = int(v)
+                except Exception:
+                    continue
+                if n > 0:
+                    amounts[str(k)] = n
+        else:
+            item = str(body.get("itemId") or "")
+            try:
+                amount = int(body.get("amount") or 0)
+            except Exception:
+                amount = 0
+            if item and amount > 0:
+                amounts[item] = amount
+        if not uuid or not amounts:
             self._send(400, {"error": "itemId/amount/uuid required"})
             return
         with _lock:
@@ -536,18 +600,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "not found"})
                 return
             mats = sess.get("materials") or {}
-            m = mats.get(item)
-            if not m:
+            known = 0
+            changed = False
+            for item, amount in amounts.items():
+                m = mats.get(item)
+                if not m:
+                    continue
+                known += 1
+                new_delivered = min(
+                    int(m.get("need", 0)),
+                    max(int(m.get("delivered", 0)), amount),
+                )
+                if new_delivered != int(m.get("delivered", 0)):
+                    m["delivered"] = new_delivered
+                    # Remember who actually raised the count — the client's activity
+                    # feed used to guess the claim holder, which is often not the
+                    # person who carried the items in.
+                    m["lastDeliveredBy"] = name
+                    m["lastDeliveredAt"] = _now()
+                    changed = True
+            if known == 0:
                 self._send(404, {"error": "unknown item"})
                 return
-            m["delivered"] = min(
-                int(m.get("need", 0)),
-                max(int(m.get("delivered", 0)), amount),
-            )
             _member_upsert(sess, name, uuid)
-            _touch(sess)
+            if changed:
+                _touch(sess)
             _save_sessions()
-            self._send(200, sess)
+            self._send_session(sess)
 
     def _staging(self, code: str, body: dict[str, Any]) -> None:
         uuid, actor_name = self._actor(body)
@@ -583,7 +662,7 @@ class Handler(BaseHTTPRequestHandler):
             _member_upsert(sess, name, uuid)
             _touch(sess)
             _save_sessions()
-            self._send(200, sess)
+            self._send_session(sess)
 
     def _leave(self, code: str, body: dict[str, Any]) -> None:
         uuid, actor_name = self._actor(body)
@@ -604,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
             _touch(sess)
             _save_sessions()
-            self._send(200, sess)
+            self._send_session(sess)
 
     def _close(self, code: str, body: dict[str, Any]) -> None:
         uuid, actor_name = self._actor(body)
