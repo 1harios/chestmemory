@@ -682,17 +682,18 @@ public class ClanGatherScreen extends Screen {
 		return idx < entries.size() ? entries.get(idx).code() : null;
 	}
 
-	/** Tab index under the cursor, or -1. */
+	/** Tab index under the cursor, or -1. Geometry shared with the tab renderer. */
 	private int tabAt(double mx, double my) {
-		if (this.tabsY < 0 || my < this.tabsY || my > this.tabsY + 15) {
+		if (this.tabsY < 0) {
 			return -1;
 		}
-		if (mx < this.tabsLeft || mx > this.tabsLeft + this.tabsWidth) {
-			return -1;
+		Component[] labels = new Component[TAB_KEYS.length];
+		for (int i = 0; i < TAB_KEYS.length; i++) {
+			labels[i] = Component.translatable(TAB_KEYS[i]);
 		}
-		int tabW = this.tabsWidth / TAB_KEYS.length;
-		int i = (int) ((mx - this.tabsLeft) / Math.max(1, tabW));
-		return Math.min(TAB_KEYS.length - 1, Math.max(0, i));
+		return ChestGuiStyle.tabIndexAt(
+			this.font, labels, this.tabsLeft, this.tabsWidth, this.tabsY, mx, my
+		);
 	}
 
 	private void saveHubQuiet() {
@@ -853,7 +854,7 @@ public class ClanGatherScreen extends Screen {
 			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
 			: s.schemaName;
 		graphics.fill(left, y, left + contentW, y + 16, ChestGuiStyle.WOOD_DARK);
-		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 15, 0xFF3A2414);
+		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 15, 0xFF2E2E2E);
 		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 2,
 			ChestGuiStyle.withAlpha(0xFFFFFF, 0.18F));
 		ChestGuiStyle.drawCentered(

@@ -24,7 +24,7 @@ public class ToggleSwitchRow extends AbstractWidget {
 	private static final int KNOB = 8;
 	/** Switch ON — same green as the hub-online lamp, so "active" reads one way everywhere. */
 	private static final int ON = ChestGuiStyle.LAMP_ONLINE;
-	private static final int OFF_TRACK = 0xFF4A3826;
+	private static final int OFF_TRACK = 0xFF3A3A3A;
 
 	private final BooleanSupplier state;
 	private final Runnable onToggle;
@@ -60,10 +60,6 @@ public class ToggleSwitchRow extends AbstractWidget {
 		int y0 = this.getY();
 
 		ChestGuiStyle.drawSettingRow(graphics, x0, y0, this.width, this.height, hover, this.active);
-		if (hover) {
-			int accent = 0xFF000000 | com.chestmemory.client.data.ModSettings.get().hudAccentColor();
-			graphics.fill(x0 + 1, y0 + 1, x0 + 3, y0 + this.height - 1, accent);
-		}
 
 		var font = Minecraft.getInstance().font;
 		int textY = y0 + (this.height - font.lineHeight) / 2 + 1;
@@ -98,7 +94,7 @@ public class ToggleSwitchRow extends AbstractWidget {
 
 		int kx = tx + 2 + Math.round(knob * (TRACK_W - KNOB - 4));
 		int ky = ty + (TRACK_H - KNOB) / 2;
-		int knobColor = this.active ? 0xFFF4E8CC : ChestGuiStyle.TEXT_DISABLED;
+		int knobColor = this.active ? 0xFFE8E8E8 : ChestGuiStyle.TEXT_DISABLED;
 		graphics.fill(kx - 1, ky - 1, kx + KNOB + 1, ky + KNOB + 1, ChestGuiStyle.WOOD_DARK);
 		graphics.fill(kx, ky, kx + KNOB, ky + KNOB, knobColor);
 		graphics.fill(kx, ky, kx + KNOB, ky + 1, ChestGuiStyle.withAlpha(0xFFFFFF, 0.45F));

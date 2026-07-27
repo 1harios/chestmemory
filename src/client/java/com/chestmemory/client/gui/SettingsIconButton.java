@@ -43,15 +43,15 @@ public class SettingsIconButton extends AbstractWidget {
 		int y1 = y0 + this.height;
 
 		// Wood plate
-		graphics.fill(x0, y0, x1, y1, 0xFF2A1A0E);
-		graphics.fill(x0 + 1, y0 + 1, x1 - 1, y1 - 1, hover ? 0xFFE8C878 : 0xFFC6A060);
-		graphics.fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, hover ? 0xFF5C3A1E : 0xFF4A2E14);
+		graphics.fill(x0, y0, x1, y1, hover ? 0xFFFFFFFF : ChestGuiStyle.WOOD_DARK);
+		graphics.fill(x0 + 1, y0 + 1, x1 - 1, y1 - 1, hover ? ChestGuiStyle.ROW_WOOD_HOVER : ChestGuiStyle.ROW_WOOD);
+		graphics.fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, 0xFF565656);
 
 		// Simple gear icon (center hub + teeth)
 		int cx = x0 + this.width / 2;
 		int cy = y0 + this.height / 2;
-		int metal = hover ? 0xFFFFF0C0 : 0xFFE8D5A0;
-		int dark = 0xFF2A1A0E;
+		int metal = hover ? 0xFFFFFFFF : 0xFFE0E0E0;
+		int dark = 0xFF1A1A1A;
 
 		// Outer ring teeth (4 directions + diagonals as small blocks)
 		int o = 5;

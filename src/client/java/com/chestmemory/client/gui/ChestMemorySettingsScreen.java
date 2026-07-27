@@ -110,9 +110,9 @@ public class ChestMemorySettingsScreen extends Screen {
 
 		this.contentLeft = this.panelLeft + 12;
 		this.contentW = this.panelW - 24;
-		// Tab strip sits at the bottom of the header band; its underline lands exactly on
-		// the header separator, so tabs read as part of the frame, not floating chips.
-		this.tabsY = this.panelTop + ChestGuiStyle.HEADER_H - 15;
+		// Tab strip sits at the bottom of the header band; its baseline lands exactly on
+		// the frame's engraved header groove, so the strip reads as part of the frame.
+		this.tabsY = this.panelTop + ChestGuiStyle.HEADER_H - 14;
 		this.viewTop = this.panelTop + ChestGuiStyle.HEADER_H + 5;
 		// Leave room for Done button
 		this.viewBottom = this.panelTop + this.panelH - 32;
@@ -246,6 +246,29 @@ public class ChestMemorySettingsScreen extends Screen {
 	}
 
 	private int buildPanelTab(int y) {
+		// ── Slot counts: size / style / colour, with a live preview right below ──
+		y = addSlider(y,
+			"screen.chestmemory.settings.row.count_size",
+			"screen.chestmemory.settings.row.count_size.desc",
+			55, 100, 5,
+			() -> ModSettings.get().slotCountScalePct(),
+			v -> ModSettings.get().setSlotCountScalePct(v),
+			v -> Component.translatable("screen.chestmemory.settings.unit.percent", v));
+		y = addCycle(y,
+			"screen.chestmemory.settings.row.count_style",
+			"screen.chestmemory.settings.row.count_style.desc",
+			ChestMemorySettingsScreen::slotCountStyleLabel,
+			() -> ModSettings.get().cycleSlotCountStyle(),
+			null);
+		y = addColor(y, "screen.chestmemory.settings.row.count_color",
+			() -> ModSettings.get().slotCountColor(), () -> ModSettings.get().cycleSlotCountColor());
+		SlotCountPreviewRow preview = new SlotCountPreviewRow(
+			this.contentLeft, this.viewTop + y, this.contentW, 24,
+			Component.translatable("screen.chestmemory.settings.row.count_preview")
+		);
+		register(preview, y, () -> true);
+		y += 24 + ROW_GAP + 2;
+
 		y = addCycle(y,
 			"screen.chestmemory.settings.row.scope",
 			"screen.chestmemory.settings.row.scope.desc",
@@ -474,6 +497,15 @@ public class ChestMemorySettingsScreen extends Screen {
 		};
 	}
 
+	private static Component slotCountStyleLabel() {
+		return switch (ModSettings.get().slotCountStyle()) {
+			case ChestGuiStyle.COUNT_STYLE_SHADOW -> Component.translatable("screen.chestmemory.settings.countstyle.shadow");
+			case ChestGuiStyle.COUNT_STYLE_PLATE -> Component.translatable("screen.chestmemory.settings.countstyle.plate");
+			case ChestGuiStyle.COUNT_STYLE_PLAIN -> Component.translatable("screen.chestmemory.settings.countstyle.plain");
+			default -> Component.translatable("screen.chestmemory.settings.countstyle.outline");
+		};
+	}
+
 	// ── Tabs ───────────────────────────────────────────────────────────────
 
 	private Component[] tabLabels() {
@@ -486,14 +518,10 @@ public class ChestMemorySettingsScreen extends Screen {
 	}
 
 	private int tabIndexAt(double mouseX, double mouseY) {
-		if (mouseY < this.tabsY || mouseY > this.tabsY + 14
-			|| mouseX < this.contentLeft || mouseX > this.contentLeft + this.contentW) {
-			return -1;
-		}
-		int n = Tab.values().length;
-		int tabW = this.contentW / n;
-		int idx = (int) ((mouseX - this.contentLeft) / Math.max(1, tabW));
-		return Math.min(n - 1, Math.max(0, idx));
+		// Shared geometry with drawTabs — tab widths follow their labels.
+		return ChestGuiStyle.tabIndexAt(
+			this.font, tabLabels(), this.contentLeft, this.contentW, this.tabsY, mouseX, mouseY
+		);
 	}
 
 	private void switchTab(Tab tab) {
@@ -708,7 +736,7 @@ public class ChestMemorySettingsScreen extends Screen {
 				tip,
 				this.contentLeft,
 				this.panelTop + this.panelH - 40,
-				0xFFFFD56A,
+				ChestGuiStyle.TEXT_TITLE,
 				false
 			);
 		}
@@ -721,7 +749,7 @@ public class ChestMemorySettingsScreen extends Screen {
 			int barY = this.viewTop + (int) ((trackH - barH) * (this.scrollY / (float) max));
 			graphics.fill(trackX, this.viewTop, trackX + 4, this.viewBottom, 0x66000000);
 			graphics.fill(trackX, barY, trackX + 4, barY + barH,
-				this.draggingScrollbar ? 0xFFFFD56A : 0xFFC8A040);
+				this.draggingScrollbar ? 0xFFB8B8B8 : 0xFF8B8B8B);
 		}
 	}
 

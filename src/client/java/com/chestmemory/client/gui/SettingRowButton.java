@@ -58,13 +58,8 @@ public class SettingRowButton extends AbstractWidget {
 		int x0 = this.getX();
 		int y0 = this.getY();
 
+		// Hover state is the row itself: lighter face + white outline (vanilla grammar).
 		ChestGuiStyle.drawSettingRow(graphics, x0, y0, this.width, this.height, hover, this.active);
-		if (hover) {
-			// Accent rail: the one hovered row is findable at a glance, in the player's
-			// own HUD accent colour — the same cue the clan roster uses for members.
-			int accent = 0xFF000000 | com.chestmemory.client.data.ModSettings.get().hudAccentColor();
-			graphics.fill(x0 + 1, y0 + 1, x0 + 3, y0 + this.height - 1, accent);
-		}
 
 		var font = net.minecraft.client.Minecraft.getInstance().font;
 		int textY = y0 + (this.height - font.lineHeight) / 2 + 1;
@@ -85,7 +80,7 @@ public class SettingRowButton extends AbstractWidget {
 			if (valueW > 0) {
 				int vx = x0 + this.width - 6 - swatchW - (swatchW > 0 ? 4 : 0) - valueW;
 				graphics.text(font, this.value, vx, textY,
-					this.active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_DISABLED, false);
+					this.active ? ChestGuiStyle.VALUE_TEXT : ChestGuiStyle.TEXT_DISABLED, false);
 			}
 		}
 

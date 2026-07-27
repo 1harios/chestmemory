@@ -70,6 +70,13 @@ public final class ModSettings {
 	// --- Panel ---
 	/** Remember filter expand state. */
 	private boolean filtersExpanded = false;
+	// --- Slot counts (numbers over item icons in the panel grid) ---
+	/** Size of the count text, percent of full font size (55–100). */
+	private int slotCountScalePct = 75;
+	/** 0 = shadow, 1 = outline, 2 = dark plate, 3 = plain. */
+	private int slotCountStyle = 1;
+	/** 0xRRGGBB count colour — palette white, so the settings row shows a proper name. */
+	private int slotCountColor = 0xE8E8E8;
 	/**
 	 * Chat notice when a selected item turns out to lie in another world / dimension.
 	 * On a multiworld server "I clicked it and nothing glows" almost always means exactly
@@ -564,6 +571,44 @@ public final class ModSettings {
 
 	public void toggleNotifyOtherWorld() {
 		setNotifyOtherWorld(!notifyOtherWorld);
+	}
+
+	// --- Slot counts ---
+
+	public int slotCountScalePct() {
+		return clamp(slotCountScalePct, 55, 100, 75);
+	}
+
+	public void setSlotCountScalePct(int pct) {
+		this.slotCountScalePct = clamp(pct, 55, 100, 75);
+		save();
+	}
+
+	/** 0 = shadow, 1 = outline, 2 = plate, 3 = plain. */
+	public int slotCountStyle() {
+		return clamp(slotCountStyle, 0, 3, 1);
+	}
+
+	public void setSlotCountStyle(int style) {
+		this.slotCountStyle = clamp(style, 0, 3, 1);
+		save();
+	}
+
+	public void cycleSlotCountStyle() {
+		setSlotCountStyle((slotCountStyle() + 1) % 4);
+	}
+
+	public int slotCountColor() {
+		return ColorPalette.normalizeRgb(slotCountColor);
+	}
+
+	public void setSlotCountColor(int rgb) {
+		this.slotCountColor = ColorPalette.normalizeRgb(rgb);
+		save();
+	}
+
+	public void cycleSlotCountColor() {
+		setSlotCountColor(ColorPalette.cycle(slotCountColor()));
 	}
 
 	// --- Clan ---

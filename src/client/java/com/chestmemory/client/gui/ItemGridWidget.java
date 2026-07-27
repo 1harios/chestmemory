@@ -137,9 +137,7 @@ public class ItemGridWidget extends AbstractWidget {
 
 	@Override
 	protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-		// Dark plate
-		graphics.fill(this.getX(), this.getY(), this.getX() + this.width, this.getY() + this.height, 0xFF1A120A);
-		graphics.fill(this.getX() + 1, this.getY() + 1, this.getX() + this.width - 1, this.getY() + this.height - 1, 0xFFC6C6C6);
+		ChestGuiStyle.drawGridTray(graphics, this.getX(), this.getY(), this.width, this.height);
 
 		int c = cols();
 		int rv = rowsVisible();
@@ -199,14 +197,14 @@ public class ItemGridWidget extends AbstractWidget {
 				graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, 0x55E0C040);
 			}
 
-			// Compact + slightly scaled count (fits in 18px slot without black plate)
+			// Count: size / style / colour come from settings (see panel tab preview).
 			String countText = summary.isBuildNeed()
-				? formatCount(summary.neededForBuild())
-				: formatCount(summary.totalCount());
+				? ChestGuiStyle.formatCount(summary.neededForBuild())
+				: ChestGuiStyle.formatCount(summary.totalCount());
 			var font = this.minecraft.font;
 			int countColor;
 			if (!summary.isBuildNeed()) {
-				countColor = 0xFFFFFFFF;
+				countColor = 0; // 0 = configured colour
 			} else if (summary.neededForBuild() <= 0) {
 				countColor = 0xFF88CCFF; // done
 			} else if (summary.stillShort() > 0) {
@@ -214,7 +212,7 @@ public class ItemGridWidget extends AbstractWidget {
 			} else {
 				countColor = 0xFF80FFA0; // ready to take from chests
 			}
-			drawSlotCount(graphics, font, countText, slotX, slotY, countColor);
+			ChestGuiStyle.drawSlotCount(graphics, font, countText, slotX, slotY, countColor);
 
 			// First letter of claimer in top-left of slot
 			if (mine || other) {
@@ -231,7 +229,8 @@ public class ItemGridWidget extends AbstractWidget {
 			int barH = Math.max(10, this.height * rowsVisible() / (rowsVisible() + maxScrollRow()));
 			int barY = this.getY() + (int) ((this.height - barH) * (scrollRow / (float) maxScrollRow()));
 			graphics.fill(this.getX() + this.width - 3, this.getY() + 2, this.getX() + this.width - 1, this.getY() + this.height - 2, 0x88000000);
-			graphics.fill(this.getX() + this.width - 3, barY, this.getX() + this.width - 1, barY + barH, 0xFFE0C040);
+			graphics.fill(this.getX() + this.width - 3, barY, this.getX() + this.width - 1, barY + barH,
+				this.draggingScrollbar ? 0xFFB8B8B8 : 0xFF8B8B8B);
 		}
 
 		if (hoveredIndex >= 0 && hoveredIndex < items.size()) {
@@ -248,29 +247,29 @@ public class ItemGridWidget extends AbstractWidget {
 		}
 	}
 
-	/** Rich hover card: name, id, enchantments, amounts, and where the item actually lies. */
+	/**
+	 * Hover card in vanilla grammar: white name, gray facts, dark-gray id at the bottom —
+	 * the layout of an advanced tooltip, not a coloured dashboard.
+	 */
 	private List<Component> buildTooltip(ItemSummary s) {
 		List<Component> lines = new ArrayList<>();
 		var storage = com.chestmemory.client.data.ChestMemoryStorage.get();
 
-		// ── Header: name (+ base name for renamed items), raw id, enchantments ──
+		// ── Name (+ base name for renamed items), enchantments — as vanilla shows them ──
 		String custom = com.chestmemory.client.data.ItemStackKeys.customNameOf(s.itemId());
 		if (custom != null) {
+			// A renamed item shows its name in white italics, exactly like vanilla.
 			lines.add(Component.literal(custom)
-				.withStyle(net.minecraft.ChatFormatting.YELLOW, net.minecraft.ChatFormatting.ITALIC));
-			// Base item name: build a clean stack so the custom name is not reapplied.
+				.withStyle(net.minecraft.ChatFormatting.WHITE, net.minecraft.ChatFormatting.ITALIC));
 			lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
 				.copy().withStyle(net.minecraft.ChatFormatting.GRAY));
 		} else {
 			lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
-				.copy().withStyle(net.minecraft.ChatFormatting.WHITE, net.minecraft.ChatFormatting.BOLD));
+				.copy().withStyle(net.minecraft.ChatFormatting.WHITE));
 		}
-		lines.add(Component.literal(com.chestmemory.client.data.ItemStackKeys.baseId(s.itemId()))
-			.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
 		if (com.chestmemory.client.data.ItemStackKeys.hasEnchantData(s.itemId())) {
 			for (String name : com.chestmemory.client.data.ItemStackKeys.enchantNames(s.itemId())) {
-				lines.add(Component.literal("✦ " + name)
-					.withStyle(net.minecraft.ChatFormatting.LIGHT_PURPLE));
+				lines.add(Component.literal(name).withStyle(net.minecraft.ChatFormatting.GRAY));
 			}
 		}
 		lines.add(Component.empty());
@@ -301,14 +300,14 @@ public class ItemGridWidget extends AbstractWidget {
 			}
 		}
 
-		// ── Action hint ──
 		if (s.isBuildNeed() && s.neededForBuild() > 0) {
 			lines.add(Component.translatable("screen.chestmemory.tooltip.build_click")
-				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY, net.minecraft.ChatFormatting.ITALIC));
-		} else if (!s.isBuildNeed()) {
-			lines.add(Component.translatable("screen.chestmemory.tooltip.hint")
-				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY, net.minecraft.ChatFormatting.ITALIC));
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
 		}
+
+		// Raw id last, dark gray — where vanilla advanced tooltips put it.
+		lines.add(Component.literal(com.chestmemory.client.data.ItemStackKeys.baseId(s.itemId()))
+			.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
 		return lines;
 	}
 
@@ -320,24 +319,23 @@ public class ItemGridWidget extends AbstractWidget {
 		// Amount, with real stack size — 16 for pearls, 1 for tools, not always 64.
 		int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
 		if (s.fullStacks(per) > 0) {
-			lines.add(Component.translatable(
+			lines.add(gray(Component.translatable(
 				"screen.chestmemory.tooltip.amount_stacks",
 				s.totalCount(), s.fullStacks(per), per, s.remainder(per)
-			));
+			)));
 		} else {
-			lines.add(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount()));
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount())));
 		}
 		if (s.hasDistance()) {
-			lines.add(Component.translatable(
+			lines.add(gray(Component.translatable(
 				"screen.chestmemory.tooltip.containers_nearest",
 				s.containerCount(), (int) s.nearestDistance()
-			).withStyle(net.minecraft.ChatFormatting.GRAY));
+			)));
 		} else {
-			lines.add(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())
-				.withStyle(net.minecraft.ChatFormatting.GRAY));
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())));
 		}
 
-		// ── Where it lies: per-world breakdown (multiworld servers) ──
+		// ── Where it lies: per-world breakdown (multiworld servers) — plain gray lines ──
 		boolean live = storage.isViewingLive();
 		Minecraft mc = this.minecraft;
 		String playerDim = live && mc != null && mc.level != null
@@ -350,11 +348,10 @@ public class ItemGridWidget extends AbstractWidget {
 		List<com.chestmemory.client.data.WorldBreakdown.Entry> groups =
 			com.chestmemory.client.data.WorldBreakdown.of(all, s.itemId(), playerDim, currentTag);
 		int personal = com.chestmemory.client.data.WorldBreakdown.personalCount(all, s.itemId());
-		boolean multipleGroups = groups.size() > 1 || personal > 0
+		// Only worth lines when the answer is not simply "all of it is right here".
+		boolean informative = groups.size() > 1
 			|| (groups.size() == 1 && !groups.getFirst().here());
-		if (multipleGroups && !groups.isEmpty() || personal > 0) {
-			lines.add(Component.translatable("screen.chestmemory.tooltip.where")
-				.withStyle(net.minecraft.ChatFormatting.GRAY));
+		if (informative) {
 			int shown = 0;
 			for (com.chestmemory.client.data.WorldBreakdown.Entry e : groups) {
 				if (shown >= 4) {
@@ -362,38 +359,39 @@ public class ItemGridWidget extends AbstractWidget {
 					break;
 				}
 				if (e.here()) {
-					lines.add(Component.translatable(
-						"screen.chestmemory.tooltip.where_line_here", e.count(), e.containers()));
+					lines.add(gray(Component.translatable(
+						"screen.chestmemory.tooltip.where_line_here", e.count(), e.containers())));
 				} else {
-					lines.add(Component.translatable(
+					lines.add(gray(Component.translatable(
 						"screen.chestmemory.tooltip.where_line",
-						worldLabel(e), e.count(), e.containers()));
+						worldLabel(e), e.count(), e.containers())));
 				}
 				shown++;
 			}
-			if (personal > 0) {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.personal", personal));
-			}
+		}
+		if (personal > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.personal", personal)));
 		}
 
 		if (live) {
 			int staging = storage.countInStaging(s.itemId());
 			if (staging > 0) {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.staging_line", staging));
+				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.staging_line", staging)));
 			}
 		}
 	}
 
 	private void buildModeLines(List<Component> lines, ItemSummary s) {
+		// Facts in plain gray; only the one status line that decides "go / don't go"
+		// carries colour.
 		if (s.schematicTotal() > 0) {
-			lines.add(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal()));
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal())));
 		}
 		if (s.neededForBuild() <= 0) {
 			lines.add(Component.translatable("screen.chestmemory.tooltip.build_done")
 				.withStyle(net.minecraft.ChatFormatting.GREEN));
 		} else {
-			lines.add(Component.translatable("screen.chestmemory.tooltip.build_needed", s.neededForBuild())
-				.withStyle(net.minecraft.ChatFormatting.YELLOW));
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_needed", s.neededForBuild())));
 		}
 		if (s.inPlayer() >= 0) {
 			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_player", s.inPlayer())));
@@ -411,8 +409,7 @@ public class ItemGridWidget extends AbstractWidget {
 				lines.add(Component.translatable("screen.chestmemory.tooltip.build_none_chests")
 					.withStyle(net.minecraft.ChatFormatting.RED));
 			} else if (s.stillShort() > 0) {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.build_short", s.stillShort())
-					.withStyle(net.minecraft.ChatFormatting.GOLD));
+				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_short", s.stillShort())));
 			} else {
 				lines.add(Component.translatable("screen.chestmemory.tooltip.build_enough")
 					.withStyle(net.minecraft.ChatFormatting.GREEN));
@@ -501,65 +498,6 @@ public class ItemGridWidget extends AbstractWidget {
 	@Override
 	protected void updateWidgetNarration(NarrationElementOutput output) {
 		output.add(NarratedElementType.TITLE, Component.translatable("screen.chestmemory.grid"));
-	}
-
-	/**
-	 * Draw count bottom-right in the slot, scaled down so 3–4 digits fit cleanly.
-	 * No black plate — shadow only for readability.
-	 */
-	private static void drawSlotCount(
-		GuiGraphicsExtractor graphics,
-		net.minecraft.client.gui.Font font,
-		String countText,
-		int slotX,
-		int slotY,
-		int countColor
-	) {
-		float scale = 0.72f;
-		int textW = font.width(countText);
-		// Bottom-right of the 16px icon area (slot is 18 with 1px border)
-		float drawX = slotX + 17 - textW * scale;
-		float drawY = slotY + 17 - 7.2f * scale;
-		if (drawX < slotX + 1) {
-			drawX = slotX + 1;
-		}
-		graphics.pose().pushMatrix();
-		graphics.pose().translate(drawX, drawY);
-		graphics.pose().scale(scale, scale);
-		// Soft shadow (no dark plate)
-		graphics.text(font, countText, 1, 1, 0xE0000000, false);
-		graphics.text(font, countText, 0, 0, countColor, false);
-		graphics.pose().popMatrix();
-	}
-
-	/** Compact counts for 18px slots: 999, 1k, 1.5k, 12k, 1.2M */
-	private static String formatCount(int count) {
-		if (count < 0) {
-			return "0";
-		}
-		if (count >= 1_000_000) {
-			double m = count / 1_000_000.0;
-			return m >= 10 ? String.format("%.0fM", m) : String.format("%.1fM", m);
-		}
-		// From 1000: always compact so full "1234" never overflows the slot
-		if (count >= 1000) {
-			double k = count / 1000.0;
-			if (k >= 100) {
-				return String.format("%.0fk", k);
-			}
-			if (k >= 10) {
-				// 12k / 12.5k — prefer short
-				if (Math.abs(k - Math.rint(k)) < 0.05) {
-					return String.format("%.0fk", k);
-				}
-				return String.format("%.0fk", k);
-			}
-			if (Math.abs(k - Math.rint(k)) < 0.05) {
-				return String.format("%.0fk", k);
-			}
-			return String.format("%.1fk", k);
-		}
-		return String.valueOf(count);
 	}
 
 	/** Muted tone for the tooltip's secondary lines, so the title stands out. */

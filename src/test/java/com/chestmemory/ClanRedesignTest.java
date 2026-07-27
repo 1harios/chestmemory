@@ -329,9 +329,10 @@ class ClanRedesignTest {
 			int decl = style.indexOf("public static void drawGridTray");
 			assertTrue(decl > 0, "the tray helper is missing");
 			String body = style.substring(decl, style.indexOf("\n\t}", decl));
-			// The exact two fills the chest panel uses: dark border, light grey face.
-			assertTrue(body.contains("0xFF1A120A"), "border colour differs from the reference");
-			assertTrue(body.contains("0xFFC6C6C6"), "face colour differs from the reference");
+			// The exact two fills the chest panel uses: shared border and face constants,
+			// so a palette change recolours every tray at once instead of drifting.
+			assertTrue(body.contains("PANEL_BORDER"), "border colour differs from the reference");
+			assertTrue(body.contains("PANEL_INNER"), "face colour differs from the reference");
 			assertTrue(
 				read(CLAN_SCREEN).contains("ChestGuiStyle.drawGridTray("),
 				"items on the bare panel read as loose icons, not as an inventory"
@@ -344,7 +345,9 @@ class ClanRedesignTest {
 			String style = read(STYLE);
 			int decl = style.indexOf("public static void drawSlotCount");
 			String body = style.substring(decl, style.indexOf("\n\t}", decl));
-			assertTrue(body.contains("0.72F"), "the reference scales counts to 0.72");
+			// Counts are player-configurable now; the reference is the shared settings-driven
+			// renderer, not a hardcoded scale.
+			assertTrue(body.contains("slotCountScalePct"), "counts must use the configured scale");
 			assertTrue(
 				read(CLAN_SCREEN).contains("ChestGuiStyle.drawSlotCount("),
 				"a full-size count does not fit an 18px slot"

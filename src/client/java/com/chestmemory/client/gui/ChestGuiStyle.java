@@ -1,5 +1,6 @@
 package com.chestmemory.client.gui;
 
+import com.chestmemory.client.data.ModSettings;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -8,31 +9,47 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.ARGB;
 
 /**
- * Shared “wooden chest” look for the Ё panel.
+ * Shared look of every screen in the mod: a clean vanilla-inventory skin.
+ * <p>
+ * One panel frame, one button face, one tab strip, one way to draw a count in a slot —
+ * defined here once so the item panel, settings and clan screens read as one interface.
+ * The palette deliberately stays inside vanilla's grays (panel #C6C6C6, bevels white /
+ * #555555, dark #404040 titles); colour is reserved for information, not decoration.
  */
 public final class ChestGuiStyle {
 	public static final Identifier SLOT_SPRITE = Identifier.withDefaultNamespace("container/slot");
 
-	// ARGB — alpha MUST be non-zero for text in 26.2
-	public static final int TEXT_TITLE = 0xFF3F3F3F;
+	// ── Text ── (ARGB — alpha MUST be non-zero for text in 26.2)
+	/** Titles on the light panel — vanilla screen-title gray. */
+	public static final int TEXT_TITLE = 0xFF404040;
 	public static final int TEXT_BODY = 0xFF404040;
-	public static final int TEXT_LIGHT = 0xFFE8D5B0;
+	/** Captions on buttons and dark rows — vanilla button white. */
+	public static final int TEXT_LIGHT = 0xFFFFFFFF;
+	/** Emphasis (kept for HUD numbers); rows use {@link #VALUE_TEXT} instead. */
 	public static final int TEXT_GOLD = 0xFFFFD56A;
-	public static final int TEXT_MUTED = 0xFF7A6A50;
+	/** Right-aligned values on rows: present but quieter than the caption. */
+	public static final int VALUE_TEXT = 0xFFCFCFCF;
+	/** Secondary text on the light panel. */
+	public static final int TEXT_MUTED = 0xFF6E6E6E;
 	public static final int TEXT_COUNT = 0xFFFFFFFF;
 	public static final int TEXT_COUNT_SHADOW = 0xFF000000;
 
-	public static final int WOOD_DARK = 0xFF2A1A0E;
-	public static final int WOOD_MID = 0xFF5C3A1E;
-	public static final int WOOD_LIGHT = 0xFF8B5A2B;
+	// ── Frame / faces ──
+	// The historical names are kept (they are referenced across every screen); the values
+	// now describe the vanilla skin: outline, shadow bevel, highlight bevel.
+	public static final int WOOD_DARK = 0xFF000000;
+	public static final int WOOD_MID = 0xFF555555;
+	public static final int WOOD_LIGHT = 0xFFFFFFFF;
 	public static final int LATCH = 0xFFE0C040;
 	public static final int PANEL_INNER = 0xFFC6C6C6;
-	public static final int HEADER_BG = 0xFFE0D0B8;
-	public static final int HEADER_LINE = 0xFF8B5A2B;
+	/** Recessed border for trays and inset plates. */
+	public static final int PANEL_BORDER = 0xFF373737;
+	public static final int HEADER_BG = 0xFFC6C6C6;
+	public static final int HEADER_LINE = 0xFF8B8B8B;
 	public static final int ROW_HOVER = 0x66FFFFFF;
 	public static final int ROW_BG = 0x33000000;
-	public static final int BADGE_BG = 0xEE1A1208;
-	public static final int BADGE_BORDER = 0xFFE8B84A;
+	public static final int BADGE_BG = 0xEE1C1C1C;
+	public static final int BADGE_BORDER = 0xFFA0A0A0;
 	public static final int VIGNETTE = 0xB0000000;
 
 	/** Height of title header area (title + "you are here"). */
@@ -56,26 +73,33 @@ public final class ChestGuiStyle {
 	}
 
 	/**
-	 * Clean wood frame — no metal strap / lid strip across the title.
+	 * The window frame: vanilla-inventory style. Black outline with notched corners, light
+	 * gray face, white top-left bevel, dark bottom-right bevel — the exact grammar of every
+	 * vanilla container screen, so the panel feels native next to a chest GUI.
 	 */
 	public static void drawChestPanel(GuiGraphicsExtractor graphics, int left, int top, int width, int height) {
-		// Outer wood frame
-		graphics.fill(left - 4, top - 4, left + width + 4, top + height + 4, WOOD_DARK);
-		graphics.fill(left - 3, top - 3, left + width + 3, top + height + 3, WOOD_LIGHT);
-		graphics.fill(left - 1, top - 1, left + width + 1, top + height + 1, WOOD_MID);
+		int l = left - 3;
+		int t = top - 3;
+		int r = left + width + 3;
+		int b = top + height + 3;
 
-		// Inner panel
-		graphics.fill(left, top, left + width, top + height, PANEL_INNER);
+		// Outline with cut corners (vanilla's rounded feel)
+		graphics.fill(l + 1, t, r - 1, b, WOOD_DARK);
+		graphics.fill(l, t + 1, r, b - 1, WOOD_DARK);
+		// Face
+		graphics.fill(l + 1, t + 1, r - 1, b - 1, PANEL_INNER);
+		// Bevels: light falls from the top-left, shadow pools bottom-right
+		graphics.fill(l + 1, t + 1, r - 2, t + 3, WOOD_LIGHT);
+		graphics.fill(l + 1, t + 1, l + 3, b - 2, WOOD_LIGHT);
+		graphics.fill(l + 2, b - 3, r - 1, b - 1, WOOD_MID);
+		graphics.fill(r - 3, t + 2, r - 1, b - 1, WOOD_MID);
+		// Corner blends where the bevels meet
+		graphics.fill(r - 3, t + 1, r - 1, t + 3, HEADER_LINE);
+		graphics.fill(l + 1, b - 3, l + 3, b - 1, HEADER_LINE);
 
-		// Soft header band for title (not a metal strip)
-		graphics.fill(left, top, left + width, top + HEADER_H, HEADER_BG);
-		// Thin separator under header only
-		graphics.fill(left + 8, top + HEADER_H - 1, left + width - 8, top + HEADER_H, HEADER_LINE);
-
-		// Small decorative latch centered on the top wood rim (outside content, not over text)
-		int midX = left + width / 2;
-		graphics.fill(midX - 7, top - 3, midX + 7, top + 2, 0xFF5A5A5A);
-		graphics.fill(midX - 5, top - 2, midX + 5, top + 1, LATCH);
+		// Engraved groove under the header band (dark line + light line = pressed-in seam)
+		graphics.fill(left + 6, top + HEADER_H - 2, left + width - 6, top + HEADER_H - 1, HEADER_LINE);
+		graphics.fill(left + 6, top + HEADER_H - 1, left + width - 6, top + HEADER_H, WOOD_LIGHT);
 	}
 
 	public static void drawSlot(GuiGraphicsExtractor graphics, int x, int y) {
@@ -83,8 +107,8 @@ public final class ChestGuiStyle {
 	}
 
 	/**
-	 * Section heading for the settings list: wooden label plate with a rule running to
-	 * the right edge, instead of a bare line of text floating over the panel.
+	 * Section heading: dark caption with an engraved rule running to the right edge —
+	 * quiet structure, no plates.
 	 */
 	public static void drawSectionHeader(
 		GuiGraphicsExtractor graphics,
@@ -94,60 +118,37 @@ public final class ChestGuiStyle {
 		int y,
 		int width
 	) {
-		int textW = font.width(title);
-		int plateW = Math.min(width, textW + 12);
-
-		// Wooden tab behind the caption
-		graphics.fill(left, y - 2, left + plateW, y + 11, WOOD_MID);
-		graphics.fill(left + 1, y - 1, left + plateW - 1, y + 10, WOOD_LIGHT);
-		graphics.text(font, title, left + 6, y + 1, TEXT_LIGHT, false);
-
-		// Rule filling the remaining width, so sections read as bands
-		int ruleLeft = left + plateW + 4;
+		graphics.text(font, title, left, y + 1, TEXT_TITLE, false);
+		int ruleLeft = left + font.width(title) + 6;
 		int ruleRight = left + width;
 		if (ruleRight > ruleLeft) {
 			graphics.fill(ruleLeft, y + 4, ruleRight, y + 5, HEADER_LINE);
-			graphics.fill(ruleLeft, y + 5, ruleRight, y + 6, 0x33000000);
+			graphics.fill(ruleLeft, y + 5, ruleRight, y + 6, WOOD_LIGHT);
 		}
 	}
 
+	/** Button face tones (names kept from the wooden skin; values are the vanilla grays). */
+	public static final int ROW_WOOD = 0xFF6E6E6E;
+	public static final int ROW_WOOD_HOVER = 0xFF7F7F7F;
 	/**
-	 * Wood tones for interactive rows. Deliberately darker than the panel frame: the row
-	 * caption is TEXT_LIGHT, and mid-brown backgrounds left it at ~2.6:1 contrast, which
-	 * is hard to read. These sit at 4.7:1 (idle) and 3.9:1 (hover).
+	 * A neutral palette cannot drain saturation to say "dead" the way the wooden skin
+	 * could, so a disabled face leans on brightness alone: 1.8:1 darker than the live
+	 * face, plus the flatness (no bevel) drawn in {@link #drawSettingRow}.
 	 */
-	public static final int ROW_WOOD = 0xFF33200F;
-	public static final int ROW_WOOD_HOVER = 0xFF432B15;
+	public static final int ROW_WOOD_DISABLED = 0xFF464646;
+
+	/** Caption of a disabled row: 5:1 on the disabled face — readable, clearly dimmer. */
+	public static final int TEXT_DISABLED = 0xFFBDBDBD;
+
+	/** Secondary text on a button face. */
+	public static final int TEXT_ON_WOOD_MUTED = 0xFFB8B8B8;
+
+	/** Face of the selected tab (legacy constant; the tab strip no longer draws boxes). */
+	public static final int TAB_ACTIVE = 0xFFE0E0E0;
 
 	/**
-	 * A button that cannot be pressed.
-	 * <p>
-	 * The previous tone was another brown, 1.03:1 against ROW_WOOD — invisible, so a dead
-	 * button looked live and players kept clicking it. Wood is deeply saturated (0.71), so
-	 * this drains the colour instead of chasing brightness: near-grey at 0.14 reads as
-	 * "dead" next to warm planks even though it is only 1.26:1 apart in luminance.
-	 */
-	public static final int ROW_WOOD_DISABLED = 0xFF383430;
-
-	/** Caption of a disabled row: 4.9:1 on ROW_WOOD_DISABLED — readable, clearly dimmer. */
-	public static final int TEXT_DISABLED = 0xFFA8A39C;
-
-	/**
-	 * Secondary text on a wooden row. TEXT_MUTED is tuned for the light panel and drops to
-	 * 2.96:1 on ROW_WOOD, which is unreadable; this sits at 5.5:1 while still reading as
-	 * quieter than TEXT_LIGHT.
-	 */
-	public static final int TEXT_ON_WOOD_MUTED = 0xFFA89880;
-
-	/**
-	 * Face of the selected tab. WOOD_LIGHT looked right but only gave 2.87:1 against the
-	 * dark caption; this lighter plank reaches 6.9:1.
-	 */
-	public static final int TAB_ACTIVE = 0xFFC9A063;
-
-	/**
-	 * Recessed wooden background for a settings row, so rows sit in the panel instead of
-	 * floating on it as flat vanilla buttons.
+	 * A row that acts as a button: vanilla grammar — black outline, gray face, white
+	 * outline on hover. Disabled rows go dark and flat.
 	 */
 	public static void drawSettingRow(
 		GuiGraphicsExtractor graphics,
@@ -158,20 +159,20 @@ public final class ChestGuiStyle {
 		boolean hovered,
 		boolean enabled
 	) {
-		int fill = !enabled ? ROW_WOOD_DISABLED : (hovered ? ROW_WOOD_HOVER : ROW_WOOD);
-		// Outer edge, then face, then a lighter top rim for a slight bevel
-		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, fill);
+		int border = !enabled ? PANEL_BORDER : (hovered ? 0xFFFFFFFF : WOOD_DARK);
+		int face = !enabled ? ROW_WOOD_DISABLED : (hovered ? ROW_WOOD_HOVER : ROW_WOOD);
+		graphics.fill(x, y, x + width, y + height, border);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, face);
 		if (enabled) {
 			// The bevel is what makes a row look pressable, so a disabled row goes flat —
 			// colour alone is a weak signal, and a flat plate reads as inert immediately.
-			graphics.fill(x + 1, y + 1, x + width - 1, y + 2, withAlpha(0xFFFFFF, hovered ? 0.22F : 0.12F));
-			graphics.fill(x + 1, y + height - 2, x + width - 1, y + height - 1, withAlpha(0x000000, 0.25F));
+			graphics.fill(x + 1, y + 1, x + width - 1, y + 2, withAlpha(0xFFFFFF, hovered ? 0.20F : 0.12F));
+			graphics.fill(x + 1, y + height - 2, x + width - 1, y + height - 1, withAlpha(0x000000, 0.22F));
 		}
 	}
 
 	/**
-	 * Progress bar in the panel's wood palette.
+	 * Progress bar in the panel's palette.
 	 * Used by the clan screen, where "delivered 340/1200" reads much faster as a bar
 	 * than as a number buried in a status line.
 	 */
@@ -185,10 +186,10 @@ public final class ChestGuiStyle {
 	) {
 		float f = Math.max(0F, Math.min(1F, fraction));
 		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF241708);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF2A2A2A);
 		int fill = (int) ((width - 2) * f);
 		if (fill > 0) {
-			// Amber while gathering, green once everything is in.
+			// Amber while gathering, green once everything is in — colour as information.
 			int colour = f >= 1F ? 0xFF5FD068 : 0xFFE0A83C;
 			graphics.fill(x + 1, y + 1, x + 1 + fill, y + height - 1, colour);
 			// Top highlight so the bar reads as raised, matching the row style.
@@ -196,7 +197,7 @@ public final class ChestGuiStyle {
 		}
 	}
 
-	/** Big monospace-ish session code, drawn as a plate the host can read out loud. */
+	/** Big session code, drawn as a dark plate the host can read out loud. */
 	public static void drawCodePlate(
 		GuiGraphicsExtractor graphics,
 		Font font,
@@ -209,17 +210,14 @@ public final class ChestGuiStyle {
 		int w = Math.max(minWidth, textW + 24);
 		int x = centerX - w / 2;
 		graphics.fill(x, y, x + w, y + 20, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + w - 1, y + 19, 0xFF3A2414);
-		graphics.fill(x + 1, y + 1, x + w - 1, y + 2, withAlpha(0xFFFFFF, 0.18F));
+		graphics.fill(x + 1, y + 1, x + w - 1, y + 19, 0xFF2E2E2E);
+		graphics.fill(x + 1, y + 1, x + w - 1, y + 2, withAlpha(0xFFFFFF, 0.16F));
 		graphics.text(font, code, centerX - textW / 2 + 1, y + 7, 0xFF000000, false);
-		graphics.text(font, code, centerX - textW / 2, y + 6, TEXT_GOLD, false);
+		graphics.text(font, code, centerX - textW / 2, y + 6, TEXT_LIGHT, false);
 	}
 
 	/**
 	 * One row of the clan roster: name on the left, what they are carrying on the right.
-	 * <p>
-	 * Drawn as a recessed plank like the settings rows, so the roster reads as part of the
-	 * chest panel rather than as a list of plain text lines floating over it.
 	 *
 	 * @param accent left edge marker — gold for the host, green when they are delivering,
 	 *               muted when the hub has lost them
@@ -249,10 +247,6 @@ public final class ChestGuiStyle {
 
 	/**
 	 * Status strip for the hub: a state lamp, a caption and an optional detail on the right.
-	 * <p>
-	 * Replaces a row that looked like a button, did nothing when clicked, and said "hub:
-	 * built in" whether or not anything answered there. A player cannot act on that; they can
-	 * act on "hub unreachable".
 	 *
 	 * @param lamp colour of the state dot — green online, red offline, amber checking
 	 */
@@ -269,9 +263,9 @@ public final class ChestGuiStyle {
 	) {
 		// Flat and recessed: it carries information, so it must not read as pressable.
 		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF2A1B0D);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF3A3A3A);
 		int cy = y + height / 2;
-		// Lamp with a dark rim, so it stays visible against the plank.
+		// Lamp with a dark rim, so it stays visible against the plate.
 		graphics.fill(x + 6, cy - 4, x + 12, cy + 2, withAlpha(0x000000, 0.45F));
 		graphics.fill(x + 7, cy - 5, x + 11, cy + 1, lamp);
 		int textY = y + (height - font.lineHeight) / 2 + 1;
@@ -288,38 +282,78 @@ public final class ChestGuiStyle {
 	public static final int GRID_SLOT = 18;
 
 	/**
-	 * Recessed tray behind a grid of item slots, exactly as the main screen draws it:
-	 * a dark border with a light grey face.
-	 * <p>
-	 * Items on the bare panel read as loose icons; on this they read as an inventory. The
-	 * clan screen looked like a different mod because it skipped this.
+	 * Recessed tray behind a grid of item slots: dark border, light gray face — items on
+	 * this read as an inventory instead of loose icons.
 	 */
 	public static void drawGridTray(
 		GuiGraphicsExtractor graphics, int x, int y, int width, int height
 	) {
-		graphics.fill(x, y, x + width, y + height, 0xFF1A120A);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFFC6C6C6);
+		graphics.fill(x, y, x + width, y + height, PANEL_BORDER);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, PANEL_INNER);
 	}
 
+	// ── Slot counts ─────────────────────────────────────────────────────────
+
+	/** Count text style: how the number sits over the item icon. */
+	public static final int COUNT_STYLE_SHADOW = 0;
+	public static final int COUNT_STYLE_OUTLINE = 1;
+	public static final int COUNT_STYLE_PLATE = 2;
+	public static final int COUNT_STYLE_PLAIN = 3;
+
 	/**
-	 * Stack count in the corner of an 18px slot — scaled down, shadowed, no plate.
-	 * <p>
-	 * Copied from the main screen rather than reinvented: a count drawn at full size does
-	 * not fit an 18px slot, which is why the clan grid needed 24px cells and still looked
-	 * wrong next to the real thing.
+	 * Count in the corner of an 18px slot, drawn with the player's configured size, style
+	 * and colour (see settings → panel).
+	 *
+	 * @param colour explicit state colour (build mode tints), or 0 to use the configured one
 	 */
 	public static void drawSlotCount(
 		GuiGraphicsExtractor graphics, Font font, String text, int slotX, int slotY, int colour
 	) {
-		float scale = 0.72F;
+		ModSettings s = ModSettings.get();
+		int c = colour != 0 ? colour : 0xFF000000 | s.slotCountColor();
+		drawSlotCountStyled(graphics, font, text, slotX, slotY, c,
+			s.slotCountScalePct() / 100F, s.slotCountStyle());
+	}
+
+	/**
+	 * The actual renderer — parameters explicit, so the settings preview can show any
+	 * combination before it is applied.
+	 */
+	public static void drawSlotCountStyled(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		String text,
+		int slotX,
+		int slotY,
+		int colour,
+		float scale,
+		int style
+	) {
 		int textW = font.width(text);
 		float drawX = Math.max(slotX + 1, slotX + 17 - textW * scale);
 		float drawY = slotY + 17 - 7.2F * scale;
 		graphics.pose().pushMatrix();
 		graphics.pose().translate(drawX, drawY);
 		graphics.pose().scale(scale, scale);
-		graphics.text(font, text, 1, 1, 0xE0000000, false);
-		graphics.text(font, text, 0, 0, colour, false);
+		switch (style) {
+			case COUNT_STYLE_PLATE -> {
+				graphics.fill(-1, -1, textW + 1, 8, 0xB8000000);
+				graphics.text(font, text, 0, 0, colour, false);
+			}
+			case COUNT_STYLE_PLAIN -> graphics.text(font, text, 0, 0, colour, false);
+			case COUNT_STYLE_SHADOW -> {
+				graphics.text(font, text, 1, 1, 0xE0000000, false);
+				graphics.text(font, text, 0, 0, colour, false);
+			}
+			// Outline: readable over any icon — dark rim on all four sides.
+			default -> {
+				graphics.text(font, text, 1, 0, 0xE0000000, false);
+				graphics.text(font, text, -1, 0, 0xE0000000, false);
+				graphics.text(font, text, 0, 1, 0xE0000000, false);
+				graphics.text(font, text, 0, -1, 0xE0000000, false);
+				graphics.text(font, text, 0, 0, colour, false);
+			}
+		}
 		graphics.pose().popMatrix();
 	}
 
@@ -350,9 +384,6 @@ public final class ChestGuiStyle {
 
 	/**
 	 * A label and its value on one line, the value right-aligned.
-	 * <p>
-	 * This is how a detail sheet reads: the eye runs down the labels on the left and the
-	 * values line up on the right, instead of every fact being a centred sentence.
 	 */
 	public static void drawDetailRow(
 		GuiGraphicsExtractor graphics,
@@ -370,17 +401,68 @@ public final class ChestGuiStyle {
 	}
 
 	/**
-	 * Small coloured dot used by the activity feed to mark the kind of event, so the list is
-	 * scannable at a glance instead of being a wall of sentences.
+	 * Small coloured dot used by the activity feed to mark the kind of event.
 	 */
 	public static void drawEventDot(GuiGraphicsExtractor graphics, int x, int y, int colour) {
 		graphics.fill(x, y + 1, x + 3, y + 4, colour);
 		graphics.fill(x + 1, y, x + 2, y + 5, colour);
 	}
 
+	// ── Tabs ────────────────────────────────────────────────────────────────
+
 	/**
-	 * Tab strip along the top of a panel section. The clan screen has more to say than fits
-	 * in one 340×300 panel, and tabs keep the frame a fixed size instead of growing it.
+	 * Tab boundaries: widths follow each label's text instead of dividing space evenly,
+	 * so «Подсветка» is not squeezed to the same box as «Вид». When everything fits, tabs
+	 * are left-aligned at their natural size; when it does not, widths shrink
+	 * proportionally so the strip always spans exactly {@code width}.
+	 *
+	 * @return n+1 x positions; tab i spans [xs[i], xs[i+1])
+	 */
+	public static int[] tabBounds(Font font, Component[] labels, int left, int width) {
+		int n = labels.length;
+		int[] xs = new int[n + 1];
+		xs[0] = left;
+		int[] natural = new int[n];
+		int sum = 0;
+		for (int i = 0; i < n; i++) {
+			natural[i] = font.width(labels[i]) + 16;
+			sum += natural[i];
+		}
+		if (sum <= width) {
+			for (int i = 0; i < n; i++) {
+				xs[i + 1] = xs[i] + natural[i];
+			}
+			return xs;
+		}
+		int acc = 0;
+		for (int i = 0; i < n; i++) {
+			int w = i == n - 1 ? width - acc : Math.round(width * (float) natural[i] / sum);
+			xs[i + 1] = xs[i] + w;
+			acc += w;
+		}
+		return xs;
+	}
+
+	/** Tab index under the pointer, or -1. Shares geometry with {@link #drawTabs}. */
+	public static int tabIndexAt(
+		Font font, Component[] labels, int left, int width, int tabsY, double mx, double my
+	) {
+		if (my < tabsY || my > tabsY + 14) {
+			return -1;
+		}
+		int[] xs = tabBounds(font, labels, left, width);
+		for (int i = 0; i < labels.length; i++) {
+			if (mx >= xs[i] && mx < xs[i + 1]) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	/**
+	 * Tab strip: quiet text labels over an engraved baseline. The active tab is dark with
+	 * a solid underline that interrupts the baseline; hover is a hint of the same. No
+	 * boxes, no plates — the strip structures the panel instead of decorating it.
 	 *
 	 * @param selected index of the active tab
 	 * @return x position where each tab starts, so callers can hit-test clicks
@@ -395,25 +477,24 @@ public final class ChestGuiStyle {
 		int selected,
 		int hovered
 	) {
-		int[] xs = new int[labels.length + 1];
-		int tabW = width / Math.max(1, labels.length);
+		int[] xs = tabBounds(font, labels, left, width);
+		// Engraved baseline across the full strip
+		graphics.fill(left, y + 12, left + width, y + 13, HEADER_LINE);
+		graphics.fill(left, y + 13, left + width, y + 14, WOOD_LIGHT);
 		for (int i = 0; i < labels.length; i++) {
-			int tx = left + i * tabW;
-			int tw = (i == labels.length - 1) ? (left + width - tx) : tabW;
-			xs[i] = tx;
+			int tx = xs[i];
+			int tw = xs[i + 1] - tx;
 			boolean on = i == selected;
-			graphics.fill(tx, y, tx + tw, y + 14, WOOD_DARK);
-			graphics.fill(tx + 1, y + 1, tx + tw - 1, y + 13,
-				on ? TAB_ACTIVE : (i == hovered ? ROW_WOOD_HOVER : ROW_WOOD));
 			if (on) {
-				// Lift the active tab with a bright top rim and a matching underline below.
-				graphics.fill(tx + 1, y + 1, tx + tw - 1, y + 2, withAlpha(0xFFFFFF, 0.28F));
-				graphics.fill(tx, y + 14, tx + tw, y + 15, LATCH);
+				// The active tab's underline replaces the baseline segment beneath it.
+				graphics.fill(tx + 2, y + 12, tx + tw - 2, y + 14, TEXT_TITLE);
+			} else if (i == hovered) {
+				graphics.fill(tx + 3, y + 12, tx + tw - 3, y + 13, TEXT_MUTED);
 			}
+			int color = on ? TEXT_TITLE : (i == hovered ? 0xFF565656 : 0xFF7A7A7A);
 			String text = ellipsize(font, labels[i].getString(), tw - 8);
-			drawCentered(graphics, font, text, tx + tw / 2, y + 4, on ? 0xFF2A1A0E : TEXT_LIGHT);
+			drawCentered(graphics, font, text, tx + tw / 2, y + 2, color);
 		}
-		xs[labels.length] = left + width;
 		return xs;
 	}
 

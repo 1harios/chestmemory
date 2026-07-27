@@ -117,10 +117,6 @@ public class SliderRow extends AbstractWidget {
 		int y0 = this.getY();
 
 		ChestGuiStyle.drawSettingRow(graphics, x0, y0, this.width, this.height, hover, this.active);
-		if (hover) {
-			int accent = 0xFF000000 | com.chestmemory.client.data.ModSettings.get().hudAccentColor();
-			graphics.fill(x0 + 1, y0 + 1, x0 + 3, y0 + this.height - 1, accent);
-		}
 
 		var font = Minecraft.getInstance().font;
 		int textY = y0 + (this.height - font.lineHeight) / 2 + 1;
@@ -136,24 +132,23 @@ public class SliderRow extends AbstractWidget {
 		graphics.text(font, label, x0 + 7, textY,
 			this.active ? ChestGuiStyle.TEXT_LIGHT : ChestGuiStyle.TEXT_DISABLED, false);
 		graphics.text(font, valueText, tx - 6 - valueW, textY,
-			this.active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_DISABLED, false);
+			this.active ? ChestGuiStyle.VALUE_TEXT : ChestGuiStyle.TEXT_DISABLED, false);
 
-		// Track: recessed groove with accent fill up to the knob
+		// Track: recessed groove, filled neutrally up to the knob
 		int cy = y0 + this.height / 2;
 		int gy = cy - TRACK_H / 2;
 		graphics.fill(tx - 1, gy - 1, tx + TRACK_W + 1, gy + TRACK_H + 1, ChestGuiStyle.WOOD_DARK);
-		graphics.fill(tx, gy, tx + TRACK_W, gy + TRACK_H, 0xFF241708);
+		graphics.fill(tx, gy, tx + TRACK_W, gy + TRACK_H, 0xFF2E2E2E);
 
 		float t = (max == min) ? 0F : (Mth.clamp(value, min, max) - min) / (float) (max - min);
 		int fillW = Math.round(t * TRACK_W);
 		if (fillW > 0 && this.active) {
-			int accent = 0xFF000000 | com.chestmemory.client.data.ModSettings.get().hudAccentColor();
-			graphics.fill(tx, gy, tx + fillW, gy + TRACK_H, accent);
+			graphics.fill(tx, gy, tx + fillW, gy + TRACK_H, 0xFF9A9A9A);
 		}
 
 		int kx = tx + Math.round(t * (TRACK_W - KNOB_W));
 		int ky = cy - KNOB_H / 2;
-		int knobColor = !this.active ? ChestGuiStyle.TEXT_DISABLED : (hover ? 0xFFFFF0C0 : 0xFFF4E8CC);
+		int knobColor = !this.active ? ChestGuiStyle.TEXT_DISABLED : (hover ? 0xFFFFFFFF : 0xFFE8E8E8);
 		graphics.fill(kx - 1, ky - 1, kx + KNOB_W + 1, ky + KNOB_H + 1, ChestGuiStyle.WOOD_DARK);
 		graphics.fill(kx, ky, kx + KNOB_W, ky + KNOB_H, knobColor);
 	}
