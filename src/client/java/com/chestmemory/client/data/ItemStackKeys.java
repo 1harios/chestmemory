@@ -247,6 +247,12 @@ public final class ItemStackKeys {
 	}
 
 	private static String computeDisplayName(String key) {
+		// Unknown / removed-mod items: show the raw key rather than the chest icon fallback
+		// toStack() uses for rendering — a list row saying "Chest" for a modded ingot lies.
+		Identifier baseIdent = Identifier.tryParse(baseId(key));
+		if (baseIdent == null || BuiltInRegistries.ITEM.getValue(baseIdent) == Items.AIR) {
+			return key;
+		}
 		ItemStack stack = toStack(key);
 		String custom = customNameOf(key);
 		// Renamed items are listed under their own name, which is how the player thinks

@@ -24,11 +24,17 @@ import java.util.Set;
  */
 public final class MultiworldTracker {
 	private static final Set<String> SESSION_KNOWN = new LinkedHashSet<>();
+	/** Dimension sets change on world switches, not per tick — once a second is plenty. */
+	private static final int TICK_INTERVAL = 20;
+	private static int tickCounter;
 
 	private MultiworldTracker() {
 	}
 
 	public static void tick(Minecraft client) {
+		if (tickCounter++ % TICK_INTERVAL != 0) {
+			return;
+		}
 		if (client.level == null) {
 			return;
 		}

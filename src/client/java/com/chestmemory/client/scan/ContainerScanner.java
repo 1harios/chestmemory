@@ -183,15 +183,18 @@ public final class ContainerScanner {
 			type = "double_chest";
 		}
 
-		// Always rewrite memory from the open menu so taking the last of an item
-		// removes this chest from the highlight on the next tick.
-		ChestMemoryStorage.get().rememberBlockContainer(client.level, dimension, pos, type, items);
+		// Rewrite memory from the open menu so taking the last of an item removes this chest
+		// from the highlight on the next tick. Returns false when nothing changed — the
+		// scanner runs every tick while the GUI is open, and an idle open chest used to
+		// re-dirty the profile (and below, re-ping the clan hub) twenty times a second.
+		boolean changed = ChestMemoryStorage.get().rememberBlockContainer(client.level, dimension, pos, type, items);
 
 		// If this chest is the clan's warehouse, tell the hub what is in it now. The periodic
 		// push runs every ~10s, so dropping a stack off and looking at the panel showed
 		// nothing counted yet — which reads as "it did not register". Deliveries are the one
 		// thing that has to land immediately, because the whole clan is watching that number.
-		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()
+		if (changed
+			&& com.chestmemory.client.clan.ClanSessionManager.isInSession()
 			&& ChestMemoryStorage.get().isStagingKey(
 				ContainerKeys.blockKey(dimension, ContainerKeys.canonicalPos(client.level, pos)))) {
 			com.chestmemory.client.clan.ClanSessionManager.pushStagingProgress(client);
@@ -207,12 +210,28 @@ public final class ContainerScanner {
 	}
 
 	private static void saveEnderChest(Minecraft client, ScanTarget target, Map<String, Integer> items) {
+		BlockPos p = target.blockPos() != null ? target.blockPos() : LastInteractTracker.enderChestPos();
+
+		// The scanner reaches this every tick while the ender chest stays open, and each
+		// call used to remember + flush to disk. Skip when memory already says exactly this.
+		ContainerRecord prev = ChestMemoryStorage.get().findLiveByKey("virtual|ender_chest");
+		if (prev != null && prev.items().equals(items)) {
+			boolean sameHighlight = p == null
+				|| (prev.hasHighlightPos()
+					&& prev.highlightX() == p.getX()
+					&& prev.highlightY() == p.getY()
+					&& prev.highlightZ() == p.getZ());
+			if (sameHighlight) {
+				prev.setLastSeenMillis(System.currentTimeMillis());
+				return;
+			}
+		}
+
 		ContainerRecord record = ContainerRecord.virtual("ender_chest", "ender_chest", target.dimension());
 		record.setType("ender_chest");
 		record.setItems(items);
 		record.setDisplayName("Ender Chest");
 		record.setLastSeenMillis(System.currentTimeMillis());
-		BlockPos p = target.blockPos() != null ? target.blockPos() : LastInteractTracker.enderChestPos();
 		if (p != null) {
 			record.setHighlightPos(p.getX(), p.getY(), p.getZ());
 			ChestMemoryStorage.get().forgetAt(target.dimension(), p);
@@ -258,9 +277,21 @@ public final class ContainerScanner {
 			});
 
 			String virtualId = "inv_shulker_" + i;
+			String displayName = stack.getHoverName().getString() + " [inv #" + i + "]";
+
+			// This scan repeats every 2s; an unchanged shulker used to re-dirty the profile
+			// and invalidate the snapshot cache each time.
+			ContainerRecord prev = ChestMemoryStorage.get().findLiveByKey("virtual|" + virtualId);
+			if (prev != null && prev.items().equals(items)
+				&& displayName.equals(prev.displayName())
+				&& dimension.equals(prev.dimension())) {
+				prev.setLastSeenMillis(System.currentTimeMillis());
+				continue;
+			}
+
 			ContainerRecord record = ContainerRecord.virtual("inventory_shulker", virtualId, dimension);
 			record.setItems(items);
-			record.setDisplayName(stack.getHoverName().getString() + " [inv #" + i + "]");
+			record.setDisplayName(displayName);
 			record.setLastSeenMillis(System.currentTimeMillis());
 			ChestMemoryStorage.get().remember(record);
 		}

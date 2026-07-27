@@ -13,11 +13,6 @@ import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.Identifier;
-import net.minecraft.world.item.Item;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
@@ -43,7 +38,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -57,7 +58,19 @@ public final class ChestMemoryStorage {
 	private static final Type MAP_TYPE = new TypeToken<Map<String, ContainerRecord>>() {}.getType();
 	private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 	/** Bumped when the on-disk profile schema changes in a non-backwards-compatible way. */
-	private static final int FORMAT_VERSION = 2;
+	private static final int FORMAT_VERSION = 3;
+	/**
+	 * Profile writes happen off the render thread — a big base serializes to a sizeable JSON
+	 * file, and writing it synchronously froze a frame every autosave. One thread keeps the
+	 * writes ordered; {@link #PENDING_WRITES} lets a load wait for its own file to settle.
+	 */
+	private static final ExecutorService SAVE_IO = Executors.newSingleThreadExecutor(r -> {
+		Thread t = new Thread(r, "chestmemory-save-io");
+		t.setDaemon(true);
+		return t;
+	});
+	/** In-flight write per profile id, so loads never read a half-written file. */
+	private static final Map<String, Future<?>> PENDING_WRITES = new ConcurrentHashMap<>();
 	/** Upper bounds for staging keys accepted from the clan hub (untrusted input). */
 	private static final int MAX_STAGING_KEYS = 4096;
 	private static final int MAX_STAGING_KEY_LENGTH = 256;
@@ -103,6 +116,11 @@ public final class ChestMemoryStorage {
 	private String viewingDisplayName = "";
 	private Map<String, ContainerRecord> viewingContainers = liveContainers;
 	private Set<String> viewingKnownDimensions = liveKnownDimensions;
+
+	/** See {@link #listWorldTabs()} — avoids reparsing every profile file per panel open. */
+	private static final long WORLD_TABS_CACHE_TTL_MS = 3_000L;
+	private @Nullable List<WorldTab> worldTabsCache;
+	private long worldTabsCacheMillis;
 
 	private ChestMemoryStorage() {
 	}
@@ -235,6 +253,7 @@ public final class ChestMemoryStorage {
 		migrateLegacyProfile(client, worldId);
 		liveWorldId = worldId;
 		liveDisplayName = display;
+		worldTabsCache = null;
 		liveContainers.clear();
 		liveSnapshotCache = null;
 		liveKnownDimensions.clear();
@@ -277,6 +296,7 @@ public final class ChestMemoryStorage {
 		liveContainers.clear();
 		liveItemIndex.clear();
 		liveSnapshotCache = null;
+		worldTabsCache = null;
 		liveKnownDimensions.clear();
 		liveStagingKeys.clear();
 		liveWorldId = null;
@@ -374,6 +394,7 @@ public final class ChestMemoryStorage {
 	}
 
 	private WorldFile loadFromDisk(String worldId) {
+		awaitPendingWrite(worldId);
 		WorldFile result = new WorldFile();
 		Path file = worldFile(worldId);
 		if (!Files.isRegularFile(file)) {
@@ -413,6 +434,7 @@ public final class ChestMemoryStorage {
 							}
 						});
 					}
+					result.containers = ProfileMigration.normalize(result.containers);
 					return result;
 				}
 			}
@@ -430,11 +452,45 @@ public final class ChestMemoryStorage {
 					+ "Fix or remove {} to start fresh.",
 				worldId, file, e
 			);
+			return result;
 		}
+		// Clear legacy world tags and rebuild keys from the records themselves, so files
+		// written by any format version land on the keys this version looks up.
+		result.containers = ProfileMigration.normalize(result.containers);
 		return result;
 	}
 
+	/** Block until an in-flight write of this profile lands, so loads read settled bytes. */
+	private static void awaitPendingWrite(String worldId) {
+		Future<?> pending = PENDING_WRITES.get(worldId);
+		if (pending == null) {
+			return;
+		}
+		try {
+			pending.get(5, TimeUnit.SECONDS);
+		} catch (Exception e) {
+			ChestMemoryMod.LOGGER.warn("Pending save of {} did not settle before load: {}", worldId, e.toString());
+		}
+	}
+
+	/**
+	 * Queue a save of the live profile if anything changed. Serialization happens under the
+	 * lock (fast, memory only); the actual file write runs on {@link #SAVE_IO} so the render
+	 * thread never blocks on disk. Call {@link #saveNow()} when the process is about to end.
+	 */
 	public synchronized void saveIfNeeded() {
+		scheduleSave(false);
+	}
+
+	/**
+	 * Save synchronously — waits for the write (and everything queued before it) to land.
+	 * For disconnect / game-quit, where an async task might not get to run.
+	 */
+	public synchronized void saveNow() {
+		scheduleSave(true);
+	}
+
+	private synchronized void scheduleSave(boolean blocking) {
 		if (!liveDirty || liveWorldId == null) {
 			return;
 		}
@@ -443,20 +499,36 @@ public final class ChestMemoryStorage {
 			// is very likely still recoverable by hand with whatever little we have in memory.
 			return;
 		}
-		Path file = worldFile(liveWorldId);
+		String worldId = liveWorldId;
+		JsonObject root = new JsonObject();
+		JsonObject meta = new JsonObject();
+		meta.addProperty("displayName", liveDisplayName);
+		meta.addProperty("id", worldId);
+		meta.addProperty("kind", worldId.startsWith("mp_") ? "multiplayer" : "singleplayer");
+		meta.addProperty("formatVersion", String.valueOf(FORMAT_VERSION));
+		root.add("meta", meta);
+		root.add("containers", GSON.toJsonTree(liveContainers, MAP_TYPE));
+		root.add("knownDimensions", GSON.toJsonTree(new ArrayList<>(liveKnownDimensions)));
+		root.add("stagingKeys", GSON.toJsonTree(new ArrayList<>(liveStagingKeys)));
+		liveDirty = false;
+		worldTabsCache = null;
+
+		Future<?> task = SAVE_IO.submit(() -> writeProfileFile(worldId, root));
+		PENDING_WRITES.put(worldId, task);
+		if (blocking) {
+			try {
+				task.get(10, TimeUnit.SECONDS);
+			} catch (Exception e) {
+				ChestMemoryMod.LOGGER.warn("Blocking save of {} did not finish cleanly: {}", worldId, e.toString());
+			}
+		}
+	}
+
+	/** Runs on {@link #SAVE_IO}. The JSON tree is a private snapshot — no lock needed. */
+	private void writeProfileFile(String worldId, JsonObject root) {
+		Path file = worldFile(worldId);
 		Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
 		try {
-			JsonObject root = new JsonObject();
-			JsonObject meta = new JsonObject();
-			meta.addProperty("displayName", liveDisplayName);
-			meta.addProperty("id", liveWorldId);
-			meta.addProperty("kind", liveWorldId.startsWith("mp_") ? "multiplayer" : "singleplayer");
-			meta.addProperty("formatVersion", String.valueOf(FORMAT_VERSION));
-			root.add("meta", meta);
-			root.add("containers", GSON.toJsonTree(liveContainers, MAP_TYPE));
-			root.add("knownDimensions", GSON.toJsonTree(new ArrayList<>(liveKnownDimensions)));
-			root.add("stagingKeys", GSON.toJsonTree(new ArrayList<>(liveStagingKeys)));
-
 			// Serialize fully before touching the destination: a crash mid-write must never
 			// leave a truncated profile behind.
 			try (Writer writer = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
@@ -468,7 +540,7 @@ public final class ChestMemoryStorage {
 				try {
 					Files.move(file, backup, StandardCopyOption.REPLACE_EXISTING);
 				} catch (IOException e) {
-					ChestMemoryMod.LOGGER.warn("Could not refresh backup for {}: {}", liveWorldId, e.toString());
+					ChestMemoryMod.LOGGER.warn("Could not refresh backup for {}: {}", worldId, e.toString());
 				}
 			}
 			try {
@@ -476,17 +548,18 @@ public final class ChestMemoryStorage {
 			} catch (AtomicMoveNotSupportedException e) {
 				Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
 			}
-			liveDirty = false;
 		} catch (Exception e) {
 			// Catch Exception, not IOException: Gson throws unchecked JsonIOException, which
-			// would otherwise escape the client tick and crash the game.
-			ChestMemoryMod.LOGGER.error("Failed to save chest memory for {}", liveWorldId, e);
+			// must not escape and kill the writer thread silently.
+			ChestMemoryMod.LOGGER.error("Failed to save chest memory for {}", worldId, e);
 			try {
 				Files.deleteIfExists(tmp);
 			} catch (IOException ignored) {
 				// best effort
 			}
 		}
+		// The PENDING_WRITES entry is left in place on purpose: waiting on a finished future
+		// is free, and removing it here could race a newer task that replaced the entry.
 	}
 
 	/** Writes always go to the live (connected) profile only. */
@@ -552,8 +625,13 @@ public final class ChestMemoryStorage {
 		return out;
 	}
 
+	/** Forget a world block at this position — under its tagged and untagged key alike. */
 	public synchronized void forgetAt(String dimension, BlockPos pos) {
 		forget(ContainerRecord.makeKey(dimension, pos.getX(), pos.getY(), pos.getZ()));
+		String currentTag = WorldFingerprint.current(Minecraft.getInstance());
+		if (currentTag != null) {
+			forget(ContainerRecord.makeKey(dimension, pos.getX(), pos.getY(), pos.getZ(), currentTag));
+		}
 	}
 
 	/**
@@ -576,8 +654,17 @@ public final class ChestMemoryStorage {
 
 	/**
 	 * Store a world-block container under a canonical double-chest key and drop the other half entry.
+	 * <p>
+	 * The record is stamped with the current world tag and keyed on it, so the same
+	 * coordinates in another world (multiworld farm/build) keep their own record. The
+	 * untagged legacy record at this position — whichever world once wrote it — is
+	 * superseded: the player is looking at the real chest right now, so this scan is the
+	 * truth for these coordinates in this world.
+	 *
+	 * @return true when memory changed (new record or different contents), false when the
+	 *         scan matched what was already remembered
 	 */
-	public synchronized void rememberBlockContainer(
+	public synchronized boolean rememberBlockContainer(
 		BlockGetter level,
 		String dimension,
 		BlockPos rawPos,
@@ -585,25 +672,20 @@ public final class ChestMemoryStorage {
 		Map<String, Integer> items
 	) {
 		if (liveWorldId == null) {
-			return;
+			return false;
 		}
+		String worldTag = WorldFingerprint.current(Minecraft.getInstance());
 		BlockPos canonical = ContainerKeys.canonicalPos(level, rawPos);
 		boolean dbl = ContainerKeys.isDoubleChest(level, rawPos);
 		String finalType = dbl ? "double_chest" : type;
 
-		BlockPos other = ContainerKeys.otherHalf(level, rawPos);
-		if (other != null) {
-			// Remove non-canonical half if it was stored earlier
-			forget(ContainerKeys.blockKey(dimension, other));
-			forget(ContainerKeys.blockKey(dimension, rawPos));
-		}
-
 		ContainerRecord record = new ContainerRecord(finalType, dimension, canonical.getX(), canonical.getY(), canonical.getZ());
 		record.setItems(items);
-		// Stamp the world, so a multiworld server's two Nethers can be told apart later even
-		// though both report minecraft:the_nether.
-		record.setWorldTag(WorldFingerprint.current(Minecraft.getInstance()));
+		// Stamp the world, so a multiworld server's two overworlds / Nethers can be told
+		// apart even though both report the same vanilla dimension id.
+		record.setWorldTag(worldTag);
 		record.setDoubleChest(dbl);
+		BlockPos other = ContainerKeys.otherHalf(level, rawPos);
 		if (other != null) {
 			// Always store the other half relative to canonical for full glow
 			BlockPos otherFromCanonical = ContainerKeys.otherHalf(level, canonical);
@@ -613,10 +695,57 @@ public final class ChestMemoryStorage {
 				record.setOtherHalf(other.getX(), other.getY(), other.getZ());
 			}
 		}
+
+		// The scanner calls this every tick while a chest GUI is open. When nothing changed,
+		// only refresh the timestamp: no re-index, no snapshot invalidation, no dirty flag —
+		// an open chest used to rewrite the profile once per autosave interval for nothing.
+		String recordKey = record.positionKey();
+		ContainerRecord existing = liveContainers.get(recordKey);
+		if (existing != null && sameScan(existing, record)) {
+			existing.setLastSeenMillis(System.currentTimeMillis());
+			return false;
+		}
+
+		// Supersede stale keys for this position: the untagged legacy record at the canonical
+		// position, and any leftovers under the raw / other-half positions (tagged and
+		// untagged alike). The record's own key is never touched — remember() replaces it.
+		forgetUnlessOwn(ContainerRecord.makeKey(dimension, canonical.getX(), canonical.getY(), canonical.getZ()), recordKey);
+		if (other != null) {
+			forgetBothForms(dimension, other, worldTag, recordKey);
+			forgetBothForms(dimension, rawPos, worldTag, recordKey);
+		}
+
 		record.setLastSeenMillis(System.currentTimeMillis());
 		// If chest is now empty of everything, still keep record (user may refill);
 		// callers clear highlight when selected item is gone.
 		remember(record);
+		return true;
+	}
+
+	/** True when a fresh scan carries exactly what the existing record already says. */
+	private static boolean sameScan(ContainerRecord existing, ContainerRecord fresh) {
+		return Objects.equals(existing.type(), fresh.type())
+			&& existing.doubleChest() == fresh.doubleChest()
+			&& existing.hasOtherHalf() == fresh.hasOtherHalf()
+			&& (!fresh.hasOtherHalf()
+				|| (existing.otherX() == fresh.otherX()
+					&& existing.otherY() == fresh.otherY()
+					&& existing.otherZ() == fresh.otherZ()))
+			&& existing.items().equals(fresh.items());
+	}
+
+	private void forgetUnlessOwn(String key, String ownKey) {
+		if (!key.equals(ownKey)) {
+			forget(key);
+		}
+	}
+
+	/** Forget the record at this position under both its tagged and untagged key. */
+	private void forgetBothForms(String dimension, BlockPos pos, @Nullable String worldTag, String ownKey) {
+		forgetUnlessOwn(ContainerRecord.makeKey(dimension, pos.getX(), pos.getY(), pos.getZ()), ownKey);
+		if (worldTag != null) {
+			forgetUnlessOwn(ContainerRecord.makeKey(dimension, pos.getX(), pos.getY(), pos.getZ(), worldTag), ownKey);
+		}
 	}
 
 	/** Total count of an item across live containers (optionally nearby). */
@@ -900,7 +1029,9 @@ public final class ChestMemoryStorage {
 	}
 
 	/**
-	 * Parse {@code dimension|x,y,z} staging key.
+	 * Parse a {@code dimension|x,y,z} staging key. A trailing {@code @<worldTag>} — the
+	 * suffix container keys carry since the multiworld fix — is tolerated and stripped, so
+	 * a record key can be fed through the same parser.
 	 * @return [dim, x, y, z] or null
 	 */
 	public static @Nullable String[] parseStagingKey(String key) {
@@ -912,7 +1043,12 @@ public final class ChestMemoryStorage {
 			return null;
 		}
 		String dim = key.substring(0, bar);
-		String[] xyz = key.substring(bar + 1).split(",");
+		String coords = key.substring(bar + 1);
+		int at = coords.lastIndexOf('@');
+		if (at >= 0 && WorldTags.isCurrentFormat(coords.substring(at + 1))) {
+			coords = coords.substring(0, at);
+		}
+		String[] xyz = coords.split(",");
 		if (xyz.length != 3) {
 			return null;
 		}
@@ -924,14 +1060,46 @@ public final class ChestMemoryStorage {
 		if (itemId == null || liveStagingKeys.isEmpty()) {
 			return 0;
 		}
+		String currentTag = WorldFingerprint.current(Minecraft.getInstance());
 		int t = 0;
 		for (String key : liveStagingKeys) {
-			ContainerRecord r = liveContainers.get(key);
+			ContainerRecord r = findByStagingKeyInternal(key, currentTag);
 			if (r != null) {
 				t += r.countOf(itemId);
 			}
 		}
 		return t;
+	}
+
+	/**
+	 * Record behind a staging key. Staging keys are shared with clan members and therefore
+	 * stay in the untagged {@code dim|x,y,z} form, while records are keyed per world — so a
+	 * direct map hit is tried first, then the tagged record for the current world.
+	 */
+	public synchronized @Nullable ContainerRecord findByStagingKey(@Nullable String key) {
+		return findByStagingKeyInternal(key, WorldFingerprint.current(Minecraft.getInstance()));
+	}
+
+	private @Nullable ContainerRecord findByStagingKeyInternal(@Nullable String key, @Nullable String currentTag) {
+		if (key == null) {
+			return null;
+		}
+		ContainerRecord direct = liveContainers.get(key);
+		if (direct != null) {
+			return direct;
+		}
+		String[] parsed = parseStagingKey(key);
+		if (parsed == null) {
+			return null;
+		}
+		try {
+			int x = Integer.parseInt(parsed[1]);
+			int y = Integer.parseInt(parsed[2]);
+			int z = Integer.parseInt(parsed[3]);
+			return lookupBlock(parsed[0], x, y, z, currentTag);
+		} catch (NumberFormatException e) {
+			return null;
+		}
 	}
 
 	/**
@@ -955,12 +1123,19 @@ public final class ChestMemoryStorage {
 			return 0;
 		}
 		DimensionChoice dim = dimensionFilter != null ? dimensionFilter : DimensionChoice.ALL;
+		String currentTag = dim.kind() == DimensionChoice.Kind.CURRENT
+			? WorldFingerprint.current(Minecraft.getInstance())
+			: null;
 		int t = 0;
 		for (ContainerRecord r : indexedContainers(itemId)) {
 			if (isStaging(r)) {
 				continue;
 			}
 			if (!dim.matches(r, playerDimension)) {
+				continue;
+			}
+			if (currentTag != null && r.isWorldBlock()
+				&& WorldTags.provablyDifferent(currentTag, r.worldTag())) {
 				continue;
 			}
 			t += r.countOf(itemId);
@@ -983,11 +1158,18 @@ public final class ChestMemoryStorage {
 			return out;
 		}
 		DimensionChoice dim = dimensionFilter != null ? dimensionFilter : DimensionChoice.ALL;
+		String currentTag = dim.kind() == DimensionChoice.Kind.CURRENT
+			? WorldFingerprint.current(Minecraft.getInstance())
+			: null;
 		for (ContainerRecord r : indexedContainers(itemId)) {
 			if (isStaging(r)) {
 				continue;
 			}
 			if (!dim.matches(r, playerDimension)) {
+				continue;
+			}
+			if (currentTag != null && r.isWorldBlock()
+				&& WorldTags.provablyDifferent(currentTag, r.worldTag())) {
 				continue;
 			}
 			if (r.countOf(itemId) <= 0) {
@@ -1048,6 +1230,12 @@ public final class ChestMemoryStorage {
 	}
 
 	public synchronized List<WorldTab> listWorldTabs() {
+		// Opening the panel used to reparse every profile file on disk — all servers ever
+		// visited — just to label the tabs. Cache briefly; saves invalidate the cache.
+		long now = System.currentTimeMillis();
+		if (worldTabsCache != null && now - worldTabsCacheMillis < WORLD_TABS_CACHE_TTL_MS) {
+			return new ArrayList<>(worldTabsCache);
+		}
 		List<WorldTab> tabs = new ArrayList<>();
 		Map<String, WorldTab> byId = new LinkedHashMap<>();
 
@@ -1078,6 +1266,8 @@ public final class ChestMemoryStorage {
 		byId.values().stream()
 			.sorted(Comparator.comparing(WorldTab::displayName, String.CASE_INSENSITIVE_ORDER))
 			.forEach(tabs::add);
+		worldTabsCache = new ArrayList<>(tabs);
+		worldTabsCacheMillis = now;
 		return tabs;
 	}
 
@@ -1130,24 +1320,53 @@ public final class ChestMemoryStorage {
 		return result;
 	}
 
-	/** Lookup in the live profile only (for Jade / world highlight). */
+	/**
+	 * Lookup in the live profile only (for Jade / world highlight).
+	 * <p>
+	 * World-aware: prefers the record stamped with the world the player is standing in, and
+	 * never answers with a record known to belong to a different world — a farm-world chest
+	 * must not show its contents at the same coordinates in the build world. Untagged legacy
+	 * records are still returned (unknown is not proof of anything).
+	 */
 	public synchronized @Nullable ContainerRecord findAtLive(String dimension, BlockPos pos, @Nullable BlockGetter level) {
 		if (liveWorldId == null) {
 			return null;
 		}
+		String currentTag = WorldFingerprint.current(Minecraft.getInstance());
 		BlockPos canonical = ContainerKeys.canonicalPos(level, pos);
-		ContainerRecord direct = liveContainers.get(ContainerKeys.blockKey(dimension, canonical));
+		ContainerRecord direct = lookupBlock(dimension, canonical.getX(), canonical.getY(), canonical.getZ(), currentTag);
 		if (direct != null) {
 			return direct;
 		}
 		// Fallback raw pos (legacy entries before canonicalization)
-		ContainerRecord raw = liveContainers.get(ContainerKeys.blockKey(dimension, pos));
-		if (raw != null) {
-			return raw;
+		if (!canonical.equals(pos)) {
+			ContainerRecord raw = lookupBlock(dimension, pos.getX(), pos.getY(), pos.getZ(), currentTag);
+			if (raw != null) {
+				return raw;
+			}
 		}
 		BlockPos other = ContainerKeys.otherHalf(level, pos);
 		if (other != null) {
-			return liveContainers.get(ContainerKeys.blockKey(dimension, other));
+			return lookupBlock(dimension, other.getX(), other.getY(), other.getZ(), currentTag);
+		}
+		return null;
+	}
+
+	/**
+	 * Record at this position as seen from the world {@code currentTag} describes:
+	 * exact tagged key first, then the untagged legacy key — but only when that legacy
+	 * record is not provably from another world.
+	 */
+	private @Nullable ContainerRecord lookupBlock(String dimension, int x, int y, int z, @Nullable String currentTag) {
+		if (currentTag != null) {
+			ContainerRecord tagged = liveContainers.get(ContainerRecord.makeKey(dimension, x, y, z, currentTag));
+			if (tagged != null) {
+				return tagged;
+			}
+		}
+		ContainerRecord legacy = liveContainers.get(ContainerRecord.makeKey(dimension, x, y, z));
+		if (legacy != null && !WorldTags.provablyDifferent(currentTag, legacy.worldTag())) {
+			return legacy;
 		}
 		return null;
 	}
@@ -1279,6 +1498,13 @@ public final class ChestMemoryStorage {
 		@Nullable Vec3 playerPos,
 		double nearbyRange
 	) {
+		// "Current world" must mean the world the player is standing in, not every world
+		// that shares its dimension id on a multiworld server. Computed once per call,
+		// not per record — WorldFingerprint walks client state.
+		boolean guardWorld = dimensionFilter != null && dimensionFilter.kind() == DimensionChoice.Kind.CURRENT;
+		String currentTag = guardWorld || scope == ListScope.NEARBY
+			? WorldFingerprint.current(Minecraft.getInstance())
+			: null;
 		List<ContainerRecord> out = new ArrayList<>();
 		for (ContainerRecord record : activeView().values()) {
 			if (!ContainerFilter.matchesAny(record, typeFilters)) {
@@ -1287,8 +1513,12 @@ public final class ChestMemoryStorage {
 			if (!dimensionFilter.matches(record, playerDimension)) {
 				continue;
 			}
+			if (guardWorld && record.isWorldBlock()
+				&& WorldTags.provablyDifferent(currentTag, record.worldTag())) {
+				continue;
+			}
 			if (scope == ListScope.NEARBY) {
-				if (!isNearby(record, playerDimension, playerPos, nearbyRange)) {
+				if (!isNearby(record, playerDimension, playerPos, nearbyRange, currentTag)) {
 					continue;
 				}
 			}
@@ -1387,7 +1617,8 @@ public final class ChestMemoryStorage {
 		ContainerRecord record,
 		@Nullable String playerDimension,
 		@Nullable Vec3 playerPos,
-		double nearbyRange
+		double nearbyRange,
+		@Nullable String currentWorldTag
 	) {
 		if (playerPos == null) {
 			return false;
@@ -1409,8 +1640,7 @@ public final class ChestMemoryStorage {
 		// Nether and the build world's Nether are both minecraft:the_nether, so a chest at
 		// these coordinates in the other world would otherwise be reported as "nearby".
 		if (!record.isVirtual()
-			&& WorldFingerprint.provablyDifferent(
-				WorldFingerprint.current(Minecraft.getInstance()), record.worldTag())) {
+			&& WorldTags.provablyDifferent(currentWorldTag, record.worldTag())) {
 			return false;
 		}
 		double dist = distanceTo(record, playerPos, playerDimension);
@@ -1462,29 +1692,15 @@ public final class ChestMemoryStorage {
 			return true;
 		}
 		String q = query.toLowerCase(Locale.ROOT);
+		// The blob is memoised and already contains the raw key plus the localized display
+		// name; the registry lookup and ItemStack allocation that used to follow re-derived
+		// what the blob already holds, once per item per keystroke.
 		if (ItemStackKeys.searchBlob(itemId).contains(q)) {
 			return true;
 		}
 		String lower = itemId.toLowerCase(Locale.ROOT);
-		if (lower.contains(q)) {
-			return true;
-		}
 		int colon = lower.indexOf(':');
 		String path = colon >= 0 ? lower.substring(colon + 1) : lower;
-		if (path.contains(q)) {
-			return true;
-		}
-		String base = ItemStackKeys.baseId(itemId);
-		Identifier id = Identifier.tryParse(base);
-		if (id != null) {
-			Item item = BuiltInRegistries.ITEM.getValue(id);
-			if (item != Items.AIR) {
-				String name = new ItemStack(item).getHoverName().getString().toLowerCase(Locale.ROOT);
-				if (name.contains(q)) {
-					return true;
-				}
-			}
-		}
 		return path.replace('_', ' ').contains(q);
 	}
 
@@ -1595,23 +1811,16 @@ public final class ChestMemoryStorage {
 		}
 	}
 
+	/**
+	 * Display name for an item key. Delegates to the memoised {@link ItemStackKeys} cache —
+	 * this is called from inside sort comparators, where the old registry lookup plus
+	 * ItemStack allocation ran once per comparison, O(n log n) times per list refresh.
+	 */
 	public static String itemDisplayName(String itemId) {
 		if (itemId == null) {
 			return "?";
 		}
-		// Enchanted books / gear: include enchant names
-		if (ItemStackKeys.hasEnchantData(itemId)) {
-			return ItemStackKeys.displayName(itemId);
-		}
-		Identifier id = Identifier.tryParse(ItemStackKeys.baseId(itemId));
-		if (id == null) {
-			return itemId;
-		}
-		Item item = BuiltInRegistries.ITEM.getValue(id);
-		if (item == Items.AIR) {
-			return itemId;
-		}
-		return new ItemStack(item).getHoverName().getString();
+		return ItemStackKeys.displayName(itemId);
 	}
 
 	public static String dimensionId(Level level) {

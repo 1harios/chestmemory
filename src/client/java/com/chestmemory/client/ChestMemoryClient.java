@@ -76,14 +76,18 @@ public class ChestMemoryClient implements ClientModInitializer {
 		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
 			.register(client -> {
 				ModSettings.flushPending();
-				ChestMemoryStorage.get().saveIfNeeded();
+				// Blocking: saves run on an IO thread now, and a fire-and-forget task might
+				// not get to run before the JVM exits.
+				ChestMemoryStorage.get().saveNow();
 			});
 		// Same reasoning when leaving a world/server: persist while the profile is still
 		// loaded, and drop the stale interact position so a quick reconnect to a different
 		// server cannot bind a menu to a block clicked on the previous one.
 		net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT
 			.register((handler, client) -> {
-				ChestMemoryStorage.get().saveIfNeeded();
+				ChestMemoryStorage.get().saveNow();
+				// Hashed seeds are per connection; the next server announces its own.
+				com.chestmemory.client.data.WorldIdentity.clear();
 				com.chestmemory.client.scan.LastInteractTracker.clear();
 				// Strike counts are per world: a position that looked empty here must not
 				// count against a container at the same coordinates on the next server.

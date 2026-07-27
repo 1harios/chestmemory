@@ -214,15 +214,31 @@ public final class ContainerRecord {
 		return items == null ? 0 : items.size();
 	}
 
+	/**
+	 * Storage key for this record. World blocks carry the world tag as a suffix when one is
+	 * known ({@code dim|x,y,z@w1a2b3c4}), so two worlds that share a dimension id can hold a
+	 * chest at the same coordinates without colliding. Records with no tag keep the legacy
+	 * key ({@code dim|x,y,z}) — the two forms coexist in one profile during migration.
+	 * Virtual records (ender chest, inventory shulkers) are personal, not per-world.
+	 */
 	public String positionKey() {
 		if (isVirtual()) {
 			return "virtual|" + virtualId;
 		}
-		return dimension + "|" + x + "," + y + "," + z;
+		return makeKey(dimension, x, y, z, worldTag);
 	}
 
 	public static String makeKey(String dimension, int x, int y, int z) {
 		return dimension + "|" + x + "," + y + "," + z;
+	}
+
+	/** Key with a world-tag suffix; falls back to the legacy form when the tag is unknown. */
+	public static String makeKey(String dimension, int x, int y, int z, String worldTag) {
+		String base = dimension + "|" + x + "," + y + "," + z;
+		if (worldTag == null || worldTag.isEmpty()) {
+			return base;
+		}
+		return base + "@" + worldTag;
 	}
 
 	public String shortLocation() {

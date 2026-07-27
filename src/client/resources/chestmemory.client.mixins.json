@@ -5,7 +5,8 @@
 	"client": [
 		"MultiPlayerGameModeMixin",
 		"AbstractContainerScreenAccessor",
-		"ItemStackMixin"
+		"ItemStackMixin",
+		"ClientPacketListenerMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

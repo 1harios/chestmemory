@@ -103,7 +103,10 @@ public final class ContainerVerifier {
 			if (!level.isLoaded(pos)) {
 				continue;
 			}
-			String key = com.chestmemory.client.data.ContainerKeys.blockKey(dimension, pos);
+			// Strike bookkeeping and removal both use the record's own storage key: with
+			// per-world keys, rebuilding an untagged key here would miss tagged records —
+			// and could delete the other world's record at the same coordinates.
+			String key = record.positionKey();
 			if (isContainerBlock(level.getBlockState(pos).getBlock())) {
 				stillHere.add(key);
 				continue;
@@ -130,9 +133,8 @@ public final class ContainerVerifier {
 		}
 
 		for (ContainerRecord record : gone) {
-			BlockPos pos = new BlockPos(record.x(), record.y(), record.z());
-			ChestMemoryStorage.get().forgetAt(record.dimension(), pos);
-			strikes.remove(com.chestmemory.client.data.ContainerKeys.blockKey(record.dimension(), pos));
+			ChestMemoryStorage.get().forget(record.positionKey());
+			strikes.remove(record.positionKey());
 			ChestMemoryMod.LOGGER.debug(
 				"Forgot missing container at {} {},{},{}",
 				record.dimension(), record.x(), record.y(), record.z()

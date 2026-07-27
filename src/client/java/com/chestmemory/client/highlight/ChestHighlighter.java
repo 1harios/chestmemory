@@ -293,6 +293,9 @@ public final class ChestHighlighter {
 		ChestMemoryStorage storage = ChestMemoryStorage.get();
 		// During gather: never glow build-site warehouse (staging) — those are “already collected”
 		boolean hideStaging = BuildGatherSession.isActive();
+		// A chest from the other world of a multiworld server sits at coordinates that also
+		// exist here; glowing it would point the player at a block that holds something else.
+		String currentTag = com.chestmemory.client.data.WorldFingerprint.current(Minecraft.getInstance());
 		for (ContainerRecord r : storage.liveContainersSnapshot()) {
 			if (r.countOf(itemId) <= 0) {
 				continue;
@@ -300,15 +303,13 @@ public final class ChestHighlighter {
 			if (hideStaging && storage.isStaging(r)) {
 				continue;
 			}
-			if (r.isWorldBlock()) {
+			if (r.isWorldBlock() || r.hasHighlightPos()) {
 				if (!allDimensions && playerDimension != null && r.dimension() != null
 					&& !playerDimension.equals(r.dimension())) {
 					continue;
 				}
-				out.add(r);
-			} else if (r.hasHighlightPos()) {
-				if (!allDimensions && playerDimension != null && r.dimension() != null
-					&& !playerDimension.equals(r.dimension())) {
+				if (r.isWorldBlock() && com.chestmemory.client.data.WorldTags.provablyDifferent(
+					currentTag, r.worldTag())) {
 					continue;
 				}
 				out.add(r);
@@ -384,8 +385,9 @@ public final class ChestHighlighter {
 			if (dist > range) {
 				continue;
 			}
-			// Prefer memory record for double-chest volume
-			ContainerRecord rec = ChestMemoryStorage.get().findLiveByKey(key);
+			// Prefer memory record for double-chest volume (staging keys are untagged and
+			// shared with the clan; the record itself is keyed per world).
+			ContainerRecord rec = ChestMemoryStorage.get().findByStagingKey(key);
 			// Same guard as the item highlight: a warehouse mark on a chest that no longer
 			// exists should not paint a label in mid-air.
 			if (client.level != null && client.level.isLoaded(pos) && !isContainerBlockAt(client, pos)) {
