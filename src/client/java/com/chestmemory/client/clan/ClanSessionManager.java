@@ -494,6 +494,154 @@ public final class ClanSessionManager {
 		return localUuid(mc).equalsIgnoreCase(session.hostUuid);
 	}
 
+	/** Rename the gather on the hub (host only); members pick it up on the next poll. */
+	public static void renameAsync(Minecraft mc, String newName, @Nullable Runnable onDone) {
+		if (session == null || newName == null || newName.isBlank()) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("uuid", localUuid(mc));
+		body.addProperty("name", newName.trim());
+		String code = session.code;
+		IO.execute(() -> {
+			try {
+				var res = client().update(code, body);
+				mc.execute(() -> {
+					busy.set(false);
+					if (res.ok && res.value != null) {
+						adoptSession(res.value);
+						lastError = null;
+						ClanRoster.remember(
+							code, res.value.schemaName,
+							res.value.totalDelivered(), res.value.totalNeed()
+						);
+						chat(mc, Component.translatable(
+							"message.chestmemory.clan_renamed", res.value.schemaName
+						));
+					} else {
+						failRaw(res.error != null ? res.error : "rename failed", mc);
+					}
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			} catch (Exception e) {
+				mc.execute(() -> {
+					busy.set(false);
+					failRaw(e.getMessage(), mc);
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			}
+		});
+	}
+
+	/** Remove a member from the gather (host only). Their claims are released with them. */
+	public static void kickAsync(Minecraft mc, String targetUuid, String targetName, @Nullable Runnable onDone) {
+		if (session == null || targetUuid == null || targetUuid.isBlank()) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("uuid", localUuid(mc));
+		body.addProperty("name", localName(mc));
+		body.addProperty("target", targetUuid);
+		String code = session.code;
+		IO.execute(() -> {
+			try {
+				var res = client().kick(code, body);
+				mc.execute(() -> {
+					busy.set(false);
+					if (res.ok && res.value != null) {
+						adoptSession(res.value);
+						lastError = null;
+						chat(mc, Component.translatable(
+							"message.chestmemory.clan_kicked",
+							targetName == null || targetName.isBlank() ? "?" : targetName
+						));
+					} else {
+						failRaw(res.error != null ? res.error : "kick failed", mc);
+					}
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			} catch (Exception e) {
+				mc.execute(() -> {
+					busy.set(false);
+					failRaw(e.getMessage(), mc);
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			}
+		});
+	}
+
+	/** Clear every claim on the hub (host only) — the reset for a stalled evening. */
+	public static void releaseClaimsAsync(Minecraft mc, @Nullable Runnable onDone) {
+		if (session == null) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("uuid", localUuid(mc));
+		body.addProperty("name", localName(mc));
+		String code = session.code;
+		IO.execute(() -> {
+			try {
+				var res = client().releaseClaims(code, body);
+				mc.execute(() -> {
+					busy.set(false);
+					if (res.ok && res.value != null) {
+						adoptSession(res.value);
+						lastError = null;
+						chat(mc, Component.translatable("message.chestmemory.clan_claims_released"));
+					} else {
+						failRaw(res.error != null ? res.error : "release failed", mc);
+					}
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			} catch (Exception e) {
+				mc.execute(() -> {
+					busy.set(false);
+					failRaw(e.getMessage(), mc);
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			}
+		});
+	}
+
 	/** Toggle claim on item for local player. */
 	public static void claimToggleAsync(Minecraft mc, String itemId, @Nullable Runnable onDone) {
 		if (session == null || itemId == null) {
@@ -745,6 +893,16 @@ public final class ClanSessionManager {
 	 *
 	 * @return the session now in effect
 	 */
+	/** True when the snapshot's roster contains this uuid. */
+	private static boolean containsMember(ClanSession s, String uuid) {
+		for (ClanSession.ClanMember m : s.members) {
+			if (m.uuid != null && m.uuid.equalsIgnoreCase(uuid)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static @Nullable ClanSession adoptSession(@Nullable ClanSession next) {
 		ClanSession cur = session;
 		if (next == null) {
@@ -864,6 +1022,22 @@ public final class ClanSessionManager {
 						ClanSession adopted = adoptSession(res.value);
 						lastError = null;
 						if (adopted != prev) {
+							// The snapshot no longer lists this player: the host kicked them.
+							// The hub will not let the heartbeat re-add us, so leave locally
+							// with a clear message instead of polling a gather we are out of.
+							if (adopted != null && !adopted.members.isEmpty()
+								&& !containsMember(adopted, localUuid(mc))) {
+								ClanRoster.forget(code);
+								if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
+									ModSettings.get().setClanActiveCode("");
+								}
+								session = null;
+								ClanEventLog.clear();
+								com.chestmemory.client.data.StagingPickMode.stopQuiet();
+								ChestMemoryStorage.get().clearStaging();
+								chat(mc, Component.translatable("message.chestmemory.clan_kicked_you"));
+								return;
+							}
 							applyClanStagingKeys(adopted);
 							// Tell player when someone else claimed / released items
 							announceClaimDiffs(mc, prev, adopted, false);

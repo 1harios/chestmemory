@@ -91,11 +91,15 @@ class ClanUsabilityTest {
 		@Test
 		@DisplayName("Entering a gather does not demand Litematica during a clan gather")
 		void clanGatherSkipsLitematicaGate() throws Exception {
-			String src = read(SCREEN);
+			// The gate moved with the UI: the gather screen's mode picker asks the session
+			// FIRST, so a member without Litematica still gets the clan grid from the hub.
+			String src = read(CLAN_SCREEN);
+			int decl = src.indexOf("private GatherMode gatherMode()");
+			assertTrue(decl > 0, "mode picker not found");
+			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
-				src.contains("boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInSession()")
-					&& src.contains("if (!clanGather && !LitematicaAccess.isAvailable())"),
-				"enterGatherMode must let a clan gather through without Litematica"
+				body.indexOf("GatherMode.CLAN") < body.indexOf("hasActiveMaterialListSafe"),
+				"a clan session must win before any Litematica check"
 			);
 		}
 
@@ -294,7 +298,7 @@ class ClanUsabilityTest {
 		void doubleSwitchIsRejected() throws Exception {
 			String screen = read(CLAN_SCREEN);
 			int decl = screen.indexOf("public boolean mouseClicked");
-			String body = screen.substring(decl, decl + 1600);
+			String body = screen.substring(decl, decl + 3200);
 			assertTrue(
 				body.contains("ClanSessionManager.switchingTo() != null"),
 				"clicking another row mid-switch must not start a second one"
@@ -341,7 +345,7 @@ class ClanUsabilityTest {
 					);
 				}
 			}
-			assertEquals(5, checked, "expected to inspect every busy guard");
+			assertEquals(8, checked, "expected to inspect every busy guard");
 		}
 
 		@Test
@@ -373,11 +377,14 @@ class ClanUsabilityTest {
 			String src = read(CLAN_SCREEN);
 			assertTrue(src.contains("private String codeDraft"), "the draft must be kept");
 			int boxes = src.split("new EditBox\\(", -1).length - 1;
-			int restores = src.split("setValue\\(this\\.codeDraft\\)", -1).length - 1;
-			int responders = src.split("this\\.codeDraft = v", -1).length - 1;
-			// One EditBox is the hub URL field, which has its own value.
-			assertEquals(boxes - 1, restores, "every code box must restore the draft");
-			assertEquals(boxes - 1, responders, "every code box must record what is typed");
+			int restores = src.split("setValue\\(this\\.codeDraft\\)", -1).length - 1
+				+ src.split("setValue\\(this\\.renameDraft\\)", -1).length - 1;
+			int responders = src.split("this\\.codeDraft = v", -1).length - 1
+				+ src.split("this\\.renameDraft = v", -1).length - 1;
+			// One EditBox is the hub URL field, which has its own value; the code box and
+			// the rename box each keep a draft that survives the rebuild.
+			assertEquals(boxes - 1, restores, "every draft box must restore its draft");
+			assertEquals(boxes - 1, responders, "every draft box must record what is typed");
 		}
 	}
 }

@@ -58,16 +58,12 @@ public class ChestMemoryScreen extends Screen {
 	private List<WorldTab> worldTabs = List.of();
 	private List<DimensionChoice> dimensionChoices = List.of(DimensionChoice.ALL, DimensionChoice.CURRENT);
 	/** When true, grid shows Litematica material-list items to gather from chests. */
-	private boolean litematicaBuildMode = false;
 	/** Profile / scope / dim / sort filters — from settings, collapsed by default. */
 	private boolean filtersExpanded = com.chestmemory.client.data.ModSettings.get().filtersExpanded();
 	private SettingRowButton filtersToggleButton;
 	private SettingRowButton litematicaButton;
 	private SettingRowButton leftBarButton;
 	private SettingRowButton rightBarButton;
-	private SettingRowButton buildFilterButton;
-	private SettingRowButton stagingMarkButton;
-	private SettingRowButton stagingClearButton;
 	private ClearMemoryIconButton clearMemoryIcon;
 
 	/** First click on Clear — wait for second confirm click. */
@@ -100,10 +96,6 @@ public class ChestMemoryScreen extends Screen {
 		// Always open with empty search (don't restore previous query)
 		this.lastQuery = "";
 		ModSettings.get().setLastSearch("");
-		// If gather is already running, open on the materials (сборка) tab
-		if (BuildGatherSession.isActive()) {
-			this.litematicaBuildMode = true;
-		}
 	}
 
 	@Override
@@ -139,9 +131,8 @@ public class ChestMemoryScreen extends Screen {
 			Component.translatable("screen.chestmemory.clear_memory.tooltip"),
 			this::onClearMemoryIconClick
 		);
-		// Only for normal list (not gather materials UI) — still can clear when session runs in bg
-		this.clearMemoryIcon.visible = !this.litematicaBuildMode;
-		this.clearMemoryIcon.active = !this.litematicaBuildMode;
+		this.clearMemoryIcon.visible = true;
+		this.clearMemoryIcon.active = true;
 		this.clearMemoryIcon.setConfirmMode(false);
 		this.addRenderableWidget(this.clearMemoryIcon);
 
@@ -318,9 +309,9 @@ public class ChestMemoryScreen extends Screen {
 			y += rowH + gap;
 		}
 
-		// Search + clan (always visible)
-		int clanBtnW = 52;
-		this.searchBox = new EditBox(this.font, left, y, w - clanBtnW - gap, rowH, Component.translatable("screen.chestmemory.search"));
+		// Search gets the whole row: the gather button lives in the bottom bar alone now —
+		// two buttons named «Сбор» on one panel read as a mistake.
+		this.searchBox = new EditBox(this.font, left, y, w, rowH, Component.translatable("screen.chestmemory.search"));
 		this.searchBox.setMaxLength(128);
 		this.searchBox.setHint(Component.translatable("screen.chestmemory.search_hint"));
 		// The box paints a black background, so the dark TEXT_BODY was nearly invisible.
@@ -330,65 +321,7 @@ public class ChestMemoryScreen extends Screen {
 		this.searchBox.setValue(this.lastQuery);
 		this.searchBox.setResponder(this::onSearchChanged);
 		this.addRenderableWidget(this.searchBox);
-		String clanBtnText = com.chestmemory.client.clan.ClanSessionManager.isInSession()
-			? Component.translatable("screen.chestmemory.clan.btn_short_in").getString()
-			: Component.translatable("screen.chestmemory.clan.btn_short").getString();
-		this.addRenderableWidget(new SettingRowButton(left + w - clanBtnW, y, clanBtnW, rowH, Component.literal(clanBtnText), () -> {
-				if (this.minecraft != null) {
-					com.chestmemory.client.util.ClientScreens.set(this.minecraft, new ClanGatherScreen(this));
-				}
-			}));
 		y += rowH + gap;
-
-		// Scheme tools: one compact row (same panel height as normal Ё)
-		this.buildFilterButton = null;
-		this.stagingMarkButton = null;
-		this.stagingClearButton = null;
-		if (this.litematicaBuildMode) {
-			// 4 columns: filter | warehouse | clear warehouse | clan
-			int colGap = gap;
-			int colW = (w - 3 * colGap) / 4;
-			this.buildFilterButton = new SettingRowButton(left, y, colW, rowH, filterButtonLabel(), () -> {
-					BuildGatherSession.cycleFilter();
-					this.buildFilterButton.setMessage(filterButtonLabel());
-					this.refreshList(this.searchBox != null ? this.searchBox.getValue() : "");
-				});
-			this.addRenderableWidget(this.buildFilterButton);
-
-			this.stagingMarkButton = new SettingRowButton(left + colW + colGap, y, colW, rowH, stagingMarkLabel(), () -> {
-					com.chestmemory.client.data.StagingPickMode.toggle();
-					this.stagingMarkButton.setMessage(stagingMarkLabel());
-					if (this.stagingClearButton != null) {
-						this.stagingClearButton.setMessage(stagingClearLabel());
-					}
-					if (com.chestmemory.client.data.StagingPickMode.isActive()) {
-						this.statusLine = Component.translatable("screen.chestmemory.status.staging_pick_on").getString();
-						this.onClose();
-					} else {
-						this.statusLine = Component.translatable(
-							"screen.chestmemory.status.staging_pick_off",
-							ChestMemoryStorage.get().stagingCount()
-						).getString();
-					}
-				});
-			this.addRenderableWidget(this.stagingMarkButton);
-
-			this.stagingClearButton = new SettingRowButton(left + 2 * (colW + colGap), y, colW, rowH, stagingClearLabel(), () -> {
-					com.chestmemory.client.data.StagingPickMode.stop(false);
-					ChestMemoryStorage.get().clearStaging();
-					this.statusLine = Component.translatable("screen.chestmemory.status.staging_cleared").getString();
-					this.stagingClearButton.setMessage(stagingClearLabel());
-					if (this.stagingMarkButton != null) {
-						this.stagingMarkButton.setMessage(stagingMarkLabel());
-					}
-					this.refreshList(this.searchBox != null ? this.searchBox.getValue() : "");
-				});
-			this.addRenderableWidget(this.stagingClearButton);
-
-			// No clan button here: the header already has one next to the search box, and two
-			// buttons opening the same screen in one panel read as a mistake.
-			y += rowH + gap;
-		}
 
 		// Bottom buttons + grid: fill exactly to the button bar (full rows only)
 		int buttonBarH = 22;
@@ -400,17 +333,21 @@ public class ChestMemoryScreen extends Screen {
 		this.addRenderableWidget(this.itemGrid);
 		int bw = (w - 8) / 3;
 
-		// Bottom bar always 3 equal buttons:
-		// normal: «Снять свет» | «Сбор» | «Закрыть»
-		// gather materials: HUD | «Назад» | «Завершить»
+		// Bottom bar, three equal buttons: «Снять свет» | «Сбор» | «Закрыть».
+		// The middle one is the single entry to gathering — the gather screen carries
+		// solo and clan alike, so the panel keeps none of that UI itself.
 		this.leftBarButton = new SettingRowButton(left, buttonY, bw, 18, leftBarLabel(), () -> this.onLeftBarClick());
 		this.addRenderableWidget(this.leftBarButton);
 
-		this.litematicaButton = new SettingRowButton(left + bw + 4, buttonY, bw, 18, litematicaButtonLabel(), () -> this.onMiddleBarClick());
-		updateLitematicaButtonState();
+		this.litematicaButton = new SettingRowButton(left + bw + 4, buttonY, bw, 18, gatherButtonLabel(), () -> {
+			if (this.minecraft != null) {
+				com.chestmemory.client.util.ClientScreens.set(this.minecraft, new ClanGatherScreen(this));
+			}
+		});
+		this.litematicaButton.active = true;
 		this.addRenderableWidget(this.litematicaButton);
 
-		this.rightBarButton = new SettingRowButton(left + 2 * (bw + 4), buttonY, bw, 18, rightBarLabel(), () -> this.onRightBarClick());
+		this.rightBarButton = new SettingRowButton(left + 2 * (bw + 4), buttonY, bw, 18, Component.translatable("screen.chestmemory.close"), () -> this.onClose());
 		this.addRenderableWidget(this.rightBarButton);
 
 		// Dropdowns last among widgets = drawn later; open list still needs overlay pass
@@ -483,17 +420,14 @@ public class ChestMemoryScreen extends Screen {
 		return this.typeDropdown != null && this.typeDropdown.isOpen();
 	}
 
-	private boolean isGatherUi() {
-		return this.litematicaBuildMode;
-	}
-
 	private boolean isGatherRunning() {
 		return BuildGatherSession.isActive();
 	}
 
 	private Component leftBarLabel() {
-		// HUD toggle while gather session is running (even if browsing full list)
-		if (isGatherUi() || isGatherRunning()) {
+		// HUD toggle while a gather runs (the HUD is the gather's face on the screen);
+		// otherwise the button clears chest highlights.
+		if (isGatherRunning()) {
 			return Component.translatable(
 				ModSettings.get().showGatherHud()
 					? "screen.chestmemory.hud_toggle_on"
@@ -503,18 +437,20 @@ public class ChestMemoryScreen extends Screen {
 		return Component.translatable("screen.chestmemory.clear_highlight");
 	}
 
-	private Component rightBarLabel() {
-		if (isGatherUi()) {
-			return Component.translatable("screen.chestmemory.finish_gather");
+	/** Middle bar: the one gather entry. Named for the session when one is live. */
+	private Component gatherButtonLabel() {
+		String code = com.chestmemory.client.clan.ClanSessionManager.code();
+		if (code != null && !code.isBlank()) {
+			return Component.translatable("screen.chestmemory.clan.btn_in", code);
 		}
-		return Component.translatable("screen.chestmemory.close");
+		if (isGatherRunning()) {
+			return Component.translatable("screen.chestmemory.clan.btn_short_in");
+		}
+		return Component.translatable("screen.chestmemory.clan.btn");
 	}
 
 	/** Header trash icon: clear item memory (two-click confirm). */
 	private void onClearMemoryIconClick() {
-		if (this.litematicaBuildMode) {
-			return;
-		}
 		if (!ChestMemoryStorage.get().isViewingLive()) {
 			this.statusLine = Component.translatable("screen.chestmemory.status.clear_only_live").getString();
 			this.clearConfirmPending = false;
@@ -544,7 +480,7 @@ public class ChestMemoryScreen extends Screen {
 	}
 
 	private void onLeftBarClick() {
-		if (isGatherUi() || isGatherRunning()) {
+		if (isGatherRunning()) {
 			ModSettings.get().toggleShowGatherHud();
 			if (this.leftBarButton != null) {
 				this.leftBarButton.setMessage(leftBarLabel());
@@ -558,120 +494,6 @@ public class ChestMemoryScreen extends Screen {
 		}
 		ChestHighlighter.clear();
 		this.statusLine = Component.translatable("screen.chestmemory.status.highlight_cleared").getString();
-	}
-
-	/**
-	 * Middle:
-	 * - full list → «Сбор» open materials list (+ auto-start if needed)
-	 * - materials list → «Назад» full item list, keep session running
-	 */
-	private void onMiddleBarClick() {
-		if (this.litematicaBuildMode) {
-			// Back to ALL remembered items — do NOT end gather
-			leaveGatherListKeepSession();
-			return;
-		}
-		enterGatherMode();
-	}
-
-	private void onRightBarClick() {
-		if (isGatherUi()) {
-			// Materials list — finish gather session
-			finishGatherMode();
-			return;
-		}
-		// Normal list — close panel
-		this.onClose();
-	}
-
-	/**
-	 * «Назад»: show full chest-memory item list, keep gather session + HUD running.
-	 */
-	private void leaveGatherListKeepSession() {
-		this.litematicaBuildMode = false;
-		this.clearConfirmPending = false;
-		// Do NOT call BuildGatherSession.clear()
-		this.statusLine = Component.translatable("screen.chestmemory.status.gather_back_items").getString();
-		this.rebuildWidgets();
-	}
-
-	/** Open gather materials tab and start smart queue. */
-	private void enterGatherMode() {
-		// A clan gather carries its own materials, so it opens even with no Litematica —
-		// only a solo gather actually needs the mod to produce a list.
-		boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInSession();
-		if (!clanGather && !LitematicaAccess.isAvailable()) {
-			this.statusLine = Component.translatable("screen.chestmemory.status.litematica_missing").getString();
-			updateLitematicaButtonState();
-			return;
-		}
-		if (!LitematicaAccess.hasActiveMaterialList()) {
-			this.statusLine = Component.translatable("screen.chestmemory.status.litematica_no_list").getString();
-			updateLitematicaButtonState();
-			return;
-		}
-		this.litematicaBuildMode = true;
-		this.clearConfirmPending = false;
-		String name = LitematicaAccess.activeListName();
-		this.statusLine = Component.translatable(
-			"screen.chestmemory.status.litematica_on",
-			name != null ? name : "?"
-		).getString();
-		this.rebuildWidgets();
-		// After rebuild, start collection from materials list
-		autoStartGatherFromList();
-	}
-
-	/** «Завершить»: stop session and return to full chest memory list. */
-	private void finishGatherMode() {
-		this.litematicaBuildMode = false;
-		BuildGatherSession.clear();
-		ChestHighlighter.clear();
-		// Finishing has to end the clan side too. Clearing only the local gather left the
-		// session polling, so the HUD kept showing the clan and the gather looked like it was
-		// still running. Leaving also releases this player's claims, which is what "finish"
-		// means from the clan's point of view. The host closes the session; a member leaves it.
-		if (com.chestmemory.client.clan.ClanSessionManager.isInSession() && this.minecraft != null) {
-			com.chestmemory.client.clan.ClanSessionManager.leaveAsync(this.minecraft, null);
-		}
-		// A warehouse mark belongs to the build it was made for, so finishing the gather must
-		// drop it. It used to survive and keep glowing over a chest that was no longer a
-		// drop-off point for anything.
-		com.chestmemory.client.data.StagingPickMode.stop(false);
-		ChestMemoryStorage.get().clearStaging();
-		this.clearConfirmPending = false;
-		this.statusLine = Component.translatable("screen.chestmemory.status.gather_finished").getString();
-		this.rebuildWidgets();
-	}
-
-	/** Start gather queue from current panel materials (smart order). */
-	private void autoStartGatherFromList() {
-		if (this.minecraft == null || this.minecraft.player == null) {
-			return;
-		}
-		ListScope effectiveScope = this.scope == ListScope.NEARBY ? ListScope.NEARBY : ListScope.WORLD_TOTAL;
-		BuildFilter saved = BuildGatherSession.filter();
-		BuildGatherSession.setFilter(BuildFilter.ALL);
-		List<ItemSummary> panel = BuildGatherSession.buildPanelList(
-			this.minecraft,
-			"",
-			effectiveScope,
-			this.dimensionFilter,
-			rangeBlocks()
-		);
-		BuildGatherSession.setFilter(saved);
-		List<String> ordered = new ArrayList<>();
-		for (ItemSummary s : panel) {
-			if (s.neededForBuild() > 0) {
-				ordered.add(s.itemId());
-			}
-		}
-		if (ordered.isEmpty()) {
-			BuildGatherSession.setActive(true);
-			this.statusLine = Component.translatable("screen.chestmemory.status.litematica_complete").getString();
-			return;
-		}
-		BuildGatherSession.startQueue(this.minecraft, ordered.getFirst(), ordered);
 	}
 
 	private <T> DropdownWidget<T> dropdown(
@@ -784,72 +606,6 @@ public class ChestMemoryScreen extends Screen {
 		return this.nearbyRange.blocks();
 	}
 
-	/** Material List open in Litematica — required to turn scheme gather on. */
-	private boolean canEnableSchemeMode() {
-		return LitematicaAccess.isAvailable() && LitematicaAccess.hasActiveMaterialList();
-	}
-
-	/**
-	 * Middle «Сбор» / «Назад»:
-	 * - materials UI → always can go back to all items
-	 * - full list → need Material List (or active session) to open materials again
-	 */
-	private void updateLitematicaButtonState() {
-		if (this.litematicaButton == null) {
-			return;
-		}
-		// Do NOT force litematicaBuildMode=true just because session is active —
-		// user may be browsing full list while gather continues in background.
-		// Always clickable. Gating it on "is there a material list right now" left a clan
-		// member unable to continue a gather after relogging: Litematica had no list yet, so
-		// the one button that opens the materials view was dead. Pressing it without a list
-		// just reports why, which the player can act on — a disabled button explains nothing.
-		this.litematicaButton.active = true;
-		this.litematicaButton.setMessage(litematicaButtonLabel());
-		if (this.leftBarButton != null) {
-			this.leftBarButton.setMessage(leftBarLabel());
-		}
-		if (this.rightBarButton != null) {
-			this.rightBarButton.setMessage(rightBarLabel());
-		}
-	}
-
-	/** Short label for the middle bar button. */
-	private Component litematicaButtonLabel() {
-		if (!LitematicaAccess.isAvailable() && !isGatherRunning()) {
-			return Component.translatable("screen.chestmemory.litematica.missing");
-		}
-		// Materials list open → «Назад» to all items (session keeps running)
-		if (this.litematicaBuildMode) {
-			return Component.translatable("screen.chestmemory.back_to_list");
-		}
-		// Full list: open materials / resume materials UI
-		if (!LitematicaAccess.hasActiveMaterialList() && !isGatherRunning()) {
-			return Component.translatable("screen.chestmemory.litematica.btn_disabled");
-		}
-		return Component.translatable("screen.chestmemory.litematica.btn_off");
-	}
-
-	private Component filterButtonLabel() {
-		// Compact — one third of scheme toolbar
-		return Component.translatable(
-			"screen.chestmemory.build_filter.button_short",
-			BuildGatherSession.filter().label().getString()
-		);
-	}
-
-	private Component stagingMarkLabel() {
-		int n = ChestMemoryStorage.get().stagingCount();
-		if (com.chestmemory.client.data.StagingPickMode.isActive()) {
-			return Component.translatable("screen.chestmemory.staging.pick_on", n);
-		}
-		return Component.translatable("screen.chestmemory.staging.pick_off", n);
-	}
-
-	private Component stagingClearLabel() {
-		return Component.translatable("screen.chestmemory.staging.clear");
-	}
-
 	private Component filtersToggleValue() {
 		if (this.filtersExpanded) {
 			return Component.translatable("screen.chestmemory.filters.value.hide");
@@ -882,48 +638,20 @@ public class ChestMemoryScreen extends Screen {
 			effectiveScope = ListScope.WORLD_TOTAL;
 		}
 
-		List<ItemSummary> items;
-		if (this.litematicaBuildMode && LitematicaAccess.isAvailable()) {
-			items = BuildGatherSession.buildPanelList(
-				this.minecraft,
-				query,
-				effectiveScope,
-				this.dimensionFilter,
-				rangeBlocks()
-			);
-			if (items.isEmpty()) {
-				if (!LitematicaAccess.hasActiveMaterialList()) {
-					this.statusLine = Component.translatable("screen.chestmemory.status.litematica_no_list").getString();
-				} else {
-					// Empty for this filter — not necessarily fully done
-					BuildFilter f = BuildGatherSession.filter();
-					this.statusLine = Component.translatable(
-						"screen.chestmemory.status.litematica_filter_empty",
-						f.label().getString()
-					).getString();
-				}
-			}
-		} else {
-			items = ChestMemoryStorage.get().listItems(
-				query,
-				this.typeFilters,
-				this.dimensionFilter,
-				effectiveScope,
-				playerDimension(),
-				playerPos(),
-				rangeBlocks(),
-				this.sortMode
-			);
-		}
+		List<ItemSummary> items = ChestMemoryStorage.get().listItems(
+			query,
+			this.typeFilters,
+			this.dimensionFilter,
+			effectiveScope,
+			playerDimension(),
+			playerPos(),
+			rangeBlocks(),
+			this.sortMode
+		);
 		this.itemGrid.setItems(items);
 
 		if (this.filtersToggleButton != null) {
 			this.filtersToggleButton.setValue(filtersToggleValue());
-		}
-		if (this.buildFilterButton != null) {
-			this.buildFilterButton.visible = this.litematicaBuildMode;
-			this.buildFilterButton.active = this.litematicaBuildMode;
-			this.buildFilterButton.setMessage(filterButtonLabel());
 		}
 
 		int chests = ChestMemoryStorage.get().containerCount(
@@ -951,45 +679,21 @@ public class ChestMemoryScreen extends Screen {
 			dimLabel = this.dimensionFilter.label().getString();
 		}
 
-		if (this.litematicaBuildMode && !items.isEmpty()) {
-			int stillNeedTypes = (int) items.stream().filter(s -> s.neededForBuild() > 0).count();
-			int readyTypes = (int) items.stream()
-				.filter(s -> s.neededForBuild() > 0 && s.totalCount() > 0 && s.stillShort() <= 0)
-				.count();
-			int partialTypes = (int) items.stream()
-				.filter(s -> s.neededForBuild() > 0 && s.totalCount() > 0 && s.stillShort() > 0)
-				.count();
-			int noneTypes = (int) items.stream()
-				.filter(s -> s.neededForBuild() > 0 && s.totalCount() <= 0)
-				.count();
-			int doneTypes = (int) items.stream().filter(s -> s.neededForBuild() <= 0).count();
-			int needSum = items.stream().mapToInt(ItemSummary::neededForBuild).sum();
-			String listName = LitematicaAccess.activeListName();
-			String filterName = BuildGatherSession.filter().label().getString();
-			this.statusLine = Component.translatable(
-				"screen.chestmemory.status.litematica_summary",
-				listName != null ? listName : "?",
-				filterName,
-				items.size(),
-				stillNeedTypes,
-				readyTypes,
-				partialTypes,
-				noneTypes,
-				doneTypes,
-				needSum
-			).getString();
-		} else if (!this.litematicaBuildMode) {
-			this.statusLine = Component.translatable(
-				"screen.chestmemory.status.summary_short",
-				items.size(),
-				totalQty,
-				chests,
-				dimLabel,
-				scopeLabel
-			).getString();
-		}
+		this.statusLine = Component.translatable(
+			"screen.chestmemory.status.summary_short",
+			items.size(),
+			totalQty,
+			chests,
+			dimLabel,
+			scopeLabel
+		).getString();
 
-		updateLitematicaButtonState();
+		if (this.litematicaButton != null) {
+			this.litematicaButton.setMessage(gatherButtonLabel());
+		}
+		if (this.leftBarButton != null) {
+			this.leftBarButton.setMessage(leftBarLabel());
+		}
 	}
 
 	private void onItemSelected(ItemSummary summary) {
@@ -1008,80 +712,6 @@ public class ChestMemoryScreen extends Screen {
 				ChestMemoryStorage.get().viewingDisplayName()
 			));
 			this.onClose();
-			return;
-		}
-
-		// Build mode: start gather queue (clicked item first, then smart order of the rest)
-		if (this.litematicaBuildMode && summary.isBuildNeed()) {
-			if (summary.neededForBuild() <= 0) {
-				// Already have enough in inventory — don't start a useless queue
-				client.player.sendSystemMessage(Component.translatable(
-					"message.chestmemory.build_item_done",
-					ChestMemoryStorage.itemDisplayName(summary.itemId())
-				));
-				return;
-			}
-			// Clan: skip items claimed by others; claim free item for self
-			if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
-				if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByOther(client, summary.itemId())) {
-					String who = com.chestmemory.client.clan.ClanSessionManager.claimName(summary.itemId());
-					client.player.sendSystemMessage(Component.translatable(
-						"message.chestmemory.clan_taken",
-						who != null ? who : "?",
-						ChestMemoryStorage.itemDisplayName(summary.itemId())
-					));
-					return;
-				}
-				if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(client, summary.itemId())) {
-					// Clicking your own claim gives it up. Without this there was no way to
-					// change your mind: the item stayed reserved for the rest of the gather.
-					com.chestmemory.client.clan.ClanSessionManager.claimToggleAsync(
-						client, summary.itemId(), this::rebuildWidgets
-					);
-					// Do not start gathering something we just dropped.
-					if (summary.itemId().equals(BuildGatherSession.currentItemId())) {
-						BuildGatherSession.dropCurrentClaimFocus(client);
-					}
-					return;
-				}
-				// Claiming is a network round trip, so the claim is NOT visible yet. Remember
-				// what was picked and retarget when the hub confirms — reading it back right
-				// away found nothing claimed and fell through to the ranking, which is why the
-				// HUD kept naming the item the mod preferred instead of the one just taken.
-				String picked = summary.itemId();
-				com.chestmemory.client.clan.ClanSessionManager.claimToggleAsync(
-					client, picked, () -> BuildGatherSession.focusClaimed(client, picked)
-				);
-				BuildGatherSession.setPendingClaimFocus(picked);
-			}
-			// Queue order from ALL filter so path is always: ready → partial → none
-			// (ignore current UI filter for the queue contents after the clicked item)
-			BuildFilter saved = BuildGatherSession.filter();
-			BuildGatherSession.setFilter(BuildFilter.ALL);
-			ListScope effectiveScope = this.scope == ListScope.NEARBY ? ListScope.NEARBY : ListScope.WORLD_TOTAL;
-			List<ItemSummary> panel = BuildGatherSession.buildPanelList(
-				client, "",
-				effectiveScope, this.dimensionFilter, rangeBlocks()
-			);
-			BuildGatherSession.setFilter(saved);
-			List<String> ordered = new ArrayList<>();
-			for (ItemSummary s : panel) {
-				if (s.neededForBuild() > 0) {
-					if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByOther(client, s.itemId())) {
-						continue;
-					}
-					ordered.add(s.itemId());
-				}
-			}
-			BuildGatherSession.startQueue(client, summary.itemId(), ordered);
-			// In a clan gather the panel stays open: reserving three items used to mean
-			// opening it three times, because every pick closed the screen. Solo it still
-			// closes, since there the pick IS the whole interaction — you go and mine it.
-			if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
-				this.rebuildWidgets();
-			} else {
-				this.onClose();
-			}
 			return;
 		}
 

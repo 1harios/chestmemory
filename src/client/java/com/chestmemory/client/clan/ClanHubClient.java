@@ -132,6 +132,21 @@ public final class ClanHubClient {
 		return post("/v1/sessions/" + enc(code) + "/staging", body);
 	}
 
+	/** Rename the gather (host only): every member's panel picks the new name up. */
+	public Result<ClanSession> update(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/update", body);
+	}
+
+	/** Remove a member (host only). The hub releases their claims with them. */
+	public Result<ClanSession> kick(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/kick", body);
+	}
+
+	/** Clear every claim (host only) — the reset for a stalled evening. */
+	public Result<ClanSession> releaseClaims(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/release_claims", body);
+	}
+
 	/** Ask for a nonce to sign via Mojang joinServer. Returns the nonce. */
 	public Result<String> authChallenge() {
 		Result<JsonObject> res = rawGet("/v1/auth/challenge");

@@ -201,23 +201,17 @@ class ClanDeliveryTest {
 		@Test
 		@DisplayName("Taking an item leaves the screen open")
 		void screenStaysOpen() throws Exception {
+			// The panel's own claim path is gone — the gather screen is the claim path now,
+			// and it refreshes in place so reserving three items is one visit.
 			String clan = body(read(CLAN_SCREEN), "private void claimFromList(String itemId)");
-			assertFalse(clan.contains("onClose()"), "the clan screen must not close on a claim");
-			// Scoped to the block right after startQueue. Searching the whole file matched
-			// those two lines somewhere else entirely, so the check passed even with the
-			// branch deleted — the break test caught that.
-			String chest = read(CHEST_SCREEN);
-			int at = chest.indexOf("BuildGatherSession.startQueue(client, summary.itemId(), ordered);");
-			assertTrue(at > 0, "the clan claim path moved — update this test");
-			String after = chest.substring(at, at + 500);
+			assertFalse(clan.contains("onClose()"), "the gather screen must not close on a claim");
 			assertTrue(
-				after.contains("ClanSessionManager.isInSession()") && after.contains("rebuildWidgets()"),
-				"the chest panel closed on every pick, so reserving three items meant "
-					+ "opening it three times"
+				clan.contains("rebuildWidgets"),
+				"the claim callback refreshes the grid in place"
 			);
-			assertTrue(
-				after.contains("} else {") && after.contains("this.onClose();"),
-				"solo must still close: there the pick IS the whole interaction"
+			assertFalse(
+				read(CHEST_SCREEN).contains("claimToggleAsync"),
+				"the chest panel must carry no claim wiring of its own any more"
 			);
 		}
 

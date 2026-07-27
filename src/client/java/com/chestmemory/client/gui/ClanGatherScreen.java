@@ -103,6 +103,16 @@ public class ClanGatherScreen extends Screen {
 	private boolean sayCodeArmed;
 	/** Two-step guard for the host's "delete gather": it ends the build for everyone. */
 	private boolean deleteArmed;
+	/** Host settings view on the gather tab (rename, claims reset, close). */
+	private boolean hostSettings;
+	/** Rename draft, kept across widget rebuilds exactly like the code draft. */
+	private String renameDraft = "";
+	private @org.jspecify.annotations.Nullable EditBox renameBox;
+	/** Two-step guards for the destructive settings rows. */
+	private boolean releaseArmed;
+	private boolean closeArmed;
+	/** Member armed for a kick (host clicked their row once), or null. */
+	private @org.jspecify.annotations.Nullable String kickArmUuid;
 	/** Selected tab; kept across rebuildWidgets so polling does not snap you back. */
 	private int tab = TAB_GATHER;
 	private int hoveredTab = -1;
@@ -184,11 +194,17 @@ public class ClanGatherScreen extends Screen {
 			// so without this the box loses focus after a single keystroke and the player has
 			// to click it again for every letter of the code.
 			boolean wasTyping = this.codeBox != null && this.codeBox.isFocused();
+			boolean wasRenaming = this.renameBox != null && this.renameBox.isFocused();
 			this.rebuildWidgets();
 			if (wasTyping && this.codeBox != null) {
 				this.setFocused(this.codeBox);
 				this.codeBox.setFocused(true);
 				this.codeBox.moveCursorToEnd(false);
+			}
+			if (wasRenaming && this.renameBox != null) {
+				this.setFocused(this.renameBox);
+				this.renameBox.setFocused(true);
+				this.renameBox.moveCursorToEnd(false);
 			}
 		}
 	}
@@ -422,8 +438,28 @@ public class ClanGatherScreen extends Screen {
 		if (mode == GatherMode.CLAN) {
 			ClanSession s = ClanSessionManager.session();
 			String code = s != null ? s.code : "?";
-			// Grid stops above the hover-detail strip, which sits above these controls.
-			this.gridBottom = row1 - 30;
+			boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
+			if (this.hostSettings && host) {
+				initHostSettings(left, w, half, gap, rowH, row2);
+				return;
+			}
+			this.hostSettings = false;
+			// Warehouse row above the session rows: marking drop-off chests is part of
+			// running a gather, not a detour through the old panel's schematic mode.
+			int row0 = row1 - rowH - gap;
+			this.gridBottom = row0 - 30;
+			this.renameBox = null;
+			this.addRenderableWidget(new SettingRowButton(
+				left, row0, half, rowH, stagingButtonLabel(), this::toggleStagingPick
+			));
+			SettingRowButton clearStaging = new SettingRowButton(
+				left + half + gap, row0, half, rowH,
+				Component.translatable("screen.chestmemory.clan.staging_clear"),
+				this::clearStagingChests
+			);
+			clearStaging.active = ChestMemoryStorage.get().stagingCount() > 0
+				|| com.chestmemory.client.data.StagingPickMode.isActive();
+			this.addRenderableWidget(clearStaging);
 			int sayW = w - gap - 96;
 			this.addRenderableWidget(new SettingRowButton(
 				left, row1, sayW, rowH,
@@ -460,20 +496,35 @@ public class ClanGatherScreen extends Screen {
 					}
 				}
 			));
-			boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
-			this.addRenderableWidget(new SettingRowButton(
-				left, row2, half, rowH,
-				Component.translatable(host
-					? "screen.chestmemory.clan.close_session"
-					: "screen.chestmemory.clan.leave"),
-				() -> {
-					if (this.minecraft == null) {
-						return;
+			if (host) {
+				// The host's row: closing the session moved into the settings view, so the
+				// everyday row is not one misclick away from ending the build for everyone.
+				this.addRenderableWidget(new SettingRowButton(
+					left, row2, half, rowH,
+					Component.translatable("screen.chestmemory.clan.settings_btn"),
+					() -> {
+						ClanSession cur = ClanSessionManager.session();
+						this.renameDraft = cur != null && cur.schemaName != null ? cur.schemaName : "";
+						this.hostSettings = true;
+						this.releaseArmed = false;
+						this.closeArmed = false;
+						this.status = "";
+						this.rebuildWidgets();
 					}
-					this.status = Component.translatable("screen.chestmemory.clan.working").getString();
-					ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
-				}
-			));
+				));
+			} else {
+				this.addRenderableWidget(new SettingRowButton(
+					left, row2, half, rowH,
+					Component.translatable("screen.chestmemory.clan.leave"),
+					() -> {
+						if (this.minecraft == null) {
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
+					}
+				));
+			}
 			this.addRenderableWidget(new SettingRowButton(
 				left + half + gap, row2, half, rowH,
 				Component.translatable("screen.chestmemory.clan.back"),
@@ -483,7 +534,22 @@ public class ClanGatherScreen extends Screen {
 		}
 
 		if (mode == GatherMode.SOLO) {
-			this.gridBottom = row1 - 30;
+			this.renameBox = null;
+			// Same warehouse row solo: staging chests measure the build's progress, so
+			// assigning them belongs right where the progress is shown.
+			int row0 = row1 - rowH - gap;
+			this.gridBottom = row0 - 30;
+			this.addRenderableWidget(new SettingRowButton(
+				left, row0, half, rowH, stagingButtonLabel(), this::toggleStagingPick
+			));
+			SettingRowButton clearStaging = new SettingRowButton(
+				left + half + gap, row0, half, rowH,
+				Component.translatable("screen.chestmemory.clan.staging_clear"),
+				this::clearStagingChests
+			);
+			clearStaging.active = ChestMemoryStorage.get().stagingCount() > 0
+				|| com.chestmemory.client.data.StagingPickMode.isActive();
+			this.addRenderableWidget(clearStaging);
 			boolean soloActive = com.chestmemory.client.litematica.BuildGatherSession.isActive();
 			if (soloActive) {
 				// The screen drives the same flow the N hotkey does — it exposes the existing
@@ -537,6 +603,7 @@ public class ClanGatherScreen extends Screen {
 
 		// EMPTY: nothing to collect from — the body explains the two ways to get a gather,
 		// the buttons take you there.
+		this.renameBox = null;
 		this.gridBottom = -1;
 		this.addRenderableWidget(new SettingRowButton(
 			left, row2, half, rowH,
@@ -552,6 +619,144 @@ public class ClanGatherScreen extends Screen {
 			Component.translatable("screen.chestmemory.clan.back"),
 			this::onClose
 		));
+	}
+
+	/**
+	 * Host settings for the gather: rename, reset every claim, close the session.
+	 * Kicking lives on the Members tab (click a row) — the roster is already there.
+	 */
+	private void initHostSettings(int left, int w, int half, int gap, int rowH, int row2) {
+		this.gridBottom = -1;
+		int y = this.tabsY + 20 + 18;
+		int renameBtnW = 96;
+		this.renameBox = new EditBox(
+			this.font, left, y, w - renameBtnW - gap, rowH,
+			Component.translatable("screen.chestmemory.clan.rename_hint")
+		);
+		this.renameBox.setMaxLength(48);
+		this.renameBox.setHint(Component.translatable("screen.chestmemory.clan.rename_hint"));
+		this.renameBox.setValue(this.renameDraft);
+		this.renameBox.setResponder(v -> this.renameDraft = v);
+		this.addRenderableWidget(this.renameBox);
+		ClanSession cur = ClanSessionManager.session();
+		String currentName = cur != null && cur.schemaName != null ? cur.schemaName : "";
+		SettingRowButton rename = new SettingRowButton(
+			left + w - renameBtnW, y, renameBtnW, rowH,
+			Component.translatable("screen.chestmemory.clan.rename_btn"),
+			() -> {
+				if (this.minecraft == null) {
+					return;
+				}
+				this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+				ClanSessionManager.renameAsync(this.minecraft, this.renameDraft, this::rebuildWidgets);
+			}
+		);
+		rename.active = !ClanSessionManager.isBusy();
+		this.addRenderableWidget(rename);
+		y += rowH + 6;
+
+		this.addRenderableWidget(new SettingRowButton(
+			left, y, w, rowH,
+			this.releaseArmed
+				? Component.translatable("screen.chestmemory.clan.release_all_confirm")
+				: Component.translatable("screen.chestmemory.clan.release_all"),
+			() -> {
+				if (this.minecraft == null) {
+					return;
+				}
+				// Someone's evening of mining hangs off these claims — ask twice.
+				if (!this.releaseArmed) {
+					this.releaseArmed = true;
+					this.rebuildWidgets();
+					return;
+				}
+				this.releaseArmed = false;
+				this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+				ClanSessionManager.releaseClaimsAsync(this.minecraft, this::rebuildWidgets);
+			}
+		));
+		y += rowH + 4;
+
+		this.addRenderableWidget(new SettingRowButton(
+			left, y, w, rowH,
+			this.closeArmed
+				? Component.translatable("screen.chestmemory.clan.close_confirm")
+				: Component.translatable("screen.chestmemory.clan.close_session"),
+			() -> {
+				if (this.minecraft == null) {
+					return;
+				}
+				if (!this.closeArmed) {
+					this.closeArmed = true;
+					this.status = Component.translatable("screen.chestmemory.clan.delete_hint").getString();
+					this.rebuildWidgets();
+					return;
+				}
+				this.closeArmed = false;
+				this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+				ClanSessionManager.leaveAsync(this.minecraft, this::rebuildWidgets);
+			}
+		));
+
+		this.addRenderableWidget(new SettingRowButton(
+			left, row2, half, rowH,
+			Component.translatable("screen.chestmemory.clan.back_to_gather"),
+			() -> {
+				this.hostSettings = false;
+				this.releaseArmed = false;
+				this.closeArmed = false;
+				this.status = "";
+				this.rebuildWidgets();
+			}
+		));
+		this.addRenderableWidget(new SettingRowButton(
+			left + half + gap, row2, half, rowH,
+			Component.translatable("screen.chestmemory.clan.back"),
+			this::onClose
+		));
+	}
+
+	/** «Склад: N» — toggle the pick-warehouse mode shared with the scanner. */
+	private Component stagingButtonLabel() {
+		if (com.chestmemory.client.data.StagingPickMode.isActive()) {
+			return Component.translatable("screen.chestmemory.clan.staging_picking");
+		}
+		return Component.translatable(
+			"screen.chestmemory.clan.staging_btn",
+			ChestMemoryStorage.get().stagingCount()
+		);
+	}
+
+	/**
+	 * Enter or leave warehouse-pick mode. Entering closes the screen: the chests to be
+	 * marked stand in the world, and every one the player opens while the mode is on
+	 * becomes staging (shared with the clan when in a session).
+	 */
+	private void toggleStagingPick() {
+		boolean nowActive = com.chestmemory.client.data.StagingPickMode.toggle();
+		if (nowActive) {
+			this.status = "";
+			this.onClose();
+			return;
+		}
+		this.status = Component.translatable(
+			"screen.chestmemory.clan.staging_saved",
+			ChestMemoryStorage.get().stagingCount()
+		).getString();
+		this.rebuildWidgets();
+	}
+
+	/** Drop every staging mark — locally, and on the hub when a session shares them. */
+	private void clearStagingChests() {
+		com.chestmemory.client.data.StagingPickMode.stop(false);
+		ChestMemoryStorage.get().clearStaging();
+		if (this.minecraft != null && ClanSessionManager.isInSession()) {
+			// Replace the hub's shared list with the now-empty local one, so the old
+			// warehouse stops glowing for every member, not only for whoever cleared it.
+			ClanSessionManager.pushStagingKeysAsync(this.minecraft, true);
+		}
+		this.status = Component.translatable("screen.chestmemory.clan.staging_cleared").getString();
+		this.rebuildWidgets();
 	}
 
 	/**
@@ -583,7 +788,27 @@ public class ClanGatherScreen extends Screen {
 			return;
 		}
 		this.status = Component.translatable("screen.chestmemory.clan.working").getString();
-		ClanSessionManager.claimToggleAsync(this.minecraft, itemId, this::rebuildWidgets);
+		boolean mine = m != null && m.claimedBy != null && m.claimedBy.equals(me);
+		net.minecraft.client.Minecraft mc = this.minecraft;
+		if (mine) {
+			// Giving the item back also drops it as the gather target.
+			ClanSessionManager.claimToggleAsync(mc, itemId, this::rebuildWidgets);
+			if (itemId.equals(com.chestmemory.client.litematica.BuildGatherSession.currentItemId())) {
+				com.chestmemory.client.litematica.BuildGatherSession.dropCurrentClaimFocus(mc);
+			}
+			return;
+		}
+		// Taking an item aims the gather at it the moment the hub confirms — the wiring
+		// the old panel click had, so «взял» still means «пошёл собирать».
+		com.chestmemory.client.litematica.BuildGatherSession.setPendingClaimFocus(itemId);
+		ClanSessionManager.claimToggleAsync(mc, itemId, () -> {
+			if (com.chestmemory.client.litematica.BuildGatherSession.isActive()) {
+				com.chestmemory.client.litematica.BuildGatherSession.focusClaimed(mc, itemId);
+			} else {
+				com.chestmemory.client.litematica.BuildGatherSession.startQueue(mc, itemId, List.of());
+			}
+			this.rebuildWidgets();
+		});
 	}
 
 	/**
@@ -641,6 +866,35 @@ public class ClanGatherScreen extends Screen {
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
 		// Tabs are painted, not widgets, so they are hit-tested here — before the default
 		// handling, which would otherwise swallow the click on the panel background.
+		if (this.tab == TAB_MEMBERS && this.minecraft != null
+			&& ClanSessionManager.isHost(this.minecraft)) {
+			ClanSession sess = ClanSessionManager.session();
+			int idx = this.memberScroll.rowAt(event.x(), event.y(), 20);
+			if (sess != null && idx >= 0 && idx < sess.members.size()) {
+				ClanSession.ClanMember target = sess.members.get(idx);
+				String me = ClanSessionManager.localUuid(this.minecraft);
+				if (target.uuid != null && !target.uuid.equalsIgnoreCase(me)) {
+					// Two clicks: the first arms, the second kicks. A roster row is too
+					// easy to hit for a one-click removal.
+					if (target.uuid.equalsIgnoreCase(this.kickArmUuid)) {
+						this.kickArmUuid = null;
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.kickAsync(
+							this.minecraft, target.uuid,
+							target.name == null ? "?" : target.name,
+							this::rebuildWidgets
+						);
+					} else {
+						this.kickArmUuid = target.uuid;
+						this.status = Component.translatable(
+							"screen.chestmemory.clan.kick_confirm",
+							target.name == null || target.name.isBlank() ? "?" : target.name
+						).getString();
+					}
+					return true;
+				}
+			}
+		}
 		if (this.tab == TAB_GATHER && this.minecraft != null) {
 			int idx = materialAt(event.x(), event.y());
 			if (idx >= 0 && idx < this.materialIds.size()) {
@@ -673,6 +927,9 @@ public class ClanGatherScreen extends Screen {
 			if (t != this.tab) {
 				this.tab = t;
 				this.status = "";
+				this.kickArmUuid = null;
+				this.releaseArmed = false;
+				this.closeArmed = false;
 				this.rebuildWidgets();
 			}
 			return true;
@@ -907,6 +1164,10 @@ public class ClanGatherScreen extends Screen {
 		this.materialIds = java.util.List.of();
 		GatherMode mode = gatherMode();
 		if (mode == GatherMode.CLAN && s != null) {
+			if (this.hostSettings) {
+				drawHostSettings(graphics, s, left, centerX, contentW);
+				return;
+			}
 			drawClanGather(graphics, s, left, centerX, contentW);
 		} else if (mode == GatherMode.SOLO) {
 			drawSoloGather(graphics, left, centerX, contentW);
@@ -1269,6 +1530,36 @@ public class ClanGatherScreen extends Screen {
 				contentW
 			),
 			centerX, mid + 25, ChestGuiStyle.TEXT_MUTED
+		);
+	}
+
+	/** Settings body: the plate for context, captions for the rows init() built. */
+	private void drawHostSettings(
+		GuiGraphicsExtractor graphics,
+		ClanSession s,
+		int left,
+		int centerX,
+		int contentW
+	) {
+		int y = this.tabsY + 22;
+		String schema = s.schemaName == null || s.schemaName.isBlank()
+			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
+			: s.schemaName;
+		drawIdentityPlate(
+			graphics, left, y - 2, contentW,
+			Component.translatable("screen.chestmemory.clan.settings_chip").getString(),
+			ChestGuiStyle.TEXT_GOLD, schema
+		);
+		// The rows are widgets; what needs text is the one action that is NOT here.
+		int hintY = this.tabsY + 20 + 18 + 18 + 6 + 18 + 4 + 18 + 8;
+		ChestGuiStyle.drawCentered(
+			graphics, this.font,
+			ChestGuiStyle.ellipsize(
+				this.font,
+				Component.translatable("screen.chestmemory.clan.settings_kick_hint").getString(),
+				contentW
+			),
+			centerX, hintY, ChestGuiStyle.TEXT_MUTED
 		);
 	}
 

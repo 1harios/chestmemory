@@ -193,16 +193,21 @@ class ClanFlowTest {
 	class Finish {
 
 		@Test
-		@DisplayName("Finish ends the clan session too, not only the local queue")
+		@DisplayName("Ending the session still drops the warehouse — the manager owns it now")
 		void finishLeavesClan() throws Exception {
-			// Reported: pressing "Завершить" left the gather running, because only the local
-			// side was cleared and the session kept polling.
-			String body = methodBody(read(SCREEN), "private void finishGatherMode()");
+			// «Завершить» is gone with the panel's scheme mode; leaving/closing lives on the
+			// gather screen and runs through leaveAsync, which drops the warehouse marks.
 			assertTrue(
-				body.contains("ClanSessionManager.leaveAsync("),
-				"finishing has to end the clan side as well"
+				read(CLAN_SCREEN).contains("ClanSessionManager.leaveAsync("),
+				"the gather screen must end the clan side"
 			);
-			assertTrue(body.contains("clearStaging()"), "and drop the warehouse marks");
+			String manager = read(CLAN);
+			int leave = manager.indexOf("clan_closed");
+			assertTrue(leave > 0, "leave path not found");
+			assertTrue(
+				manager.substring(Math.max(0, leave - 900), leave).contains("clearStaging()"),
+				"leaveAsync must drop warehouse marks"
+			);
 		}
 	}
 
@@ -432,15 +437,23 @@ class ClanFlowTest {
 	class Reachability {
 
 		@Test
-		@DisplayName("The gather button is always clickable")
+		@DisplayName("The gather button is always clickable and leads to the gather screen")
 		void gatherButtonAlwaysClickable() throws Exception {
 			// A clan member who relogged could not continue: Litematica had no material list
-			// yet, so the only button that opens the materials view was disabled with no
-			// explanation. Pressing it now reports why.
-			String body = methodBody(read(SCREEN), "private void updateLitematicaButtonState()");
+			// yet, so the old button was disabled with no explanation. The button now opens
+			// the gather screen unconditionally — the screen itself explains every state.
+			String src = read(SCREEN);
 			assertTrue(
-				body.contains("this.litematicaButton.active = true"),
+				src.contains("this.litematicaButton.active = true"),
 				"the button must not be gated on having a list right now"
+			);
+			assertTrue(
+				src.contains("new ClanGatherScreen(this)"),
+				"the middle button is the single entry to gathering"
+			);
+			assertFalse(
+				src.contains("litematicaBuildMode"),
+				"the panel keeps no schematic mode of its own — no duplicated gather UI"
 			);
 		}
 

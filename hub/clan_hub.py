@@ -178,6 +178,11 @@ def _touch(sess: dict[str, Any]) -> None:
 
 
 def _member_upsert(sess: dict[str, Any], name: str, uuid: str) -> None:
+    # A kicked member must not drift back in through the heartbeat: their client keeps
+    # polling until it notices the kick. Only an explicit join lifts the flag.
+    kicked = sess.get("kicked") or []
+    if uuid and uuid.lower() in {str(k).lower() for k in kicked}:
+        return
     members = sess.setdefault("members", [])
     for m in members:
         if str(m.get("uuid", "")).lower() == uuid.lower():
@@ -188,7 +193,7 @@ def _member_upsert(sess: dict[str, Any], name: str, uuid: str) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ChestMemoryClanHub/2.0"
+    server_version = "ChestMemoryClanHub/3.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
@@ -318,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {
                 "ok": True,
                 "sessions": n,
-                "version": 2,
+                "version": 3,
                 "persistent": True,
                 "dataFile": str(SESSIONS_FILE),
             })
@@ -433,6 +438,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._leave(code, body)
             elif action == "close":
                 self._close(code, body)
+            elif action == "update":
+                self._update(code, body)
+            elif action == "kick":
+                self._kick(code, body)
+            elif action == "release_claims":
+                self._release_claims(code, body)
             else:
                 self._send(404, {"error": "not found"})
             return
@@ -521,6 +532,11 @@ class Handler(BaseHTTPRequestHandler):
             if not sess:
                 self._send(404, {"error": "not found"})
                 return
+            kicked = sess.get("kicked") or []
+            if kicked:
+                sess["kicked"] = [
+                    k for k in kicked if str(k).lower() != uuid.lower()
+                ]
             _member_upsert(sess, name, uuid)
             _touch(sess)
             _save_sessions()
@@ -685,6 +701,87 @@ class Handler(BaseHTTPRequestHandler):
             _save_sessions()
             self._send_session(sess)
 
+    def _host_session(self, code: str, body: dict[str, Any]) -> dict[str, Any] | None:
+        """Session for a host-only action, or None after an error reply.
+
+        Call under _lock. The same absent-uuid hole _close had applies to every
+        host action, so the check lives in one place.
+        """
+        uuid, _ = self._actor(body)
+        sess = _sessions.get(code)
+        if not sess:
+            self._send(404, {"error": "not found"})
+            return None
+        if not uuid or str(sess.get("hostUuid") or "").lower() != uuid.lower():
+            self._send(403, {"error": "only host"})
+            return None
+        return sess
+
+    def _update(self, code: str, body: dict[str, Any]) -> None:
+        """Rename the gather (host only). The name every member sees on their panel."""
+        raw = str(body.get("name") or "").strip()
+        if not raw:
+            self._send(400, {"error": "name required"})
+            return
+        name = raw[:48]
+        with _lock:
+            sess = self._host_session(code, body)
+            if sess is None:
+                return
+            sess["name"] = name
+            sess["schemaName"] = name
+            _touch(sess)
+            _save_sessions()
+            self._send_session(sess)
+
+    def _kick(self, code: str, body: dict[str, Any]) -> None:
+        """Remove a member (host only): claims released, roster row gone, and the
+        heartbeat cannot re-add them — only a fresh join by code can."""
+        target = str(body.get("target") or "").strip().lower()
+        if not target:
+            self._send(400, {"error": "target required"})
+            return
+        with _lock:
+            sess = self._host_session(code, body)
+            if sess is None:
+                return
+            if target == str(sess.get("hostUuid") or "").lower():
+                self._send(400, {"error": "host cannot kick self"})
+                return
+            members = sess.get("members") or []
+            kept = [
+                m for m in members
+                if str(m.get("uuid") or "").lower() != target
+            ]
+            if len(kept) == len(members):
+                self._send(404, {"error": "no such member"})
+                return
+            sess["members"] = kept
+            for m in (sess.get("materials") or {}).values():
+                if str(m.get("claimedBy") or "").lower() == target:
+                    m["claimedBy"] = None
+                    m["claimedName"] = None
+            kicked = sess.setdefault("kicked", [])
+            if target not in {str(k).lower() for k in kicked}:
+                kicked.append(target)
+            _touch(sess)
+            _save_sessions()
+            self._send_session(sess)
+
+    def _release_claims(self, code: str, body: dict[str, Any]) -> None:
+        """Clear every claim (host only) — the reset button for a stalled evening."""
+        with _lock:
+            sess = self._host_session(code, body)
+            if sess is None:
+                return
+            for m in (sess.get("materials") or {}).values():
+                if m.get("claimedBy"):
+                    m["claimedBy"] = None
+                    m["claimedName"] = None
+            _touch(sess)
+            _save_sessions()
+            self._send_session(sess)
+
     def _close(self, code: str, body: dict[str, Any]) -> None:
         uuid, actor_name = self._actor(body)
         with _lock:
@@ -711,7 +808,7 @@ def main() -> None:
         _purge_old()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(
-        "Chest Memory clan hub v2 persistent on http://%s:%s  token=%s  data=%s  sessions=%s"
+        "Chest Memory clan hub v3 persistent on http://%s:%s  token=%s  data=%s  sessions=%s"
         % (HOST, PORT, "yes" if CLAN_TOKEN else "no", SESSIONS_FILE, len(_sessions))
     )
     try:
