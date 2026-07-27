@@ -716,6 +716,21 @@ public final class BuildGatherSession {
 		if (session == null) {
 			return null;
 		}
+		// Click order first: glass claimed before wool means glass is worked first.
+		// The session map's order is the hub's, not the player's.
+		for (String itemId : com.chestmemory.client.clan.ClanSessionManager.myClaimOrder(client)) {
+			if (exclude != null && exclude.equals(itemId)) {
+				continue;
+			}
+			if (skipped.contains(itemId)) {
+				continue;
+			}
+			if (remainingNeed(itemId, client.player) <= 0) {
+				continue;
+			}
+			return itemId;
+		}
+		// Claims with no recorded order (made before a relog) fall back to the map.
 		for (var e : session.materials.entrySet()) {
 			String itemId = e.getKey();
 			if (exclude != null && exclude.equals(itemId)) {

@@ -238,4 +238,118 @@ class ClanHostToolsTest {
 			assertFalse(panel.contains("clanBtnW"), "the 52px header gather button is gone");
 		}
 	}
+	@Nested
+	@DisplayName("Round four: claim order, one-key entry, search, full colour coding")
+	class GatherFlow {
+		private static final String SESSION =
+			"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+		private static final String CLIENT =
+			"src/client/java/com/chestmemory/client/ChestMemoryClient.java";
+
+		@Test
+		@DisplayName("Claims are worked in click order: glass before wool because it was first")
+		void claimOrderIsClickOrder() throws Exception {
+			String manager = read(CLAN);
+			assertTrue(
+				manager.contains("myClaimOrder") && manager.contains("rememberClaimOrder(itemId, unclaim)"),
+				"the manager must record the order claims were clicked in"
+			);
+			String session = read(SESSION);
+			int decl = session.indexOf("private static @Nullable String firstOwnClaim");
+			String body = session.substring(decl, session.indexOf("\n\t}", decl));
+			assertTrue(
+				body.indexOf("myClaimOrder") < body.indexOf("session.materials.entrySet()"),
+				"click order must be consulted before the hub map's arbitrary order"
+			);
+		}
+
+		@Test
+		@DisplayName("A second claim queues; it does not steal the current target")
+		void secondClaimDoesNotSteal() throws Exception {
+			String src = read(CLAN_SCREEN);
+			int decl = src.indexOf("private void claimFromList");
+			String body = src.substring(decl, src.indexOf("\n\t}", decl));
+			assertTrue(
+				body.contains("keepCurrent"),
+				"claiming wool while gathering glass must leave glass as the target"
+			);
+			assertTrue(
+				body.contains("if (!keepCurrent) {"),
+				"the pending focus must not be planted when the target is kept"
+			);
+		}
+
+		@Test
+		@DisplayName("Mid-gather, the panel key opens the gather screen directly")
+		void panelKeyGoesToGather() throws Exception {
+			String client = read(CLIENT);
+			int decl = client.indexOf("while (openPanelKey.consumeClick())");
+			String body = client.substring(decl, decl + 900);
+			assertTrue(
+				body.contains("BuildGatherSession.isActive()")
+					&& body.contains("new com.chestmemory.client.gui.ClanGatherScreen(new ChestMemoryScreen())"),
+				"reopening the panel and clicking «Сбор» every time was the complaint"
+			);
+			assertTrue(
+				body.contains("open instanceof com.chestmemory.client.gui.ClanGatherScreen"),
+				"the same key must close what it opened"
+			);
+		}
+
+		@Test
+		@DisplayName("Search filters the gather and appends memory matches, dimmed")
+		void searchSpansGatherAndMemory() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("private void addGatherSearch("), "search box missing");
+			assertTrue(
+				src.contains("private void appendExternalMatches("),
+				"memory matches must be appended after the gather cells"
+			);
+			assertTrue(
+				src.contains("externalHighlight(clicked)"),
+				"clicking a memory match must glow its chests, not try to claim it"
+			);
+			assertTrue(
+				src.contains("gatherIds.contains(sum.itemId())"),
+				"items already in the gather must not appear twice"
+			);
+		}
+
+		@Test
+		@DisplayName("Every cell carries a stock colour; claims and the target ride the rim")
+		void fullColourCoding() throws Exception {
+			String src = read(CLAN_SCREEN);
+			int clanBody = src.indexOf("private void drawClanGather");
+			int soloBody = src.indexOf("private void drawSoloGather");
+			// green done / blue covered / amber partial / dark none — in both modes.
+			for (int at : new int[]{clanBody, soloBody}) {
+				String body = src.substring(at, src.indexOf("\n\t}", at));
+				assertTrue(
+					body.contains("0x4430E060") && body.contains("0x445CB8E8")
+						&& body.contains("0x44E0A83C") && body.contains("0x50101010"),
+					"all four stock states need a colour"
+				);
+			}
+			assertTrue(
+				src.contains("int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;")
+					&& src.contains("int border = isFocus ? 0xFFFFD56A : 0;"),
+				"people-state must ride the rim so it never fights the stock tint"
+			);
+			int grid = src.indexOf("private int drawMaterialGrid(");
+			assertTrue(
+				src.substring(grid, src.indexOf("\n\t}", grid)).contains("cell.border()"),
+				"the grid must actually paint the ring"
+			);
+		}
+
+		@Test
+		@DisplayName("The pencil sits in the right corner, like the main screen's gear")
+		void pencilOnTheRight() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("this.panelLeft + this.panelW - 16 - 6, this.panelTop + 9, 16"),
+				"the settings icon mirrors the gear's corner"
+			);
+		}
+	}
 }

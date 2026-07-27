@@ -471,6 +471,7 @@ public final class ClanSessionManager {
 				session = null;
 				lastError = null;
 				ClanEventLog.clear();
+				clearClaimOrder();
 				// Warehouse marks came from this gather — shared ones from the clan, local ones
 				// made for it. Leaving means they are no longer drop-off points, so stop
 				// glowing over them. Quiet: session is already null, and pushing here would
@@ -485,6 +486,44 @@ public final class ClanSessionManager {
 				}
 			});
 		});
+	}
+
+	/** Items this player claimed, in click order — the order the gather works them in. */
+	private static final java.util.List<String> myClaimOrder = new java.util.ArrayList<>();
+
+	/**
+	 * The claim order as clicked, pruned to claims the session still shows as this
+	 * player's. Glass claimed before wool means glass is gathered first — the ranking
+	 * has no say between a player's own claims.
+	 */
+	public static java.util.List<String> myClaimOrder(Minecraft mc) {
+		ClanSession s = session;
+		if (s == null) {
+			return java.util.List.of();
+		}
+		String me = localUuid(mc);
+		synchronized (myClaimOrder) {
+			myClaimOrder.removeIf(id -> {
+				ClanSession.ClanMaterial m = s.material(id);
+				return m == null || m.claimedBy == null || !me.equalsIgnoreCase(m.claimedBy);
+			});
+			return java.util.List.copyOf(myClaimOrder);
+		}
+	}
+
+	private static void rememberClaimOrder(String itemId, boolean unclaim) {
+		synchronized (myClaimOrder) {
+			myClaimOrder.remove(itemId);
+			if (!unclaim) {
+				myClaimOrder.add(itemId);
+			}
+		}
+	}
+
+	private static void clearClaimOrder() {
+		synchronized (myClaimOrder) {
+			myClaimOrder.clear();
+		}
 	}
 
 	public static boolean isHost(Minecraft mc) {
@@ -682,6 +721,7 @@ public final class ClanSessionManager {
 						ClanSession prev = session;
 						adoptSession(res.value);
 						lastError = null;
+						rememberClaimOrder(itemId, unclaim);
 						// Always confirm locally with clear who/what
 						String itemName = ChestMemoryStorage.itemDisplayName(itemId);
 						if (unclaim) {
@@ -1033,6 +1073,7 @@ public final class ClanSessionManager {
 								}
 								session = null;
 								ClanEventLog.clear();
+								clearClaimOrder();
 								com.chestmemory.client.data.StagingPickMode.stopQuiet();
 								ChestMemoryStorage.get().clearStaging();
 								chat(mc, Component.translatable("message.chestmemory.clan_kicked_you"));

@@ -148,8 +148,17 @@ public class ChestMemoryClient implements ClientModInitializer {
 		while (openPanelKey.consumeClick()) {
 			var open = ClientScreens.get(client);
 			if (open == null) {
-				ClientScreens.set(client, new ChestMemoryScreen());
-			} else if (open instanceof ChestMemoryScreen) {
+				// Mid-gather the key goes straight to the materials — reopening the panel
+				// and clicking «Сбор» every time was the complaint. «Назад» still lands on
+				// the chest panel, so nothing became unreachable.
+				if (BuildGatherSession.isActive()
+					|| com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+					ClientScreens.set(client, new com.chestmemory.client.gui.ClanGatherScreen(new ChestMemoryScreen()));
+				} else {
+					ClientScreens.set(client, new ChestMemoryScreen());
+				}
+			} else if (open instanceof ChestMemoryScreen
+				|| open instanceof com.chestmemory.client.gui.ClanGatherScreen) {
 				ClientScreens.set(client, null);
 			}
 		}

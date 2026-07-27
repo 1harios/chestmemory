@@ -378,11 +378,13 @@ class ClanUsabilityTest {
 			assertTrue(src.contains("private String codeDraft"), "the draft must be kept");
 			int boxes = src.split("new EditBox\\(", -1).length - 1;
 			int restores = src.split("setValue\\(this\\.codeDraft\\)", -1).length - 1
-				+ src.split("setValue\\(this\\.renameDraft\\)", -1).length - 1;
+				+ src.split("setValue\\(this\\.renameDraft\\)", -1).length - 1
+				+ src.split("setValue\\(this\\.gatherQuery\\)", -1).length - 1;
 			int responders = src.split("this\\.codeDraft = v", -1).length - 1
-				+ src.split("this\\.renameDraft = v", -1).length - 1;
-			// One EditBox is the hub URL field, which has its own value; the code box and
-			// the rename box each keep a draft that survives the rebuild.
+				+ src.split("this\\.renameDraft = v", -1).length - 1
+				+ src.split("this\\.gatherQuery = v", -1).length - 1;
+			// One EditBox is the hub URL field, which has its own value; the code box, the
+			// rename box and the gather search each keep a draft that survives the rebuild.
 			assertEquals(boxes - 1, restores, "every draft box must restore its draft");
 			assertEquals(boxes - 1, responders, "every draft box must record what is typed");
 		}
