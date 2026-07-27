@@ -202,22 +202,21 @@ class ClanUsabilityTest {
 	@DisplayName("A button that cannot be pressed looks different")
 	class DisabledIsVisible {
 		@Test
-		@DisplayName("Measured: disabled is clearly darker in the neutral palette")
+		@DisplayName("Measured: disabled is desaturated, not just another plank")
 		void disabledIsDesaturated() throws Exception {
 			String src = read(STYLE);
 			int row = constant(src, "ROW_WOOD");
 			int disabled = constant(src, "ROW_WOOD_DISABLED");
-			// The vanilla-gray skin has no saturation to drain (both faces are neutral),
-			// so "dead" must be carried by brightness — a full step darker, not a hue shift
-			// the old wooden palette relied on.
+			// The chest skin's planks are deeply saturated, so draining the colour is what
+			// reads as "dead"; the palette is too dark for brightness alone to carry it.
 			assertTrue(
-				saturation(row) < 0.05 && saturation(disabled) < 0.05,
-				"both faces must stay neutral gray: "
+				saturation(row) - saturation(disabled) > 0.4,
+				"disabled must be clearly less saturated than the planks: "
 					+ saturation(row) + " vs " + saturation(disabled)
 			);
 			assertTrue(
-				contrast(row, disabled) > 1.5,
-				"disabled must be clearly darker: " + contrast(row, disabled) + ":1"
+				contrast(row, disabled) > 1.15,
+				"disabled must also differ in brightness: " + contrast(row, disabled) + ":1"
 			);
 		}
 

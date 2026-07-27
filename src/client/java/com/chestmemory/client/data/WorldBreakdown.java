@@ -88,6 +88,29 @@ public final class WorldBreakdown {
 		return total;
 	}
 
+	/** Items inside shulker boxes carried in the inventory. */
+	public static int shulkerCount(Iterable<ContainerRecord> records, String itemId) {
+		int total = 0;
+		for (ContainerRecord r : records) {
+			if (r != null && r.isVirtual() && r.virtualId() != null
+				&& r.virtualId().startsWith("inv_shulker")) {
+				total += r.countOf(itemId);
+			}
+		}
+		return total;
+	}
+
+	/** Items in the ender chest. */
+	public static int enderCount(Iterable<ContainerRecord> records, String itemId) {
+		int total = 0;
+		for (ContainerRecord r : records) {
+			if (r != null && r.isVirtual() && "ender_chest".equals(r.virtualId())) {
+				total += r.countOf(itemId);
+			}
+		}
+		return total;
+	}
+
 	/** Sum of items in groups that are not "here". */
 	public static int elsewhereCount(List<Entry> entries) {
 		int total = 0;

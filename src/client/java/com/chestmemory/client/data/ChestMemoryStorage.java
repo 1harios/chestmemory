@@ -1435,14 +1435,21 @@ public final class ChestMemoryStorage {
 			case DISTANCE -> Comparator
 				.comparingDouble((ItemSummary s) -> s.hasDistance() ? s.nearestDistance() : Double.MAX_VALUE)
 				.thenComparing(ItemSummary::totalCount, Comparator.reverseOrder())
-				.thenComparing(s -> itemDisplayName(s.itemId()), String.CASE_INSENSITIVE_ORDER);
+				.thenComparing(s -> sortName(s.itemId()), String.CASE_INSENSITIVE_ORDER);
 			case NAME -> Comparator
-				.comparing((ItemSummary s) -> itemDisplayName(s.itemId()), String.CASE_INSENSITIVE_ORDER)
+				.comparing((ItemSummary s) -> sortName(s.itemId()), String.CASE_INSENSITIVE_ORDER)
 				.thenComparing(ItemSummary::totalCount, Comparator.reverseOrder());
 			case COUNT -> Comparator
 				.comparing(ItemSummary::totalCount).reversed()
-				.thenComparing(s -> itemDisplayName(s.itemId()), String.CASE_INSENSITIVE_ORDER);
+				.thenComparing(s -> sortName(s.itemId()), String.CASE_INSENSITIVE_ORDER);
 		};
+	}
+
+	/** Display name with legacy colour codes stripped — "§6Меч" must sort under М, not §. */
+	private static String sortName(String itemId) {
+		String name = itemDisplayName(itemId);
+		String stripped = net.minecraft.ChatFormatting.stripFormatting(name);
+		return stripped == null ? name : stripped;
 	}
 
 	/** Back-compat: whole selected profile, no distance filter. */

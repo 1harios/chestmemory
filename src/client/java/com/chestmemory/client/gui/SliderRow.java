@@ -138,17 +138,17 @@ public class SliderRow extends AbstractWidget {
 		int cy = y0 + this.height / 2;
 		int gy = cy - TRACK_H / 2;
 		graphics.fill(tx - 1, gy - 1, tx + TRACK_W + 1, gy + TRACK_H + 1, ChestGuiStyle.WOOD_DARK);
-		graphics.fill(tx, gy, tx + TRACK_W, gy + TRACK_H, 0xFF2E2E2E);
+		graphics.fill(tx, gy, tx + TRACK_W, gy + TRACK_H, 0xFF2E1D0C);
 
 		float t = (max == min) ? 0F : (Mth.clamp(value, min, max) - min) / (float) (max - min);
 		int fillW = Math.round(t * TRACK_W);
 		if (fillW > 0 && this.active) {
-			graphics.fill(tx, gy, tx + fillW, gy + TRACK_H, 0xFF9A9A9A);
+			graphics.fill(tx, gy, tx + fillW, gy + TRACK_H, ChestGuiStyle.BRASS);
 		}
 
 		int kx = tx + Math.round(t * (TRACK_W - KNOB_W));
 		int ky = cy - KNOB_H / 2;
-		int knobColor = !this.active ? ChestGuiStyle.TEXT_DISABLED : (hover ? 0xFFFFFFFF : 0xFFE8E8E8);
+		int knobColor = !this.active ? ChestGuiStyle.TEXT_DISABLED : (hover ? 0xFFFFF6DC : 0xFFEFE0BD);
 		graphics.fill(kx - 1, ky - 1, kx + KNOB_W + 1, ky + KNOB_H + 1, ChestGuiStyle.WOOD_DARK);
 		graphics.fill(kx, ky, kx + KNOB_W, ky + KNOB_H, knobColor);
 	}

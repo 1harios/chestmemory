@@ -854,7 +854,7 @@ public class ClanGatherScreen extends Screen {
 			? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
 			: s.schemaName;
 		graphics.fill(left, y, left + contentW, y + 16, ChestGuiStyle.WOOD_DARK);
-		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 15, 0xFF2E2E2E);
+		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 15, 0xFF32200E);
 		graphics.fill(left + 1, y + 1, left + contentW - 1, y + 2,
 			ChestGuiStyle.withAlpha(0xFFFFFF, 0.18F));
 		ChestGuiStyle.drawCentered(

@@ -230,7 +230,7 @@ public class ItemGridWidget extends AbstractWidget {
 			int barY = this.getY() + (int) ((this.height - barH) * (scrollRow / (float) maxScrollRow()));
 			graphics.fill(this.getX() + this.width - 3, this.getY() + 2, this.getX() + this.width - 1, this.getY() + this.height - 2, 0x88000000);
 			graphics.fill(this.getX() + this.width - 3, barY, this.getX() + this.width - 1, barY + barH,
-				this.draggingScrollbar ? 0xFFB8B8B8 : 0xFF8B8B8B);
+				this.draggingScrollbar ? ChestGuiStyle.BRASS_BRIGHT : ChestGuiStyle.BRASS);
 		}
 
 		if (hoveredIndex >= 0 && hoveredIndex < items.size()) {
@@ -255,17 +255,16 @@ public class ItemGridWidget extends AbstractWidget {
 		List<Component> lines = new ArrayList<>();
 		var storage = com.chestmemory.client.data.ChestMemoryStorage.get();
 
-		// ── Name (+ base name for renamed items), enchantments — as vanilla shows them ──
-		String custom = com.chestmemory.client.data.ItemStackKeys.customNameOf(s.itemId());
-		if (custom != null) {
-			// A renamed item shows its name in white italics, exactly like vanilla.
-			lines.add(Component.literal(custom)
-				.withStyle(net.minecraft.ChatFormatting.WHITE, net.minecraft.ChatFormatting.ITALIC));
-			lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
-				.copy().withStyle(net.minecraft.ChatFormatting.GRAY));
+		// ── Name exactly as vanilla draws it: rarity colour (aqua for enchanted gear,
+		// yellow for uncommon, …), italics for renamed items. The stack is rebuilt from
+		// the key with its enchantments and custom name, so getStyledHoverName() is the
+		// same call vanilla's own tooltip makes — colours in renamed names included.
+		if (com.chestmemory.client.data.ItemStackKeys.isKnown(s.itemId())) {
+			lines.add(resolveStack(s.itemId()).getStyledHoverName());
 		} else {
-			lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
-				.copy().withStyle(net.minecraft.ChatFormatting.WHITE));
+			// Removed-mod item: no registry entry to style, show the raw id plainly.
+			lines.add(Component.literal(com.chestmemory.client.data.ItemStackKeys.baseId(s.itemId()))
+				.withStyle(net.minecraft.ChatFormatting.WHITE));
 		}
 		if (com.chestmemory.client.data.ItemStackKeys.hasEnchantData(s.itemId())) {
 			for (String name : com.chestmemory.client.data.ItemStackKeys.enchantNames(s.itemId())) {
@@ -317,12 +316,16 @@ public class ItemGridWidget extends AbstractWidget {
 		com.chestmemory.client.data.ChestMemoryStorage storage
 	) {
 		// Amount, with real stack size — 16 for pearls, 1 for tools, not always 64.
+		// Compact: "×372 (5 ст. + 52)"; the stack size itself is noise here.
 		int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
-		if (s.fullStacks(per) > 0) {
+		int stacks = s.fullStacks(per);
+		int rem = s.remainder(per);
+		if (stacks > 0 && rem > 0) {
 			lines.add(gray(Component.translatable(
-				"screen.chestmemory.tooltip.amount_stacks",
-				s.totalCount(), s.fullStacks(per), per, s.remainder(per)
-			)));
+				"screen.chestmemory.tooltip.amount_stacks", s.totalCount(), stacks, rem)));
+		} else if (stacks > 0) {
+			lines.add(gray(Component.translatable(
+				"screen.chestmemory.tooltip.amount_stacks_even", s.totalCount(), stacks)));
 		} else {
 			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount())));
 		}
@@ -347,7 +350,6 @@ public class ItemGridWidget extends AbstractWidget {
 		List<com.chestmemory.client.data.ContainerRecord> all = storage.allContainers();
 		List<com.chestmemory.client.data.WorldBreakdown.Entry> groups =
 			com.chestmemory.client.data.WorldBreakdown.of(all, s.itemId(), playerDim, currentTag);
-		int personal = com.chestmemory.client.data.WorldBreakdown.personalCount(all, s.itemId());
 		// Only worth lines when the answer is not simply "all of it is right here".
 		boolean informative = groups.size() > 1
 			|| (groups.size() == 1 && !groups.getFirst().here());
@@ -369,8 +371,14 @@ public class ItemGridWidget extends AbstractWidget {
 				shown++;
 			}
 		}
-		if (personal > 0) {
-			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.personal", personal)));
+		// Personal storage, split the way players think about it: shulkers on you vs ender.
+		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(all, s.itemId());
+		int inEnder = com.chestmemory.client.data.WorldBreakdown.enderCount(all, s.itemId());
+		if (inShulkers > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.shulkers", inShulkers)));
+		}
+		if (inEnder > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.ender", inEnder)));
 		}
 
 		if (live) {

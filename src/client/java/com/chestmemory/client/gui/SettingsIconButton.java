@@ -43,9 +43,9 @@ public class SettingsIconButton extends AbstractWidget {
 		int y1 = y0 + this.height;
 
 		// Wood plate
-		graphics.fill(x0, y0, x1, y1, hover ? 0xFFFFFFFF : ChestGuiStyle.WOOD_DARK);
+		graphics.fill(x0, y0, x1, y1, hover ? ChestGuiStyle.TEXT_LIGHT : ChestGuiStyle.WOOD_DARK);
 		graphics.fill(x0 + 1, y0 + 1, x1 - 1, y1 - 1, hover ? ChestGuiStyle.ROW_WOOD_HOVER : ChestGuiStyle.ROW_WOOD);
-		graphics.fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, 0xFF565656);
+		graphics.fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, 0xFF3E2814);
 
 		// Simple gear icon (center hub + teeth)
 		int cx = x0 + this.width / 2;

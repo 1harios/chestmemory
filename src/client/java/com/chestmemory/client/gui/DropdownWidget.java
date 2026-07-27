@@ -259,7 +259,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 			graphics.fill(x1 - 4, top + 2, x1 - 2, top + listH - 2, 0x66000000);
 			int thumbH = Math.max(6, listH * visible / options.size());
 			int thumbY = top + (int) ((listH - thumbH) * (scroll / (float) Math.max(1, maxScroll)));
-			graphics.fill(x1 - 4, thumbY, x1 - 2, thumbY + thumbH, 0xFF8B8B8B);
+			graphics.fill(x1 - 4, thumbY, x1 - 2, thumbY + thumbH, ChestGuiStyle.BRASS);
 		}
 	}
 

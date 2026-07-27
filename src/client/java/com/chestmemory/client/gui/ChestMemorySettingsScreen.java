@@ -749,7 +749,7 @@ public class ChestMemorySettingsScreen extends Screen {
 			int barY = this.viewTop + (int) ((trackH - barH) * (this.scrollY / (float) max));
 			graphics.fill(trackX, this.viewTop, trackX + 4, this.viewBottom, 0x66000000);
 			graphics.fill(trackX, barY, trackX + 4, barY + barH,
-				this.draggingScrollbar ? 0xFFB8B8B8 : 0xFF8B8B8B);
+				this.draggingScrollbar ? ChestGuiStyle.BRASS_BRIGHT : ChestGuiStyle.BRASS);
 		}
 	}
 

@@ -413,7 +413,7 @@
 	"screen.chestmemory.filters.value.show": "%s · %s ▾",
 	"screen.chestmemory.filters.value.hide": "свернуть ▴",
 	"screen.chestmemory.tooltip.amount": "Всего: ×%s",
-	"screen.chestmemory.tooltip.amount_stacks": "Всего: ×%s (%s ст. по %s + %s)",
+	"screen.chestmemory.tooltip.amount_stacks": "Всего: ×%s (%s ст. + %s)",
 	"screen.chestmemory.tooltip.containers_nearest": "Сундуков: %s · до ближайшего: %s м",
 	"screen.chestmemory.tooltip.where": "Где лежит:",
 	"screen.chestmemory.tooltip.where_line_here": "Здесь: ×%s (%s сунд.)",
@@ -435,5 +435,8 @@
 	"screen.chestmemory.settings.countstyle.outline": "обводка",
 	"screen.chestmemory.settings.countstyle.plate": "плашка",
 	"screen.chestmemory.settings.countstyle.plain": "чистый",
-	"screen.chestmemory.settings.unit.percent": "%s%%"
+	"screen.chestmemory.settings.unit.percent": "%s%%",
+	"screen.chestmemory.tooltip.amount_stacks_even": "Всего: ×%s (%s ст.)",
+	"screen.chestmemory.tooltip.shulkers": "В шалкерах: ×%s",
+	"screen.chestmemory.tooltip.ender": "Эндер-сундук: ×%s"
 }

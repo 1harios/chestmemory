@@ -114,12 +114,17 @@ class WorldBreakdownTest {
 	void personalStorage() {
 		ContainerRecord ender = ContainerRecord.virtual("ender_chest", "ender_chest", "minecraft:overworld");
 		ender.setItems(Map.of("minecraft:diamond", 9));
-		List<ContainerRecord> records = List.of(ender);
+		ContainerRecord shulker = ContainerRecord.virtual("inventory_shulker", "inv_shulker_3", "minecraft:overworld");
+		shulker.setItems(Map.of("minecraft:diamond", 4));
+		List<ContainerRecord> records = List.of(ender, shulker);
 
 		List<WorldBreakdown.Entry> groups =
 			WorldBreakdown.of(records, "minecraft:diamond", "minecraft:overworld", null);
 
 		assertTrue(groups.isEmpty(), "virtual records never form world groups");
-		assertEquals(9, WorldBreakdown.personalCount(records, "minecraft:diamond"));
+		assertEquals(13, WorldBreakdown.personalCount(records, "minecraft:diamond"));
+		// The tooltip splits personal storage the way players think about it.
+		assertEquals(9, WorldBreakdown.enderCount(records, "minecraft:diamond"));
+		assertEquals(4, WorldBreakdown.shulkerCount(records, "minecraft:diamond"));
 	}
 }

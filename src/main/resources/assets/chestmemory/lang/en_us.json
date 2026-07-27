@@ -413,7 +413,7 @@
 	"screen.chestmemory.filters.value.show": "%s · %s ▾",
 	"screen.chestmemory.filters.value.hide": "collapse ▴",
 	"screen.chestmemory.tooltip.amount": "Total: ×%s",
-	"screen.chestmemory.tooltip.amount_stacks": "Total: ×%s (%s st. of %s + %s)",
+	"screen.chestmemory.tooltip.amount_stacks": "Total: ×%s (%s st. + %s)",
 	"screen.chestmemory.tooltip.containers_nearest": "Chests: %s · nearest: %s m",
 	"screen.chestmemory.tooltip.where": "Where it lies:",
 	"screen.chestmemory.tooltip.where_line_here": "Here: ×%s (%s chests)",
@@ -435,5 +435,8 @@
 	"screen.chestmemory.settings.countstyle.outline": "outline",
 	"screen.chestmemory.settings.countstyle.plate": "plate",
 	"screen.chestmemory.settings.countstyle.plain": "plain",
-	"screen.chestmemory.settings.unit.percent": "%s%%"
+	"screen.chestmemory.settings.unit.percent": "%s%%",
+	"screen.chestmemory.tooltip.amount_stacks_even": "Total: ×%s (%s st.)",
+	"screen.chestmemory.tooltip.shulkers": "In shulkers: ×%s",
+	"screen.chestmemory.tooltip.ender": "Ender chest: ×%s"
 }

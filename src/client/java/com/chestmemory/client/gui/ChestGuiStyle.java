@@ -9,47 +9,55 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.ARGB;
 
 /**
- * Shared look of every screen in the mod: a clean vanilla-inventory skin.
+ * Shared look of every screen in the mod: a chest.
  * <p>
- * One panel frame, one button face, one tab strip, one way to draw a count in a slot —
- * defined here once so the item panel, settings and clan screens read as one interface.
- * The palette deliberately stays inside vanilla's grays (panel #C6C6C6, bevels white /
- * #555555, dark #404040 titles); colour is reserved for information, not decoration.
+ * The panel is built the way the block is — an oak-plank field with visible plank seams,
+ * a darker wooden rim, and the iron latch on the top edge. Buttons are dark plank strips
+ * with cream captions; the accents (scrollbars, slider fills) take the brass of a latch.
+ * One frame, one button face, one tab strip, one way to draw a count in a slot — defined
+ * here once so the item panel, settings and clan screens read as one interface, and
+ * colour beyond the wood is reserved for information, not decoration.
  */
 public final class ChestGuiStyle {
 	public static final Identifier SLOT_SPRITE = Identifier.withDefaultNamespace("container/slot");
 
 	// ── Text ── (ARGB — alpha MUST be non-zero for text in 26.2)
-	/** Titles on the light panel — vanilla screen-title gray. */
-	public static final int TEXT_TITLE = 0xFF404040;
-	public static final int TEXT_BODY = 0xFF404040;
-	/** Captions on buttons and dark rows — vanilla button white. */
-	public static final int TEXT_LIGHT = 0xFFFFFFFF;
-	/** Emphasis (kept for HUD numbers); rows use {@link #VALUE_TEXT} instead. */
+	/** Titles on the plank field — dark walnut, the tone of burned-in lettering. */
+	public static final int TEXT_TITLE = 0xFF2E1B08;
+	public static final int TEXT_BODY = 0xFF3A2410;
+	/** Captions on dark plank buttons — cream, like painted wood. */
+	public static final int TEXT_LIGHT = 0xFFF2E3C2;
+	/** Emphasis (kept for HUD numbers). */
 	public static final int TEXT_GOLD = 0xFFFFD56A;
 	/** Right-aligned values on rows: present but quieter than the caption. */
-	public static final int VALUE_TEXT = 0xFFCFCFCF;
-	/** Secondary text on the light panel. */
-	public static final int TEXT_MUTED = 0xFF6E6E6E;
+	public static final int VALUE_TEXT = 0xFFD9C39A;
+	/** Secondary text on the plank field. */
+	public static final int TEXT_MUTED = 0xFF6E522E;
 	public static final int TEXT_COUNT = 0xFFFFFFFF;
 	public static final int TEXT_COUNT_SHADOW = 0xFF000000;
 
-	// ── Frame / faces ──
-	// The historical names are kept (they are referenced across every screen); the values
-	// now describe the vanilla skin: outline, shadow bevel, highlight bevel.
-	public static final int WOOD_DARK = 0xFF000000;
-	public static final int WOOD_MID = 0xFF555555;
-	public static final int WOOD_LIGHT = 0xFFFFFFFF;
-	public static final int LATCH = 0xFFE0C040;
-	public static final int PANEL_INNER = 0xFFC6C6C6;
+	// ── Frame / faces — the chest's wood ──
+	public static final int WOOD_DARK = 0xFF241305;
+	public static final int WOOD_MID = 0xFF7A4E22;
+	public static final int WOOD_LIGHT = 0xFF9C6B33;
+	/** Iron of the chest latch. */
+	public static final int LATCH = 0xFFA8A8A8;
+	/** The oak-plank field every screen sits on. */
+	public static final int PANEL_INNER = 0xFFB8945F;
 	/** Recessed border for trays and inset plates. */
-	public static final int PANEL_BORDER = 0xFF373737;
-	public static final int HEADER_BG = 0xFFC6C6C6;
-	public static final int HEADER_LINE = 0xFF8B8B8B;
+	public static final int PANEL_BORDER = 0xFF2A1708;
+	public static final int HEADER_BG = 0xFFB8945F;
+	/** Dark half of a plank seam (light half is PLANK_SEAM_LIGHT). */
+	public static final int HEADER_LINE = 0xFF8F6B3B;
+	/** Light half of an engraved plank seam. */
+	public static final int PLANK_SEAM_LIGHT = 0xFFC8A36C;
+	/** Brass accent — scrollbar thumbs, slider fills. */
+	public static final int BRASS = 0xFFB98F45;
+	public static final int BRASS_BRIGHT = 0xFFDCB45E;
 	public static final int ROW_HOVER = 0x66FFFFFF;
 	public static final int ROW_BG = 0x33000000;
-	public static final int BADGE_BG = 0xEE1C1C1C;
-	public static final int BADGE_BORDER = 0xFFA0A0A0;
+	public static final int BADGE_BG = 0xEE1C1208;
+	public static final int BADGE_BORDER = 0xFFB98F45;
 	public static final int VIGNETTE = 0xB0000000;
 
 	/** Height of title header area (title + "you are here"). */
@@ -73,33 +81,45 @@ public final class ChestGuiStyle {
 	}
 
 	/**
-	 * The window frame: vanilla-inventory style. Black outline with notched corners, light
-	 * gray face, white top-left bevel, dark bottom-right bevel — the exact grammar of every
-	 * vanilla container screen, so the panel feels native next to a chest GUI.
+	 * The window frame, built like the chest block itself: a dark outline, a wooden rim
+	 * with bevels, an oak-plank field with visible plank seams — and the iron latch
+	 * centered on the top edge, which is what makes a box read as a chest.
 	 */
 	public static void drawChestPanel(GuiGraphicsExtractor graphics, int left, int top, int width, int height) {
-		int l = left - 3;
-		int t = top - 3;
-		int r = left + width + 3;
-		int b = top + height + 3;
+		int l = left - 4;
+		int t = top - 4;
+		int r = left + width + 4;
+		int b = top + height + 4;
 
-		// Outline with cut corners (vanilla's rounded feel)
-		graphics.fill(l + 1, t, r - 1, b, WOOD_DARK);
-		graphics.fill(l, t + 1, r, b - 1, WOOD_DARK);
-		// Face
-		graphics.fill(l + 1, t + 1, r - 1, b - 1, PANEL_INNER);
-		// Bevels: light falls from the top-left, shadow pools bottom-right
-		graphics.fill(l + 1, t + 1, r - 2, t + 3, WOOD_LIGHT);
-		graphics.fill(l + 1, t + 1, l + 3, b - 2, WOOD_LIGHT);
-		graphics.fill(l + 2, b - 3, r - 1, b - 1, WOOD_MID);
-		graphics.fill(r - 3, t + 2, r - 1, b - 1, WOOD_MID);
-		// Corner blends where the bevels meet
-		graphics.fill(r - 3, t + 1, r - 1, t + 3, HEADER_LINE);
-		graphics.fill(l + 1, b - 3, l + 3, b - 1, HEADER_LINE);
+		// Outline with cut corners
+		graphics.fill(l + 1, t, r - 1, b, 0xFF160B02);
+		graphics.fill(l, t + 1, r, b - 1, 0xFF160B02);
+		// Wooden rim band
+		graphics.fill(l + 1, t + 1, r - 1, b - 1, WOOD_MID);
+		graphics.fill(l + 1, t + 1, r - 2, t + 2, WOOD_LIGHT);
+		graphics.fill(l + 1, t + 1, l + 2, b - 2, WOOD_LIGHT);
+		graphics.fill(l + 2, b - 2, r - 1, b - 1, 0xFF4A2C10);
+		graphics.fill(r - 2, t + 2, r - 1, b - 1, 0xFF4A2C10);
+		// Seam between rim and field, then the plank field itself
+		graphics.fill(left - 1, top - 1, left + width + 1, top + height + 1, PANEL_BORDER);
+		graphics.fill(left, top, left + width, top + height, PANEL_INNER);
 
-		// Engraved groove under the header band (dark line + light line = pressed-in seam)
+		// Plank seams across the field — subtle, so content stays readable on top
+		for (int py = top + HEADER_H + 12; py < top + height - 8; py += 16) {
+			graphics.fill(left + 3, py, left + width - 3, py + 1, withAlpha(0x000000, 0.10F));
+			graphics.fill(left + 3, py + 1, left + width - 3, py + 2, withAlpha(0xFFFFFF, 0.07F));
+		}
+
+		// Engraved groove under the header band
 		graphics.fill(left + 6, top + HEADER_H - 2, left + width - 6, top + HEADER_H - 1, HEADER_LINE);
-		graphics.fill(left + 6, top + HEADER_H - 1, left + width - 6, top + HEADER_H, WOOD_LIGHT);
+		graphics.fill(left + 6, top + HEADER_H - 1, left + width - 6, top + HEADER_H, PLANK_SEAM_LIGHT);
+
+		// The iron latch, centered on the top rim — the chest's signature
+		int midX = left + width / 2;
+		graphics.fill(midX - 8, top - 6, midX + 8, top + 3, 0xFF2B2B2B);
+		graphics.fill(midX - 7, top - 5, midX + 7, top + 2, LATCH);
+		graphics.fill(midX - 7, top - 5, midX + 7, top - 4, 0xFFD8D8D8);
+		graphics.fill(midX - 1, top - 2, midX + 1, top + 2, 0xFF2B2B2B);
 	}
 
 	public static void drawSlot(GuiGraphicsExtractor graphics, int x, int y) {
@@ -123,32 +143,32 @@ public final class ChestGuiStyle {
 		int ruleRight = left + width;
 		if (ruleRight > ruleLeft) {
 			graphics.fill(ruleLeft, y + 4, ruleRight, y + 5, HEADER_LINE);
-			graphics.fill(ruleLeft, y + 5, ruleRight, y + 6, WOOD_LIGHT);
+			graphics.fill(ruleLeft, y + 5, ruleRight, y + 6, PLANK_SEAM_LIGHT);
 		}
 	}
 
-	/** Button face tones (names kept from the wooden skin; values are the vanilla grays). */
-	public static final int ROW_WOOD = 0xFF6E6E6E;
-	public static final int ROW_WOOD_HOVER = 0xFF7F7F7F;
+	/** Dark plank strips that act as buttons. */
+	public static final int ROW_WOOD = 0xFF6E4218;
+	public static final int ROW_WOOD_HOVER = 0xFF7F4E1F;
 	/**
-	 * A neutral palette cannot drain saturation to say "dead" the way the wooden skin
-	 * could, so a disabled face leans on brightness alone: 1.8:1 darker than the live
-	 * face, plus the flatness (no bevel) drawn in {@link #drawSettingRow}.
+	 * Wood is deeply saturated, so a dead button drains its colour instead of chasing
+	 * brightness: a near-grey plank reads as inert next to the warm live ones, and the
+	 * flatness (no bevel, see {@link #drawSettingRow}) confirms it.
 	 */
-	public static final int ROW_WOOD_DISABLED = 0xFF464646;
+	public static final int ROW_WOOD_DISABLED = 0xFF3F3A32;
 
 	/** Caption of a disabled row: 5:1 on the disabled face — readable, clearly dimmer. */
-	public static final int TEXT_DISABLED = 0xFFBDBDBD;
+	public static final int TEXT_DISABLED = 0xFFB5AE9F;
 
-	/** Secondary text on a button face. */
-	public static final int TEXT_ON_WOOD_MUTED = 0xFFB8B8B8;
+	/** Secondary text on a plank button. */
+	public static final int TEXT_ON_WOOD_MUTED = 0xFFCDB58C;
 
 	/** Face of the selected tab (legacy constant; the tab strip no longer draws boxes). */
-	public static final int TAB_ACTIVE = 0xFFE0E0E0;
+	public static final int TAB_ACTIVE = 0xFFEFE0BD;
 
 	/**
-	 * A row that acts as a button: vanilla grammar — black outline, gray face, white
-	 * outline on hover. Disabled rows go dark and flat.
+	 * A row that acts as a button: a dark plank strip with a cream caption; hovering
+	 * lights the plank and rims it in cream. Disabled rows go grey and flat.
 	 */
 	public static void drawSettingRow(
 		GuiGraphicsExtractor graphics,
@@ -159,7 +179,7 @@ public final class ChestGuiStyle {
 		boolean hovered,
 		boolean enabled
 	) {
-		int border = !enabled ? PANEL_BORDER : (hovered ? 0xFFFFFFFF : WOOD_DARK);
+		int border = !enabled ? PANEL_BORDER : (hovered ? TEXT_LIGHT : WOOD_DARK);
 		int face = !enabled ? ROW_WOOD_DISABLED : (hovered ? ROW_WOOD_HOVER : ROW_WOOD);
 		graphics.fill(x, y, x + width, y + height, border);
 		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, face);
@@ -186,7 +206,7 @@ public final class ChestGuiStyle {
 	) {
 		float f = Math.max(0F, Math.min(1F, fraction));
 		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF2A2A2A);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF241708);
 		int fill = (int) ((width - 2) * f);
 		if (fill > 0) {
 			// Amber while gathering, green once everything is in — colour as information.
@@ -210,7 +230,7 @@ public final class ChestGuiStyle {
 		int w = Math.max(minWidth, textW + 24);
 		int x = centerX - w / 2;
 		graphics.fill(x, y, x + w, y + 20, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + w - 1, y + 19, 0xFF2E2E2E);
+		graphics.fill(x + 1, y + 1, x + w - 1, y + 19, 0xFF32200E);
 		graphics.fill(x + 1, y + 1, x + w - 1, y + 2, withAlpha(0xFFFFFF, 0.16F));
 		graphics.text(font, code, centerX - textW / 2 + 1, y + 7, 0xFF000000, false);
 		graphics.text(font, code, centerX - textW / 2, y + 6, TEXT_LIGHT, false);
@@ -263,7 +283,7 @@ public final class ChestGuiStyle {
 	) {
 		// Flat and recessed: it carries information, so it must not read as pressable.
 		graphics.fill(x, y, x + width, y + height, WOOD_DARK);
-		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF3A3A3A);
+		graphics.fill(x + 1, y + 1, x + width - 1, y + height - 1, 0xFF32200E);
 		int cy = y + height / 2;
 		// Lamp with a dark rim, so it stays visible against the plate.
 		graphics.fill(x + 6, cy - 4, x + 12, cy + 2, withAlpha(0x000000, 0.45F));
@@ -478,9 +498,9 @@ public final class ChestGuiStyle {
 		int hovered
 	) {
 		int[] xs = tabBounds(font, labels, left, width);
-		// Engraved baseline across the full strip
+		// Engraved plank seam as the baseline
 		graphics.fill(left, y + 12, left + width, y + 13, HEADER_LINE);
-		graphics.fill(left, y + 13, left + width, y + 14, WOOD_LIGHT);
+		graphics.fill(left, y + 13, left + width, y + 14, PLANK_SEAM_LIGHT);
 		for (int i = 0; i < labels.length; i++) {
 			int tx = xs[i];
 			int tw = xs[i + 1] - tx;
@@ -491,7 +511,7 @@ public final class ChestGuiStyle {
 			} else if (i == hovered) {
 				graphics.fill(tx + 3, y + 12, tx + tw - 3, y + 13, TEXT_MUTED);
 			}
-			int color = on ? TEXT_TITLE : (i == hovered ? 0xFF565656 : 0xFF7A7A7A);
+			int color = on ? TEXT_TITLE : (i == hovered ? 0xFF4A2F12 : 0xFF6B4A24);
 			String text = ellipsize(font, labels[i].getString(), tw - 8);
 			drawCentered(graphics, font, text, tx + tw / 2, y + 2, color);
 		}
