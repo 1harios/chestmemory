@@ -294,7 +294,7 @@ class ClanUsabilityTest {
 		void doubleSwitchIsRejected() throws Exception {
 			String screen = read(CLAN_SCREEN);
 			int decl = screen.indexOf("public boolean mouseClicked");
-			String body = screen.substring(decl, decl + 900);
+			String body = screen.substring(decl, decl + 1600);
 			assertTrue(
 				body.contains("ClanSessionManager.switchingTo() != null"),
 				"clicking another row mid-switch must not start a second one"

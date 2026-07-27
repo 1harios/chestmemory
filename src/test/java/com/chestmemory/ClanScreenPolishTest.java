@@ -231,9 +231,8 @@ class ClanScreenPolishTest {
 		void joinNeedsACode() throws Exception {
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("joinRow.active = !this.codeDraft.isBlank()")
-					&& src.contains("joinBtn.active = !switching && !this.codeDraft.isBlank()"),
-				"both branches must disable join without a code, rather than failing on click"
+				src.contains("joinBtn.active = !switching && !this.codeDraft.isBlank()"),
+				"join must be greyed without a code, rather than failing on click"
 			);
 		}
 
@@ -242,7 +241,7 @@ class ClanScreenPolishTest {
 		void retryReplacesBack() throws Exception {
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("boolean hubDown = ClanSessionManager.hubState()")
+				src.contains("boolean hubDown = !in && ClanSessionManager.hubState()")
 					&& src.contains("screen.chestmemory.clan.hub_retry"),
 				"when the hub is down the useful action is 'try again', not 'back'"
 			);

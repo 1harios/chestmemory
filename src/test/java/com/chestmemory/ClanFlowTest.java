@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -449,14 +450,15 @@ class ClanFlowTest {
 			// Reported: after leaving one gather there was no way to pick another already joined.
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("drawGatherList(graphics, null, left, contentW)"),
-				"the list has to render with no active gather"
+				src.contains("case TAB_LIST -> drawGatherList(graphics, s, left, contentW);"),
+				"the list has to render with no active gather (s is null then)"
 			);
-			int init = src.indexOf("boolean in = ClanSessionManager.isInSession();");
-			assertTrue(init > 0, "init not found");
-			String tail = src.substring(init, src.indexOf("if (!in) {", init));
 			assertTrue(
-				!tail.contains("this.tabsY = -1;"),
+				src.contains(": new int[]{TAB_GATHER, TAB_LIST}"),
+				"outside a session the strip still offers the gathers list"
+			);
+			assertFalse(
+				src.contains("this.tabsY = -1;"),
 				"the tab strip must exist outside a session, or the list cannot be opened"
 			);
 		}

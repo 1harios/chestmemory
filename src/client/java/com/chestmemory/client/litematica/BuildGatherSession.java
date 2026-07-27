@@ -900,6 +900,21 @@ public final class BuildGatherSession {
 		DimensionChoice dimensionFilter,
 		double rangeBlocks
 	) {
+		return buildPanelList(client, query, scope, dimensionFilter, rangeBlocks, filter);
+	}
+
+	/**
+	 * Same list under an explicit filter. The gather screen always wants ALL, and must not
+	 * inherit whatever the Ё panel's cycling filter happens to be set to at the moment.
+	 */
+	public static List<ItemSummary> buildPanelList(
+		Minecraft client,
+		String query,
+		ListScope scope,
+		DimensionChoice dimensionFilter,
+		double rangeBlocks,
+		BuildFilter useFilter
+	) {
 		List<LitematicaCompat.MaterialNeed> needs = LitematicaAccess.missingMaterials();
 		if (needs.isEmpty()) {
 			return List.of();
@@ -958,7 +973,7 @@ public final class BuildGatherSession {
 				need.total()
 			);
 
-			if (!filter.matches(summary)) {
+			if (!useFilter.matches(summary)) {
 				continue;
 			}
 			out.add(summary);
