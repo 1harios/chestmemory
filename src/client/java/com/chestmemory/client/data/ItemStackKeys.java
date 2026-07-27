@@ -285,6 +285,11 @@ public final class ItemStackKeys {
 		return blob;
 	}
 
+	/** Localized enchantment names encoded in a key — for rich tooltips. */
+	public static List<String> enchantNames(String key) {
+		return enchantDisplayNames(key);
+	}
+
 	private static List<String> enchantDisplayNames(String key) {
 		List<String> names = new ArrayList<>();
 		if (!hasEnchantData(key)) {

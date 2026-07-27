@@ -70,6 +70,12 @@ public final class ModSettings {
 	// --- Panel ---
 	/** Remember filter expand state. */
 	private boolean filtersExpanded = false;
+	/**
+	 * Chat notice when a selected item turns out to lie in another world / dimension.
+	 * On a multiworld server "I clicked it and nothing glows" almost always means exactly
+	 * that, so the panel says it out loud unless the player turns it off.
+	 */
+	private boolean notifyOtherWorld = true;
 
 	// --- Clan hub ---
 	/** Base URL of clan gather hub, e.g. https://clan.example.com */
@@ -545,6 +551,19 @@ public final class ModSettings {
 	public void setFiltersExpanded(boolean v) {
 		this.filtersExpanded = v;
 		save();
+	}
+
+	public boolean notifyOtherWorld() {
+		return notifyOtherWorld;
+	}
+
+	public void setNotifyOtherWorld(boolean v) {
+		this.notifyOtherWorld = v;
+		save();
+	}
+
+	public void toggleNotifyOtherWorld() {
+		setNotifyOtherWorld(!notifyOtherWorld);
 	}
 
 	// --- Clan ---

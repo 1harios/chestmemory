@@ -58,10 +58,21 @@ public class ItemGridWidget extends AbstractWidget {
 		this.scrollRow = 0;
 		this.hoveredIndex = -1;
 		this.iconCache.clear();
+		this.tooltipItemId = null;
+		this.tooltipLines = List.of();
 		for (ItemSummary s : this.items) {
 			this.iconCache.computeIfAbsent(s.itemId(), com.chestmemory.client.data.ItemStackKeys::toStack);
 		}
 	}
+
+	/**
+	 * Composed tooltip for the hovered item. Building it walks the container list (world
+	 * breakdown) and resolves names, so it is cached per hovered id and refreshed on a
+	 * timer instead of being rebuilt every frame.
+	 */
+	private @org.jspecify.annotations.Nullable String tooltipItemId;
+	private long tooltipBuiltMs;
+	private List<Component> tooltipLines = List.of();
 
 	/** How many columns fit without stretching slots. */
 	private int cols() {
@@ -225,89 +236,201 @@ public class ItemGridWidget extends AbstractWidget {
 
 		if (hoveredIndex >= 0 && hoveredIndex < items.size()) {
 			ItemSummary s = items.get(hoveredIndex);
-			List<Component> lines = new ArrayList<>();
-			// Title: the renamed label stands on its own line in italics above the base
-			// item name, the way vanilla shows a renamed item.
-			String custom = com.chestmemory.client.data.ItemStackKeys.customNameOf(s.itemId());
-			if (custom != null) {
-				lines.add(Component.literal(custom)
-					.withStyle(net.minecraft.ChatFormatting.YELLOW, net.minecraft.ChatFormatting.ITALIC));
-				// Base item name: build a clean stack so the custom name is not reapplied.
-				lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
-					.copy().withStyle(net.minecraft.ChatFormatting.GRAY));
-			} else {
-				lines.add(Component.literal(
-					com.chestmemory.client.data.ChestMemoryStorage.itemDisplayName(s.itemId())
-				).withStyle(net.minecraft.ChatFormatting.WHITE));
+			long now = System.currentTimeMillis();
+			// Rebuild only when the hovered item changes (or twice a second, so live data
+			// like clan claims stays fresh) — building walks containers and resolves names.
+			if (!s.itemId().equals(this.tooltipItemId) || now - this.tooltipBuiltMs > 500) {
+				this.tooltipLines = buildTooltip(s);
+				this.tooltipItemId = s.itemId();
+				this.tooltipBuiltMs = now;
 			}
-			if (s.isBuildNeed()) {
-				if (s.schematicTotal() > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal()));
-				}
-				if (s.neededForBuild() <= 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_done"));
-				} else {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_needed", s.neededForBuild()));
-				}
-				if (s.inPlayer() >= 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_in_player", s.inPlayer()));
-				}
-				int staging = com.chestmemory.client.data.ChestMemoryStorage.get().countInStaging(s.itemId());
-				if (staging > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_in_staging", staging));
-				}
-				lines.add(Component.translatable("screen.chestmemory.tooltip.build_in_chests", s.totalCount()));
-				if (s.neededForBuild() > 0 && s.canGatherFromChests() > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_can_gather", s.canGatherFromChests()));
-				}
-				if (s.neededForBuild() > 0) {
-					if (s.totalCount() <= 0) {
-						lines.add(Component.translatable("screen.chestmemory.tooltip.build_none_chests"));
-					} else if (s.stillShort() > 0) {
-						lines.add(Component.translatable("screen.chestmemory.tooltip.build_short", s.stillShort()));
-					} else {
-						lines.add(Component.translatable("screen.chestmemory.tooltip.build_enough"));
-					}
-				}
-			} else {
-				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.total", s.totalCount())));
-				// Use the item's real stack size — 16 for pearls, 1 for tools, not always 64.
-				int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
-				if (s.fullStacks(per) > 0) {
-					lines.add(gray(Component.translatable(
-						"screen.chestmemory.tooltip.stacks",
-						s.fullStacks(per), per, s.remainder(per)
-					)));
-				} else {
-					lines.add(gray(Component.translatable("screen.chestmemory.tooltip.less_than_stack", s.totalCount())));
-				}
-			}
-			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())));
-			if (s.hasDistance()) {
-				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.nearest", (int) s.nearestDistance())));
-			}
-			if (s.isBuildNeed() && s.neededForBuild() > 0) {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.build_click"));
-			}
-			if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
-				if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(this.minecraft, s.itemId())) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_me"));
-				} else if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByOther(this.minecraft, s.itemId())) {
-					String who = com.chestmemory.client.clan.ClanSessionManager.claimName(s.itemId());
-					lines.add(Component.translatable(
-						"screen.chestmemory.tooltip.clan_claim_other",
-						who != null ? who : "?"
-					));
-				} else {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_free"));
-				}
-				int cd = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(s.itemId());
-				if (cd > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.clan_delivered", cd));
-				}
-			}
-			graphics.setTooltipForNextFrame(this.minecraft.font, lines, java.util.Optional.empty(), mouseX, mouseY);
+			graphics.setTooltipForNextFrame(this.minecraft.font, this.tooltipLines, java.util.Optional.empty(), mouseX, mouseY);
 		}
+	}
+
+	/** Rich hover card: name, id, enchantments, amounts, and where the item actually lies. */
+	private List<Component> buildTooltip(ItemSummary s) {
+		List<Component> lines = new ArrayList<>();
+		var storage = com.chestmemory.client.data.ChestMemoryStorage.get();
+
+		// ── Header: name (+ base name for renamed items), raw id, enchantments ──
+		String custom = com.chestmemory.client.data.ItemStackKeys.customNameOf(s.itemId());
+		if (custom != null) {
+			lines.add(Component.literal(custom)
+				.withStyle(net.minecraft.ChatFormatting.YELLOW, net.minecraft.ChatFormatting.ITALIC));
+			// Base item name: build a clean stack so the custom name is not reapplied.
+			lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
+				.copy().withStyle(net.minecraft.ChatFormatting.GRAY));
+		} else {
+			lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
+				.copy().withStyle(net.minecraft.ChatFormatting.WHITE, net.minecraft.ChatFormatting.BOLD));
+		}
+		lines.add(Component.literal(com.chestmemory.client.data.ItemStackKeys.baseId(s.itemId()))
+			.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		if (com.chestmemory.client.data.ItemStackKeys.hasEnchantData(s.itemId())) {
+			for (String name : com.chestmemory.client.data.ItemStackKeys.enchantNames(s.itemId())) {
+				lines.add(Component.literal("✦ " + name)
+					.withStyle(net.minecraft.ChatFormatting.LIGHT_PURPLE));
+			}
+		}
+		lines.add(Component.empty());
+
+		if (s.isBuildNeed()) {
+			buildModeLines(lines, s);
+		} else {
+			normalModeLines(lines, s, storage);
+		}
+
+		// ── Clan claims ──
+		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+			lines.add(Component.empty());
+			if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(this.minecraft, s.itemId())) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_me"));
+			} else if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByOther(this.minecraft, s.itemId())) {
+				String who = com.chestmemory.client.clan.ClanSessionManager.claimName(s.itemId());
+				lines.add(Component.translatable(
+					"screen.chestmemory.tooltip.clan_claim_other",
+					who != null ? who : "?"
+				));
+			} else {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_free"));
+			}
+			int cd = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(s.itemId());
+			if (cd > 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_delivered", cd));
+			}
+		}
+
+		// ── Action hint ──
+		if (s.isBuildNeed() && s.neededForBuild() > 0) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.build_click")
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY, net.minecraft.ChatFormatting.ITALIC));
+		} else if (!s.isBuildNeed()) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.hint")
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY, net.minecraft.ChatFormatting.ITALIC));
+		}
+		return lines;
+	}
+
+	private void normalModeLines(
+		List<Component> lines,
+		ItemSummary s,
+		com.chestmemory.client.data.ChestMemoryStorage storage
+	) {
+		// Amount, with real stack size — 16 for pearls, 1 for tools, not always 64.
+		int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
+		if (s.fullStacks(per) > 0) {
+			lines.add(Component.translatable(
+				"screen.chestmemory.tooltip.amount_stacks",
+				s.totalCount(), s.fullStacks(per), per, s.remainder(per)
+			));
+		} else {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount()));
+		}
+		if (s.hasDistance()) {
+			lines.add(Component.translatable(
+				"screen.chestmemory.tooltip.containers_nearest",
+				s.containerCount(), (int) s.nearestDistance()
+			).withStyle(net.minecraft.ChatFormatting.GRAY));
+		} else {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())
+				.withStyle(net.minecraft.ChatFormatting.GRAY));
+		}
+
+		// ── Where it lies: per-world breakdown (multiworld servers) ──
+		boolean live = storage.isViewingLive();
+		Minecraft mc = this.minecraft;
+		String playerDim = live && mc != null && mc.level != null
+			? com.chestmemory.client.data.ChestMemoryStorage.dimensionId(mc.level)
+			: null;
+		String currentTag = live
+			? com.chestmemory.client.data.WorldFingerprint.current(mc)
+			: null;
+		List<com.chestmemory.client.data.ContainerRecord> all = storage.allContainers();
+		List<com.chestmemory.client.data.WorldBreakdown.Entry> groups =
+			com.chestmemory.client.data.WorldBreakdown.of(all, s.itemId(), playerDim, currentTag);
+		int personal = com.chestmemory.client.data.WorldBreakdown.personalCount(all, s.itemId());
+		boolean multipleGroups = groups.size() > 1 || personal > 0
+			|| (groups.size() == 1 && !groups.getFirst().here());
+		if (multipleGroups && !groups.isEmpty() || personal > 0) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.where")
+				.withStyle(net.minecraft.ChatFormatting.GRAY));
+			int shown = 0;
+			for (com.chestmemory.client.data.WorldBreakdown.Entry e : groups) {
+				if (shown >= 4) {
+					lines.add(Component.literal("…").withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+					break;
+				}
+				if (e.here()) {
+					lines.add(Component.translatable(
+						"screen.chestmemory.tooltip.where_line_here", e.count(), e.containers()));
+				} else {
+					lines.add(Component.translatable(
+						"screen.chestmemory.tooltip.where_line",
+						worldLabel(e), e.count(), e.containers()));
+				}
+				shown++;
+			}
+			if (personal > 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.personal", personal));
+			}
+		}
+
+		if (live) {
+			int staging = storage.countInStaging(s.itemId());
+			if (staging > 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.staging_line", staging));
+			}
+		}
+	}
+
+	private void buildModeLines(List<Component> lines, ItemSummary s) {
+		if (s.schematicTotal() > 0) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal()));
+		}
+		if (s.neededForBuild() <= 0) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.build_done")
+				.withStyle(net.minecraft.ChatFormatting.GREEN));
+		} else {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.build_needed", s.neededForBuild())
+				.withStyle(net.minecraft.ChatFormatting.YELLOW));
+		}
+		if (s.inPlayer() >= 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_player", s.inPlayer())));
+		}
+		int staging = com.chestmemory.client.data.ChestMemoryStorage.get().countInStaging(s.itemId());
+		if (staging > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_staging", staging)));
+		}
+		lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_chests", s.totalCount())));
+		if (s.neededForBuild() > 0 && s.canGatherFromChests() > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_can_gather", s.canGatherFromChests())));
+		}
+		if (s.neededForBuild() > 0) {
+			if (s.totalCount() <= 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.build_none_chests")
+					.withStyle(net.minecraft.ChatFormatting.RED));
+			} else if (s.stillShort() > 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.build_short", s.stillShort())
+					.withStyle(net.minecraft.ChatFormatting.GOLD));
+			} else {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.build_enough")
+					.withStyle(net.minecraft.ChatFormatting.GREEN));
+			}
+		}
+		if (s.hasDistance()) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.nearest", (int) s.nearestDistance())));
+		}
+	}
+
+	/** Label for a non-"here" breakdown group. */
+	static Component worldLabel(com.chestmemory.client.data.WorldBreakdown.Entry e) {
+		if (e.otherWorld()) {
+			// Same dimension id as the player, provably another world: the id cannot name
+			// it, so it is called what it is.
+			return Component.translatable("chestmemory.world.other");
+		}
+		return Component.literal(com.chestmemory.client.data.DimensionChoice.prettyName(e.dimensionId()));
 	}
 
 	/** True when the pointer is over the scrollbar strip (with a little slack). */

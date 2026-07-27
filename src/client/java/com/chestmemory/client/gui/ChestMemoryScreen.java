@@ -183,12 +183,18 @@ public class ChestMemoryScreen extends Screen {
 			this.dimensionFilter = DimensionChoice.CURRENT;
 		}
 
-		// One toggle: show/hide all profile & filter dropdowns
-		this.filtersToggleButton = new SettingRowButton(left, y, w, rowH, filtersToggleLabel(), () -> {
+		// One toggle: show/hide all profile & filter dropdowns.
+		// Label + right-aligned value, so the current filter state reads as data,
+		// not as a caption glued into one long string.
+		this.filtersToggleButton = new SettingRowButton(
+			left, y, w, rowH,
+			Component.translatable("screen.chestmemory.filters.label"),
+			() -> {
 				this.filtersExpanded = !this.filtersExpanded;
 				ModSettings.get().setFiltersExpanded(this.filtersExpanded);
 				this.rebuildWidgets();
 			});
+		this.filtersToggleButton.setValue(filtersToggleValue());
 		this.addRenderableWidget(this.filtersToggleButton);
 		y += rowH + gap;
 
@@ -844,16 +850,16 @@ public class ChestMemoryScreen extends Screen {
 		return Component.translatable("screen.chestmemory.staging.clear");
 	}
 
-	private Component filtersToggleLabel() {
+	private Component filtersToggleValue() {
 		if (this.filtersExpanded) {
-			return Component.translatable("screen.chestmemory.filters.hide");
+			return Component.translatable("screen.chestmemory.filters.value.hide");
 		}
 		// Compact summary of current filter state
 		String scopeShort = this.scope == ListScope.NEARBY
 			? Component.translatable("screen.chestmemory.scope.nearby_short", this.nearbyRange.blocks()).getString()
 			: Component.translatable("screen.chestmemory.scope.world_total_short").getString();
 		String dimShort = this.dimensionFilter.label().getString();
-		return Component.translatable("screen.chestmemory.filters.show", scopeShort, dimShort);
+		return Component.translatable("screen.chestmemory.filters.value.show", scopeShort, dimShort);
 	}
 
 	private void refreshList(String query) {
@@ -911,6 +917,9 @@ public class ChestMemoryScreen extends Screen {
 		}
 		this.itemGrid.setItems(items);
 
+		if (this.filtersToggleButton != null) {
+			this.filtersToggleButton.setValue(filtersToggleValue());
+		}
 		if (this.buildFilterButton != null) {
 			this.buildFilterButton.visible = this.litematicaBuildMode;
 			this.buildFilterButton.active = this.litematicaBuildMode;
@@ -1108,7 +1117,24 @@ public class ChestMemoryScreen extends Screen {
 			.filter(r -> r.isVirtual() && !r.hasHighlightPos())
 			.toList();
 
-		if (!worldMatches.isEmpty()) {
+		// Multiworld reality check: whatever the panel filter says, where does this item
+		// actually lie relative to the world the player is standing in? On a multiworld
+		// server "I clicked it and nothing glows" almost always means "it is in the other
+		// world at these same coordinates" — say that out loud instead of staying silent.
+		List<com.chestmemory.client.data.WorldBreakdown.Entry> whereGroups = List.of();
+		int hereCount = 0;
+		int elsewhereCount = 0;
+		if (ModSettings.get().notifyOtherWorld()) {
+			String currentTag = com.chestmemory.client.data.WorldFingerprint.current(client);
+			whereGroups = com.chestmemory.client.data.WorldBreakdown.of(
+				ChestMemoryStorage.get().liveContainersSnapshot(), summary.itemId(), dimension, currentTag
+			);
+			hereCount = com.chestmemory.client.data.WorldBreakdown.hereCount(whereGroups);
+			elsewhereCount = com.chestmemory.client.data.WorldBreakdown.elsewhereCount(whereGroups);
+		}
+		boolean onlyElsewhere = hereCount <= 0 && elsewhereCount > 0;
+
+		if (!worldMatches.isEmpty() && !onlyElsewhere) {
 			ContainerRecord nearest = worldMatches.getFirst();
 			int dist = (int) Math.max(0, ChestMemoryStorage.distanceTo(nearest, pos, dimension));
 			int nx = nearest.isWorldBlock() ? nearest.x() : nearest.highlightX();
@@ -1123,6 +1149,14 @@ public class ChestMemoryScreen extends Screen {
 				dist,
 				(int) (duration / 1000)
 			));
+			if (elsewhereCount > 0) {
+				// Some of it is here, the rest in other worlds — one quiet extra line.
+				client.player.sendSystemMessage(Component.translatable(
+					"message.chestmemory.other_world_also",
+					elsewhereCount,
+					formatWhereList(whereGroups, 2)
+				));
+			}
 		}
 
 		if (!virtualMatches.isEmpty()) {
@@ -1134,7 +1168,14 @@ public class ChestMemoryScreen extends Screen {
 			));
 		}
 
-		if (worldMatches.isEmpty() && virtualMatches.isEmpty()) {
+		if (onlyElsewhere) {
+			// Everything this player remembers of the item is in another world / dimension.
+			client.player.sendSystemMessage(Component.translatable(
+				"message.chestmemory.other_world_only",
+				ChestMemoryStorage.itemDisplayName(summary.itemId()),
+				formatWhereList(whereGroups, 3)
+			));
+		} else if (worldMatches.isEmpty() && virtualMatches.isEmpty()) {
 			client.player.sendSystemMessage(Component.translatable(
 				effectiveScope == ListScope.NEARBY
 					? "message.chestmemory.none_nearby"
@@ -1143,6 +1184,32 @@ public class ChestMemoryScreen extends Screen {
 		}
 
 		this.onClose();
+	}
+
+	/** "«Мир ферм» ×250 (3 сунд.), «Ад» ×12 (1 сунд.)" — the elsewhere part of a breakdown. */
+	private static String formatWhereList(List<com.chestmemory.client.data.WorldBreakdown.Entry> groups, int limit) {
+		StringBuilder sb = new StringBuilder();
+		int shown = 0;
+		for (com.chestmemory.client.data.WorldBreakdown.Entry e : groups) {
+			if (e.here()) {
+				continue;
+			}
+			if (shown >= limit) {
+				sb.append(", …");
+				break;
+			}
+			if (shown > 0) {
+				sb.append(", ");
+			}
+			sb.append(Component.translatable(
+				"chestmemory.world.entry",
+				ItemGridWidget.worldLabel(e).getString(),
+				e.count(),
+				e.containers()
+			).getString());
+			shown++;
+		}
+		return sb.toString();
 	}
 
 	/** Close every other dropdown when one opens. */
