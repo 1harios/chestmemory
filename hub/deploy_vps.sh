@@ -31,6 +31,15 @@ for f in clan_hub.py clan_auth.py clan_ratelimit.py; do
   [ -f "$f" ] || { echo "missing $f next to this script" >&2; exit 1; }
 done
 
+echo "── swap (safety net on small-RAM VPS)"
+if [ ! -f /swapfile ] && ! swapon --show | grep -q swap; then
+  fallocate -l 512M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=512
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
+  swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 echo "── packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
@@ -40,16 +49,22 @@ echo "── hub files"
 id -u chesthub >/dev/null 2>&1 || useradd --system --home "$HUB_DIR" --shell /usr/sbin/nologin chesthub
 mkdir -p "$HUB_DIR/data" "$HUB_DIR/backups"
 install -m 644 clan_hub.py clan_auth.py clan_ratelimit.py "$HUB_DIR/"
-if [ ! -f "$HUB_DIR/.clan_token" ]; then
-  openssl rand -hex 12 > "$HUB_DIR/.clan_token"
-fi
-chmod 600 "$HUB_DIR/.clan_token"
 
+# Migrate active gathers if a sessions.json was placed next to this script.
+if [ -f sessions.json ]; then
+  cp sessions.json "$HUB_DIR/data/sessions.json"
+  echo "   migrated sessions.json ($(wc -c < sessions.json) bytes)"
+fi
+
+# CLAN_TOKEN is intentionally EMPTY. The hub then accepts every request
+# (_check_token returns true when unset), which keeps the clients already
+# distributed with the OLD baked-in token working — they send the header,
+# the hub simply ignores it. Rate-limiting still protects session codes.
 cat > "$HUB_DIR/env" <<EOF
 HOST=127.0.0.1
 PORT=$PORT
 DATA_DIR=$HUB_DIR/data
-CLAN_TOKEN=$(tr -d '\r\n' < "$HUB_DIR/.clan_token")
+CLAN_TOKEN=
 SESSION_TTL_SEC=$((7*24*3600))
 EOF
 chmod 600 "$HUB_DIR/env"
@@ -118,18 +133,19 @@ else
   echo "   certbot --nginx -d $DOMAIN --redirect -m you@example.com --agree-tos -n"
 fi
 
-TOKEN=$(tr -d '\r\n' < "$HUB_DIR/.clan_token")
 echo
 echo "════════════════════════════════════════════════════════"
-echo " Готово. Проверка:"
-echo "   curl -s -H \"X-Clan-Token: $TOKEN\" http://127.0.0.1:$PORT/v1/health"
-curl -s -m 5 -H "X-Clan-Token: $TOKEN" "http://127.0.0.1:$PORT/v1/health" && echo
+echo " Готово. Локальная проверка хаба:"
+curl -s -m 5 "http://127.0.0.1:$PORT/v1/health" && echo
 echo
-echo " Токен хаба:            $HUB_DIR/.clan_token"
 echo " Сессии (миграция):     $HUB_DIR/data/sessions.json"
 echo " Логи:                  journalctl -u chestmemory-hub -f"
 echo " Перезапуск:            systemctl restart chestmemory-hub"
+echo " Токен НЕ используется (совместимость со старыми клиентами)."
 echo
-echo " Переключить duckdns на этот сервер (подставьте свой duckdns-токен):"
+echo " Осталось: направить домен $DOMAIN на этот сервер ($(curl -s -m5 ifconfig.me 2>/dev/null))."
+echo " На duckdns.org в поле IP укажите этот адрес, ИЛИ выполните:"
 echo "   curl \"https://www.duckdns.org/update?domains=${DOMAIN%%.duckdns.org}&token=ВАШ_DUCKDNS_ТОКЕН&ip=\$(curl -s ifconfig.me)\""
+echo " Затем выпустите сертификат:"
+echo "   certbot --nginx -d $DOMAIN --redirect -m you@example.com --agree-tos -n"
 echo "════════════════════════════════════════════════════════"
