@@ -572,12 +572,20 @@ class ClanRedesignTest {
 		@Test
 		@DisplayName("Solo progress counts inventory and staging, not raw chest stock")
 		void progressUsesCoverage() throws Exception {
+			// The bar lives on the Info tab and the numbers ride the cell tooltip now.
 			String src = read(CLAN_SCREEN);
-			int decl = src.indexOf("private void drawSoloGather");
+			int decl = src.indexOf("private void drawSoloInfo");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
 				body.contains("neededForBuild()") && body.contains("schematicTotal()"),
 				"collected = total - still-missing; chest stock is supply, not progress"
+			);
+			int tip = src.indexOf("private List<Component> soloCellTooltip");
+			assertTrue(tip > 0, "solo cell tooltip missing");
+			String tipBody = src.substring(tip, src.indexOf("\n\t}", tip));
+			assertTrue(
+				tipBody.contains("gather_collected") && tipBody.contains("gather_left"),
+				"the hover must carry collected and left"
 			);
 		}
 	}

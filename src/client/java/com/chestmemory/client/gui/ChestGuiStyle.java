@@ -32,7 +32,7 @@ public final class ChestGuiStyle {
 	/** Right-aligned values on rows: present but quieter than the caption. */
 	public static final int VALUE_TEXT = 0xFFCFCFCF;
 	/** Secondary text on the light field. */
-	public static final int TEXT_MUTED = 0xFF6E6E6E;
+	public static final int TEXT_MUTED = 0xFF525252;
 	public static final int TEXT_COUNT = 0xFFFFFFFF;
 	public static final int TEXT_COUNT_SHADOW = 0xFF000000;
 
@@ -162,7 +162,7 @@ public final class ChestGuiStyle {
 	public static final int TEXT_DISABLED = 0xFFBDBDBD;
 
 	/** Secondary text on a button face. */
-	public static final int TEXT_ON_WOOD_MUTED = 0xFFB8B8B8;
+	public static final int TEXT_ON_WOOD_MUTED = 0xFFE2E2E2;
 
 	/** Face of the selected tab (legacy constant; the tab strip no longer draws boxes). */
 	public static final int TAB_ACTIVE = 0xFFE0E0E0;

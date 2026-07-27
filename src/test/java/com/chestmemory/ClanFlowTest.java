@@ -482,20 +482,20 @@ class ClanFlowTest {
 	class HostRights {
 
 		@Test
-		@DisplayName("Only the creator sees the delete button, and it asks twice")
+		@DisplayName("Closing lives in host settings only, and it asks twice")
 		void hostCanDelete() throws Exception {
+			// The list tab lost its delete button: ending the build for everyone is a
+			// deliberate trip behind the pencil, not a row next to «Вступить».
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("ClanSessionManager.isHost("), "the button is host-only");
-			assertTrue(src.contains("clan.delete_confirm"), "deleting ends the build for everyone");
-			// Check the two-step guard in the button body, not just anywhere in the file: the
-			// field name alone still matched after the arming logic was gutted.
-			int del = src.indexOf("clan.delete_confirm");
-			assertTrue(del > 0, "delete button not found");
-			String around = src.substring(Math.max(0, del - 400), Math.min(src.length(), del + 1200));
+			assertTrue(src.contains("ClanSessionManager.isHost("), "the entry is host-only");
+			assertTrue(src.contains("clan.close_confirm"), "closing ends the build for everyone");
+			int del = src.indexOf("clan.close_confirm");
+			String around = src.substring(Math.max(0, del - 600), Math.min(src.length(), del + 1200));
 			assertTrue(
-				around.contains("if (!this.deleteArmed)") && around.contains("this.deleteArmed = true"),
+				around.contains("if (!this.closeArmed)") && around.contains("this.closeArmed = true"),
 				"a single misclick must not end a gather for everyone"
 			);
+			assertFalse(src.contains("deleteArmed"), "the redundant list-tab delete is gone");
 		}
 
 		@Test
@@ -507,19 +507,18 @@ class ClanFlowTest {
 		}
 
 		@Test
-		@DisplayName("Delete labels fit the half-width row")
+		@DisplayName("Close labels fit their full-width settings row")
 		void deleteLabelsFit() throws Exception {
-			// 316px content, two columns with a 4px gap, minus padding.
 			String ru = read("src/main/resources/assets/chestmemory/lang/ru_ru.json");
-			for (String key : new String[] {"delete", "delete_confirm"}) {
+			for (String key : new String[] {"close_session", "close_confirm"}) {
 				java.util.regex.Matcher m = java.util.regex.Pattern
 					.compile("\"screen\\.chestmemory\\.clan\\." + key + "\":\\s*\"([^\"]*)\"")
 					.matcher(ru);
 				assertTrue(m.find(), "missing lang key: " + key);
 				String text = m.group(1);
 				assertTrue(
-					text.length() * 6 <= 144,
-					"label too wide: '" + text + "' ~" + (text.length() * 6) + "px of 144"
+					text.length() * 6 <= 304,
+					"label too wide: '" + text + "' ~" + (text.length() * 6) + "px of 304"
 				);
 			}
 		}

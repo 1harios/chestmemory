@@ -352,4 +352,111 @@ class ClanHostToolsTest {
 			);
 		}
 	}
+	@Nested
+	@DisplayName("Round five: cursor tooltips, the panel's filter, one-row join, readable grey")
+	class PolishRound {
+		private static final String SESSION =
+			"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+		private static final String STYLE =
+			"src/client/java/com/chestmemory/client/gui/ChestGuiStyle.java";
+
+		@Test
+		@DisplayName("The hovered cell explains itself in a vanilla tooltip, not a bottom strip")
+		void hoverIsATooltip() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("setTooltipForNextFrame("),
+				"the tooltip is the panel's own reading gesture — the gather must match it"
+			);
+			for (String m : new String[]{
+				"clanCellTooltip", "soloCellTooltip", "externalCellTooltip", "tooltipHead"
+			}) {
+				assertTrue(src.contains(m), "missing tooltip builder: " + m);
+			}
+			assertTrue(
+				src.contains("this.gridBottom = row2 - 16;"),
+				"with the facts on the cursor, the bottom strip keeps only the legend line"
+			);
+		}
+
+		@Test
+		@DisplayName("The gather honours the panel filter: nearby means nearby")
+		void gatherHonoursPanelFilter() throws Exception {
+			String session = read(SESSION);
+			assertTrue(
+				session.contains("private static List<ContainerRecord> filteredSources(")
+					&& session.contains("filterScope()") && session.contains("filterRange()"),
+				"«Рядом ≤256м» on the panel is a promise the gather must keep"
+			);
+			int route = session.indexOf("private static void highlightCurrent");
+			String body = session.substring(route, session.indexOf("\n\t}", route));
+			assertTrue(
+				body.contains("filteredSources(currentItemId)"),
+				"routes must not lead to chests the filter hides"
+			);
+			int count = session.indexOf("public static int countInChestsLive(String itemId) {");
+			String countBody = session.substring(count, session.indexOf("\n\t}", count));
+			assertTrue(
+				countBody.contains("filteredSources(itemId)"),
+				"the counts the gather shows must match what it will route to"
+			);
+		}
+
+		@Test
+		@DisplayName("The gather search behaves like the main panel's")
+		void searchLikeTheMainPanel() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("this.font, left, y, w, 18,"),
+				"same height as the panel's search row"
+			);
+			int typed = src.indexOf("public boolean charTyped");
+			assertTrue(typed > 0, "type-to-search is missing");
+			String body = src.substring(typed, src.indexOf("\n\t}", typed));
+			assertTrue(
+				body.contains("gatherSearchBox.charTyped(event)"),
+				"typing anywhere on the tab must land in the search box"
+			);
+		}
+
+		@Test
+		@DisplayName("Joining reads left to right in one row; the list rows carry mini bars")
+		void listTabLayout() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("int codeW = w - pasteW - joinW - 2 * gap;"),
+				"код → вставить → вступить, one row — the join button sat a row below its box"
+			);
+			int list = src.indexOf("private void drawGatherList");
+			String body = src.substring(list, src.indexOf("\n\t}", list));
+			assertTrue(
+				body.contains("ChestGuiStyle.drawProgressBar("),
+				"a number said 34%; the bar shows a third at a glance"
+			);
+		}
+
+		@Test
+		@DisplayName("Shift-click peeks: glow the chests, claim nothing")
+		void shiftClickPeeks() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("event.hasShiftDown()"),
+				"the modifier rides the click event in these mappings"
+			);
+		}
+
+		@Test
+		@DisplayName("Muted text is dark enough to read on the light panel")
+		void mutedTextReadable() throws Exception {
+			String style = read(STYLE);
+			assertTrue(
+				style.contains("TEXT_MUTED = 0xFF525252"),
+				"0xFF6E6E6E on 0xFFC6C6C6 was ~2.9:1 — under the 4.5:1 floor"
+			);
+			assertTrue(
+				style.contains("TEXT_ON_WOOD_MUTED = 0xFFE2E2E2"),
+				"the wood-row secondary column had the same problem"
+			);
+		}
+	}
 }

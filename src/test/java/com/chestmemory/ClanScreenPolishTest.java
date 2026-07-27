@@ -249,13 +249,18 @@ class ClanScreenPolishTest {
 		}
 
 		@Test
-		@DisplayName("An unreachable hub offers a retry where 'back' would have been")
+		@DisplayName("An unreachable hub is retried through the lamp itself")
 		void retryReplacesBack() throws Exception {
+			// The dedicated retry button is gone with the strip: the lamp is the state AND
+			// the action — click it to ask again, tooltip says so.
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("boolean hubDown = !in && ClanSessionManager.hubState()")
-					&& src.contains("screen.chestmemory.clan.hub_retry"),
-				"when the hub is down the useful action is 'try again', not 'back'"
+				src.contains("this::retryHubCheck"),
+				"clicking the lamp must re-ask the hub"
+			);
+			assertFalse(
+				src.contains("screen.chestmemory.clan.hub_retry\""),
+				"a second retry affordance would drift out of sync with the lamp"
 			);
 		}
 
