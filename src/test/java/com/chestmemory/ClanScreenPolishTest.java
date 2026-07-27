@@ -65,15 +65,26 @@ class ClanScreenPolishTest {
 	@DisplayName("The hub row reports state instead of pretending to be a button")
 	class HubStatus {
 		@Test
-		@DisplayName("The dead button is gone")
+		@DisplayName("The strip became a corner lamp that answers clicks with a re-check")
 		void fakeButtonRemoved() throws Exception {
 			String src = read(CLAN_SCREEN);
 			assertFalse(
 				src.contains("screen.chestmemory.clan.hub_builtin\"),"),
-				"the informational row must not be built as a SettingRowButton — it looked "
+				"the state must not be built as a SettingRowButton — it looked "
 					+ "identical to the real buttons and swallowed every click"
 			);
-			assertTrue(src.contains("this.hubStripY = y"), "it must be painted instead");
+			assertTrue(
+				src.contains("new HubLampButton("),
+				"the lamp replaced the full-width strip — one row returned to the grid"
+			);
+			assertFalse(
+				src.contains("drawStatusStrip("),
+				"the strip must not be painted as well: two indicators disagree eventually"
+			);
+			assertTrue(
+				src.contains("this::retryHubCheck"),
+				"clicking the lamp is the retry now"
+			);
 		}
 
 		@Test
@@ -123,8 +134,9 @@ class ClanScreenPolishTest {
 		@Test
 		@DisplayName("State is spelled out, not only coloured")
 		void stateIsNotColourOnly() throws Exception {
+			// The words moved into the lamp's tooltip — still words, just on demand.
 			String src = read(CLAN_SCREEN);
-			for (String key : new String[]{"hub_online", "hub_offline", "hub_checking"}) {
+			for (String key : new String[]{"hub_lamp_online", "hub_lamp_offline", "hub_checking"}) {
 				assertTrue(
 					src.contains("screen.chestmemory.clan." + key),
 					"a red/green lamp alone is no help to a colour-blind player: " + key
@@ -231,20 +243,24 @@ class ClanScreenPolishTest {
 		void joinNeedsACode() throws Exception {
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("joinRow.active = !this.codeDraft.isBlank()")
-					&& src.contains("joinBtn.active = !switching && !this.codeDraft.isBlank()"),
-				"both branches must disable join without a code, rather than failing on click"
+				src.contains("joinBtn.active = !switching && !this.codeDraft.isBlank()"),
+				"join must be greyed without a code, rather than failing on click"
 			);
 		}
 
 		@Test
-		@DisplayName("An unreachable hub offers a retry where 'back' would have been")
+		@DisplayName("An unreachable hub is retried through the lamp itself")
 		void retryReplacesBack() throws Exception {
+			// The dedicated retry button is gone with the strip: the lamp is the state AND
+			// the action — click it to ask again, tooltip says so.
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("boolean hubDown = ClanSessionManager.hubState()")
-					&& src.contains("screen.chestmemory.clan.hub_retry"),
-				"when the hub is down the useful action is 'try again', not 'back'"
+				src.contains("this::retryHubCheck"),
+				"clicking the lamp must re-ask the hub"
+			);
+			assertFalse(
+				src.contains("screen.chestmemory.clan.hub_retry\""),
+				"a second retry affordance would drift out of sync with the lamp"
 			);
 		}
 

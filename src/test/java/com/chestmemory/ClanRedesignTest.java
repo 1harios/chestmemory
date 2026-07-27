@@ -151,14 +151,19 @@ class ClanRedesignTest {
 	@DisplayName("The screen finally shows what the build needs")
 	class MaterialsTab {
 		@Test
-		@DisplayName("There is a materials tab at all")
-		void tabExists() throws Exception {
+		@DisplayName("The grid lives in the gather tab; the Materials tab is gone")
+		void gridLivesInTheGatherTab() throws Exception {
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("TAB_MATERIALS"), "the tab is missing");
+			assertFalse(src.contains("TAB_MATERIALS"), "the merged tab must not keep the old id");
 			assertTrue(
-				src.contains("case TAB_MATERIALS -> drawMaterials"),
-				"the tab must actually be drawn"
+				src.contains("default -> drawGatherBody"),
+				"the gather tab must draw the working body"
 			);
+			assertTrue(
+				src.contains("private int drawMaterialGrid("),
+				"the grid renderer must exist — it is the tab now"
+			);
+			assertFalse(read(RU).contains("tab_materials"), "no stray caption may remain");
 		}
 
 		@Test
@@ -179,7 +184,7 @@ class ClanRedesignTest {
 		@DisplayName("Unfinished materials sort to the top, largest remainder first")
 		void sortedByWhatMatters() throws Exception {
 			String src = read(CLAN_SCREEN);
-			int decl = src.indexOf("private void drawMaterials");
+			int decl = src.indexOf("private void drawClanGather");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
 				body.contains("rows.sort(") && body.contains("(ra == 0) != (rb == 0)"),
@@ -227,7 +232,8 @@ class ClanRedesignTest {
 		@DisplayName("It names the build being gathered")
 		void showsTheSchematic() throws Exception {
 			String src = read(CLAN_SCREEN);
-			int decl = src.indexOf("private void drawGatherSummary");
+			int decl = src.indexOf("private void drawClanInfo");
+			assertTrue(decl > 0, "the info tab body is missing");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
 				body.contains("s.schemaName"),
@@ -236,66 +242,66 @@ class ClanRedesignTest {
 		}
 
 		@Test
-		@DisplayName("The facts are label/value rows, not a run-on sentence")
-		void factsAreDetailRows() throws Exception {
-			// Tiles were replaced by detail rows: they duplicated numbers the rows carry and
-			// cost 32px the card needed for who/when. The eye runs down the labels instead.
+		@DisplayName("The facts live on the Info tab, drawn by a cursor that cannot overlap")
+		void factsCannotOverlap() throws Exception {
+			// The original bug: two detail rows drew on the same y — «Склад» under «В сети».
+			// The info rows advance their own cursor (return y + 12), so a forgotten
+			// increment is impossible by construction, not by discipline.
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("ChestGuiStyle.drawDetailRow("), "detail rows are missing");
+			assertFalse(
+				src.contains("ChestGuiStyle.drawDetailRow("),
+				"the old manually-advanced rows must stay gone"
+			);
+			assertTrue(
+				src.contains("private int infoRow(") && src.contains("return y + 12;"),
+				"info rows must advance their own cursor"
+			);
 			for (String key : new String[]{
-				"detail_host", "detail_created", "detail_updated",
-				"detail_items", "detail_warehouse", "detail_members"
+				"info_host", "info_updated", "info_warehouse", "info_last_delivery"
 			}) {
 				assertTrue(src.contains("screen.chestmemory.clan." + key), "missing: " + key);
 			}
 		}
 
 		@Test
-		@DisplayName("It says how much work is free, and where to take it")
-		void pointsAtTheWork() throws Exception {
+		@DisplayName("The idle caption carries the numbers: items, done, free, online")
+		void legendCarriesTheNumbers() throws Exception {
 			String src = read(CLAN_SCREEN);
-			int decl = src.indexOf("private void drawGatherSummary");
+			int decl = src.indexOf("private void drawClanGather");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
-				body.contains("screen.chestmemory.clan.hint_free"),
-				"the card has to point at the Materials tab now that it has no slots of its own"
+				body.contains("screen.chestmemory.clan.legend"),
+				"with the grid in the tab, one line replaces six detail rows"
 			);
 			assertTrue(
-				body.contains("screen.chestmemory.clan.all_claimed")
-					&& body.contains("screen.chestmemory.clan.hint_finished"),
-				"every end state needs its own line: all claimed is not the same as all done"
+				body.contains("isMemberAway"),
+				"the online count must use hub-clock away detection, not wall clocks"
 			);
 		}
 
 		@Test
-		@DisplayName("Measured: the card fits above the session controls")
-		void summaryFits() {
+		@DisplayName("Measured: the grid owns the tab — six rows fit at the smallest height")
+		void gatherTabFits() {
 			int panelH = 300;
-			int tabsY = 36 + 8 + 18 + 4 + 2;
-			int y = tabsY + 22;
-			y += 20;        // name plate
-			y += 24;        // bar + percentage
-			y += 11 * 6;    // six detail rows
-			y += 4;
-			int end = y + 2 + 8;   // closing hint
-			assertTrue(end <= panelH - 70, "the card runs into the session controls");
+			int tabsY = 36 + 8;              // header only: the hub strip became a lamp
+			int gridTop = tabsY + 22;        // no plate, no bar, no meta — all on Инфо
+			int row2 = panelH - 26;
+			int row0 = row2 - 2 * (18 + 4);  // warehouse row above the two session rows
+			int gridBottom = row0 - 34;      // three hover lines above the buttons
+			assertTrue(
+				gridTop + 6 + 6 * 18 <= gridBottom,
+				"six rows of slots must fit at the smallest panel height"
+			);
 		}
 
 		@Test
-		@DisplayName("Measured: a detail row fits its label and value side by side")
-		void detailRowsFit() throws Exception {
+		@DisplayName("Measured: both idle captions fit the panel width")
+		void legendsFit() throws Exception {
 			int content = 340 - 24;
-			// Worst realistic case: a long player name against the widest label.
-			String label = lang("screen.chestmemory.clan.detail_host");
-			String value = "ОченьДлинныйНикИгрока (вы)";
-			assertTrue(px(label) + px(value) + 8 <= content, "the row cannot hold both");
-			for (String key : new String[]{
-				"detail_created", "detail_updated", "detail_items",
-				"detail_warehouse", "detail_members"
-			}) {
-				assertTrue(px(lang("screen.chestmemory.clan." + key)) < content / 2,
-					"label is too wide to leave room for its value: " + key);
-			}
+			String clan = lang("screen.chestmemory.clan.legend").replace("%s", "88");
+			assertTrue(px(clan) <= content, "clan legend clipped: " + clan);
+			String solo = lang("screen.chestmemory.clan.solo_legend").replace("%s", "888");
+			assertTrue(px(solo) <= content, "solo legend clipped: " + solo);
 		}
 	}
 
@@ -329,9 +335,10 @@ class ClanRedesignTest {
 			int decl = style.indexOf("public static void drawGridTray");
 			assertTrue(decl > 0, "the tray helper is missing");
 			String body = style.substring(decl, style.indexOf("\n\t}", decl));
-			// The exact two fills the chest panel uses: dark border, light grey face.
-			assertTrue(body.contains("0xFF1A120A"), "border colour differs from the reference");
-			assertTrue(body.contains("0xFFC6C6C6"), "face colour differs from the reference");
+			// The exact two fills the chest panel uses: shared border and face constants,
+			// so a palette change recolours every tray at once instead of drifting.
+			assertTrue(body.contains("PANEL_BORDER"), "border colour differs from the reference");
+			assertTrue(body.contains("PANEL_INNER"), "face colour differs from the reference");
 			assertTrue(
 				read(CLAN_SCREEN).contains("ChestGuiStyle.drawGridTray("),
 				"items on the bare panel read as loose icons, not as an inventory"
@@ -344,7 +351,9 @@ class ClanRedesignTest {
 			String style = read(STYLE);
 			int decl = style.indexOf("public static void drawSlotCount");
 			String body = style.substring(decl, style.indexOf("\n\t}", decl));
-			assertTrue(body.contains("0.72F"), "the reference scales counts to 0.72");
+			// Counts are player-configurable now; the reference is the shared settings-driven
+			// renderer, not a hardcoded scale.
+			assertTrue(body.contains("slotCountScalePct"), "counts must use the configured scale");
 			assertTrue(
 				read(CLAN_SCREEN).contains("ChestGuiStyle.drawSlotCount("),
 				"a full-size count does not fit an 18px slot"
@@ -422,14 +431,14 @@ class ClanRedesignTest {
 	}
 
 	@Nested
-	@DisplayName("Five tabs still fit, and read differently")
+	@DisplayName("Four tabs fit, and read differently")
 	class Tabs {
 		@Test
 		@DisplayName("Measured: every caption fits its fifth of the strip")
 		void captionsFit() throws Exception {
 			int tabW = (340 - 24) / 5;
 			for (String key : new String[]{
-				"tab_gather", "tab_materials", "tab_members", "tab_feed", "tab_list"
+				"tab_gather", "tab_info", "tab_members", "tab_feed", "tab_list"
 			}) {
 				String label = lang("screen.chestmemory.clan." + key);
 				assertTrue(px(label) <= tabW - 6, "tab caption clipped: " + label);
@@ -437,17 +446,17 @@ class ClanRedesignTest {
 		}
 
 		@Test
-		@DisplayName("The two list tabs are not named alike")
+		@DisplayName("The working tab and the list tab are not named alike")
 		void tabsAreDistinguishable() throws Exception {
-			String materials = lang("screen.chestmemory.clan.tab_materials");
+			String gather = lang("screen.chestmemory.clan.tab_gather");
 			String gathers = lang("screen.chestmemory.clan.tab_list");
 			assertFalse(
-				materials.equalsIgnoreCase(gathers),
+				gather.equalsIgnoreCase(gathers),
 				"adjacent tabs must not read the same"
 			);
 			assertFalse(
-				materials.toLowerCase().startsWith(gathers.toLowerCase().substring(0, 3)),
-				"'Список' next to 'Сборы' was too close to tell apart at a glance"
+				gathers.toLowerCase().startsWith(gather.toLowerCase().substring(0, 3)),
+				"«Сбор» next to «Сборы» was too close to tell apart at a glance"
 			);
 		}
 
@@ -458,7 +467,7 @@ class ClanRedesignTest {
 			int decl = src.indexOf("public boolean mouseScrolled(");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			for (String tab : new String[]{
-				"TAB_MATERIALS", "TAB_MEMBERS", "TAB_FEED", "TAB_LIST"
+				"TAB_GATHER", "TAB_MEMBERS", "TAB_FEED", "TAB_LIST"
 			}) {
 				assertTrue(body.contains(tab), "no scrolling on " + tab);
 			}
@@ -485,6 +494,98 @@ class ClanRedesignTest {
 			assertFalse(
 				body.contains("more_members"),
 				"'+3 more' named a number the player had no way to reach; it scrolls now"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("The gather tab works solo, off the player's own schematic")
+	class SoloMode {
+		@Test
+		@DisplayName("Solo is a first-class mode, not a clan-session special case")
+		void soloModeExists() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("enum GatherMode"), "the mode must be explicit");
+			for (String m : new String[]{"GatherMode.CLAN", "GatherMode.SOLO", "GatherMode.EMPTY"}) {
+				assertTrue(src.contains(m), "missing mode: " + m);
+			}
+			assertTrue(
+				src.contains("private void drawSoloGather"),
+				"solo needs its own body — progress and routing, no claims"
+			);
+			assertTrue(
+				src.contains("private void drawEmptyGather"),
+				"no session and no schematic must explain itself, not show a blank panel"
+			);
+		}
+
+		@Test
+		@DisplayName("A solo click aims the gather; clicking the target again stops it")
+		void soloClickTogglesTheTarget() throws Exception {
+			String src = read(CLAN_SCREEN);
+			int decl = src.indexOf("private void soloClickMaterial");
+			assertTrue(decl > 0, "solo click handler missing");
+			String body = src.substring(decl, src.indexOf("\n\t}", decl));
+			assertTrue(
+				body.contains("BuildGatherSession.startQueue"),
+				"the click must start the existing flow, not invent a parallel one"
+			);
+			assertTrue(
+				body.contains("BuildGatherSession.clear()"),
+				"clicking the current target must stop the gather"
+			);
+			assertTrue(
+				body.contains("focusNow != null ? focusNow : itemId"),
+				"craft-only clicks re-aim; the status must name the item actually focused"
+			);
+		}
+
+		@Test
+		@DisplayName("Solo pulls the full list — never the Ё panel's cycling filter")
+		void soloIgnoresPanelFilter() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("BuildFilter.ALL"),
+				"inheriting the panel filter would read as lost materials"
+			);
+			String session = read(
+				"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java"
+			);
+			assertTrue(
+				session.contains("BuildFilter useFilter"),
+				"the explicit-filter overload must exist"
+			);
+		}
+
+		@Test
+		@DisplayName("Members and feed are not offered outside a session")
+		void sessionTabsHideSolo() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(
+				src.contains("new int[]{TAB_GATHER, TAB_INFO, TAB_MEMBERS, TAB_FEED, TAB_LIST}")
+					&& src.contains("new int[]{TAB_GATHER, TAB_INFO, TAB_LIST}")
+					&& src.contains("return new int[]{TAB_GATHER, TAB_LIST};"),
+				"tabs describing a session must vanish with it, not sit empty"
+			);
+		}
+
+		@Test
+		@DisplayName("Solo progress counts inventory and staging, not raw chest stock")
+		void progressUsesCoverage() throws Exception {
+			// The bar lives on the Info tab and the numbers ride the cell tooltip now.
+			String src = read(CLAN_SCREEN);
+			int decl = src.indexOf("private void drawSoloInfo");
+			String body = src.substring(decl, src.indexOf("\n\t}", decl));
+			assertTrue(
+				body.contains("neededForBuild()") && body.contains("schematicTotal()"),
+				"collected = total - still-missing; chest stock is supply, not progress"
+			);
+			int tip = src.indexOf("private List<Component> soloCellTooltip");
+			assertTrue(tip > 0, "solo cell tooltip missing");
+			String tipBody = src.substring(tip, src.indexOf("\n\t}", tip));
+			assertTrue(
+				tipBody.contains("gather_collected") && tipBody.contains("gather_left"),
+				"the hover must carry collected and left"
 			);
 		}
 	}

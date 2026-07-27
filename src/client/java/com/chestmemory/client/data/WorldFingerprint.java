@@ -9,22 +9,21 @@ import org.jspecify.annotations.Nullable;
 /**
  * Tells apart two worlds that report the same dimension id.
  * <p>
- * A multiworld server (Multiverse and friends) hosts several worlds behind one address, and
- * each of them has its own Overworld / Nether / End. The client is told only the vanilla
- * dimension key, so a farm world's Nether and a build world's Nether both arrive as
- * {@code minecraft:the_nether}. Everything the mod keys on — the container key, the nearby
- * filter, the per-dimension list — then treats them as one place: a chest at 100,64,200 in
- * one Nether collides with a chest at the same coordinates in the other.
+ * A multiworld server (Multiverse and friends, or several servers behind one proxy) hosts
+ * several worlds behind one address, and each of them has its own Overworld / Nether / End.
+ * The client is told only the vanilla dimension key, so a farm world's chest at 100,64,200
+ * and a build world's chest at the same coordinates used to collide on one record.
  * <p>
- * There is no world id in the protocol to lean on, so this derives a fingerprint from what
- * the server does send. The world's respawn point is the most reliable such signal: it is
- * per-world, arrives with the join/respawn packet, and is stable for as long as the server
- * admin leaves it alone.
+ * The primary signal is the <b>hashed seed</b> from the login/respawn packet (captured by
+ * {@code ClientPacketListenerMixin} into {@link WorldIdentity}): per-world, identical for
+ * every player, stable across sessions. When a server hides its seed, the world's explicitly
+ * set respawn point is used as a weaker fallback. Composition and comparison rules live in
+ * {@link WorldTags}.
  * <p>
- * <b>It is a hint, not an identity.</b> Two worlds can share a spawn point, and an admin can
- * move one, so callers must treat a mismatch as "cannot prove these are the same place"
- * rather than "these are definitely different". Everything here is therefore used to
- * suppress destructive actions and misleading claims, never to delete data.
+ * <b>A missing tag is "unknown", never "different".</b> Records written before tags existed
+ * have none, and servers can offer nothing to fingerprint with; treating that as foreign
+ * would hide or delete chests that are perfectly fine. Filtering may use this, deletion
+ * must not.
  */
 public final class WorldFingerprint {
 	private WorldFingerprint() {
@@ -32,10 +31,8 @@ public final class WorldFingerprint {
 
 	/**
 	 * Short, stable tag for the world the player is standing in, or null when the client has
-	 * not been told enough to say.
-	 * <p>
-	 * Format is deliberately opaque and compact: it lands in every container record and in
-	 * the profile file, so it should not balloon them.
+	 * not been told enough to say. Format is deliberately opaque and compact: it lands in
+	 * every container record and in the profile file, so it should not balloon them.
 	 */
 	public static @Nullable String current(@Nullable Minecraft client) {
 		if (client == null || client.level == null) {
@@ -48,6 +45,15 @@ public final class WorldFingerprint {
 		if (level == null) {
 			return null;
 		}
+		Long seed = WorldIdentity.seedFor(level);
+		if (seed != null) {
+			String tag = WorldTags.seedTag(seed);
+			if (tag != null) {
+				return tag;
+			}
+		}
+		// No usable seed (hidden by the server, or the packet predates this mod's session):
+		// fall back to the world's respawn point when one was explicitly set.
 		LevelData.RespawnData respawn = level.getRespawnData();
 		if (respawn == null) {
 			return null;
@@ -61,20 +67,16 @@ public final class WorldFingerprint {
 		if (LevelData.RespawnData.DEFAULT.equals(respawn)) {
 			return null;
 		}
-		return "s" + pos.getX() + "_" + pos.getY() + "_" + pos.getZ();
+		return WorldTags.spawnTag(pos.getX(), pos.getY(), pos.getZ());
 	}
 
 	/**
 	 * True when two fingerprints are known to describe different worlds.
 	 * <p>
-	 * Answers false whenever either side is unknown, which is the safe direction: an old
-	 * record written before fingerprints existed has none, and treating that as "different"
-	 * would hide every chest remembered before this update.
+	 * Answers false whenever either side is unknown — including legacy-format tags from old
+	 * profiles and tags built from different signals. See {@link WorldTags#provablyDifferent}.
 	 */
 	public static boolean provablyDifferent(@Nullable String a, @Nullable String b) {
-		if (a == null || a.isBlank() || b == null || b.isBlank()) {
-			return false;
-		}
-		return !a.equals(b);
+		return WorldTags.provablyDifferent(a, b);
 	}
 }

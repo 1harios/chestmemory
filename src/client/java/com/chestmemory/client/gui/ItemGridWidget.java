@@ -58,10 +58,21 @@ public class ItemGridWidget extends AbstractWidget {
 		this.scrollRow = 0;
 		this.hoveredIndex = -1;
 		this.iconCache.clear();
+		this.tooltipItemId = null;
+		this.tooltipLines = List.of();
 		for (ItemSummary s : this.items) {
 			this.iconCache.computeIfAbsent(s.itemId(), com.chestmemory.client.data.ItemStackKeys::toStack);
 		}
 	}
+
+	/**
+	 * Composed tooltip for the hovered item. Building it walks the container list (world
+	 * breakdown) and resolves names, so it is cached per hovered id and refreshed on a
+	 * timer instead of being rebuilt every frame.
+	 */
+	private @org.jspecify.annotations.Nullable String tooltipItemId;
+	private long tooltipBuiltMs;
+	private List<Component> tooltipLines = List.of();
 
 	/** How many columns fit without stretching slots. */
 	private int cols() {
@@ -126,9 +137,7 @@ public class ItemGridWidget extends AbstractWidget {
 
 	@Override
 	protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-		// Dark plate
-		graphics.fill(this.getX(), this.getY(), this.getX() + this.width, this.getY() + this.height, 0xFF1A120A);
-		graphics.fill(this.getX() + 1, this.getY() + 1, this.getX() + this.width - 1, this.getY() + this.height - 1, 0xFFC6C6C6);
+		ChestGuiStyle.drawGridTray(graphics, this.getX(), this.getY(), this.width, this.height);
 
 		int c = cols();
 		int rv = rowsVisible();
@@ -188,14 +197,14 @@ public class ItemGridWidget extends AbstractWidget {
 				graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, 0x55E0C040);
 			}
 
-			// Compact + slightly scaled count (fits in 18px slot without black plate)
+			// Count: size / style / colour come from settings (see panel tab preview).
 			String countText = summary.isBuildNeed()
-				? formatCount(summary.neededForBuild())
-				: formatCount(summary.totalCount());
+				? ChestGuiStyle.formatCount(summary.neededForBuild())
+				: ChestGuiStyle.formatCount(summary.totalCount());
 			var font = this.minecraft.font;
 			int countColor;
 			if (!summary.isBuildNeed()) {
-				countColor = 0xFFFFFFFF;
+				countColor = 0; // 0 = configured colour
 			} else if (summary.neededForBuild() <= 0) {
 				countColor = 0xFF88CCFF; // done
 			} else if (summary.stillShort() > 0) {
@@ -203,7 +212,7 @@ public class ItemGridWidget extends AbstractWidget {
 			} else {
 				countColor = 0xFF80FFA0; // ready to take from chests
 			}
-			drawSlotCount(graphics, font, countText, slotX, slotY, countColor);
+			ChestGuiStyle.drawSlotCount(graphics, font, countText, slotX, slotY, countColor);
 
 			// First letter of claimer in top-left of slot
 			if (mine || other) {
@@ -220,94 +229,213 @@ public class ItemGridWidget extends AbstractWidget {
 			int barH = Math.max(10, this.height * rowsVisible() / (rowsVisible() + maxScrollRow()));
 			int barY = this.getY() + (int) ((this.height - barH) * (scrollRow / (float) maxScrollRow()));
 			graphics.fill(this.getX() + this.width - 3, this.getY() + 2, this.getX() + this.width - 1, this.getY() + this.height - 2, 0x88000000);
-			graphics.fill(this.getX() + this.width - 3, barY, this.getX() + this.width - 1, barY + barH, 0xFFE0C040);
+			graphics.fill(this.getX() + this.width - 3, barY, this.getX() + this.width - 1, barY + barH,
+				this.draggingScrollbar ? ChestGuiStyle.BRASS_BRIGHT : ChestGuiStyle.BRASS);
 		}
 
 		if (hoveredIndex >= 0 && hoveredIndex < items.size()) {
 			ItemSummary s = items.get(hoveredIndex);
-			List<Component> lines = new ArrayList<>();
-			// Title: the renamed label stands on its own line in italics above the base
-			// item name, the way vanilla shows a renamed item.
-			String custom = com.chestmemory.client.data.ItemStackKeys.customNameOf(s.itemId());
-			if (custom != null) {
-				lines.add(Component.literal(custom)
-					.withStyle(net.minecraft.ChatFormatting.YELLOW, net.minecraft.ChatFormatting.ITALIC));
-				// Base item name: build a clean stack so the custom name is not reapplied.
-				lines.add(new ItemStack(resolveStack(s.itemId()).getItem()).getHoverName()
-					.copy().withStyle(net.minecraft.ChatFormatting.GRAY));
-			} else {
-				lines.add(Component.literal(
-					com.chestmemory.client.data.ChestMemoryStorage.itemDisplayName(s.itemId())
-				).withStyle(net.minecraft.ChatFormatting.WHITE));
+			long now = System.currentTimeMillis();
+			// Rebuild only when the hovered item changes (or twice a second, so live data
+			// like clan claims stays fresh) — building walks containers and resolves names.
+			if (!s.itemId().equals(this.tooltipItemId) || now - this.tooltipBuiltMs > 500) {
+				this.tooltipLines = buildTooltip(s);
+				this.tooltipItemId = s.itemId();
+				this.tooltipBuiltMs = now;
 			}
-			if (s.isBuildNeed()) {
-				if (s.schematicTotal() > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal()));
-				}
-				if (s.neededForBuild() <= 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_done"));
-				} else {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_needed", s.neededForBuild()));
-				}
-				if (s.inPlayer() >= 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_in_player", s.inPlayer()));
-				}
-				int staging = com.chestmemory.client.data.ChestMemoryStorage.get().countInStaging(s.itemId());
-				if (staging > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_in_staging", staging));
-				}
-				lines.add(Component.translatable("screen.chestmemory.tooltip.build_in_chests", s.totalCount()));
-				if (s.neededForBuild() > 0 && s.canGatherFromChests() > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.build_can_gather", s.canGatherFromChests()));
-				}
-				if (s.neededForBuild() > 0) {
-					if (s.totalCount() <= 0) {
-						lines.add(Component.translatable("screen.chestmemory.tooltip.build_none_chests"));
-					} else if (s.stillShort() > 0) {
-						lines.add(Component.translatable("screen.chestmemory.tooltip.build_short", s.stillShort()));
-					} else {
-						lines.add(Component.translatable("screen.chestmemory.tooltip.build_enough"));
-					}
-				}
-			} else {
-				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.total", s.totalCount())));
-				// Use the item's real stack size — 16 for pearls, 1 for tools, not always 64.
-				int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
-				if (s.fullStacks(per) > 0) {
-					lines.add(gray(Component.translatable(
-						"screen.chestmemory.tooltip.stacks",
-						s.fullStacks(per), per, s.remainder(per)
-					)));
-				} else {
-					lines.add(gray(Component.translatable("screen.chestmemory.tooltip.less_than_stack", s.totalCount())));
-				}
-			}
-			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())));
-			if (s.hasDistance()) {
-				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.nearest", (int) s.nearestDistance())));
-			}
-			if (s.isBuildNeed() && s.neededForBuild() > 0) {
-				lines.add(Component.translatable("screen.chestmemory.tooltip.build_click"));
-			}
-			if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
-				if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(this.minecraft, s.itemId())) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_me"));
-				} else if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByOther(this.minecraft, s.itemId())) {
-					String who = com.chestmemory.client.clan.ClanSessionManager.claimName(s.itemId());
-					lines.add(Component.translatable(
-						"screen.chestmemory.tooltip.clan_claim_other",
-						who != null ? who : "?"
-					));
-				} else {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_free"));
-				}
-				int cd = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(s.itemId());
-				if (cd > 0) {
-					lines.add(Component.translatable("screen.chestmemory.tooltip.clan_delivered", cd));
-				}
-			}
-			graphics.setTooltipForNextFrame(this.minecraft.font, lines, java.util.Optional.empty(), mouseX, mouseY);
+			graphics.setTooltipForNextFrame(this.minecraft.font, this.tooltipLines, java.util.Optional.empty(), mouseX, mouseY);
 		}
+	}
+
+	/**
+	 * Hover card in vanilla grammar: white name, gray facts, dark-gray id at the bottom —
+	 * the layout of an advanced tooltip, not a coloured dashboard.
+	 */
+	private List<Component> buildTooltip(ItemSummary s) {
+		List<Component> lines = new ArrayList<>();
+		var storage = com.chestmemory.client.data.ChestMemoryStorage.get();
+
+		// ── Name exactly as vanilla draws it: rarity colour (aqua for enchanted gear,
+		// yellow for uncommon, …), italics for renamed items. The stack is rebuilt from
+		// the key with its enchantments and custom name, so getStyledHoverName() is the
+		// same call vanilla's own tooltip makes — colours in renamed names included.
+		if (com.chestmemory.client.data.ItemStackKeys.isKnown(s.itemId())) {
+			lines.add(resolveStack(s.itemId()).getStyledHoverName());
+		} else {
+			// Removed-mod item: no registry entry to style, show the raw id plainly.
+			lines.add(Component.literal(com.chestmemory.client.data.ItemStackKeys.baseId(s.itemId()))
+				.withStyle(net.minecraft.ChatFormatting.WHITE));
+		}
+		if (com.chestmemory.client.data.ItemStackKeys.hasEnchantData(s.itemId())) {
+			for (String name : com.chestmemory.client.data.ItemStackKeys.enchantNames(s.itemId())) {
+				lines.add(Component.literal(name).withStyle(net.minecraft.ChatFormatting.GRAY));
+			}
+		}
+		lines.add(Component.empty());
+
+		if (s.isBuildNeed()) {
+			buildModeLines(lines, s);
+		} else {
+			normalModeLines(lines, s, storage);
+		}
+
+		// ── Clan claims ──
+		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+			lines.add(Component.empty());
+			if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(this.minecraft, s.itemId())) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_me"));
+			} else if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByOther(this.minecraft, s.itemId())) {
+				String who = com.chestmemory.client.clan.ClanSessionManager.claimName(s.itemId());
+				lines.add(Component.translatable(
+					"screen.chestmemory.tooltip.clan_claim_other",
+					who != null ? who : "?"
+				));
+			} else {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_free"));
+			}
+			int cd = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(s.itemId());
+			if (cd > 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_delivered", cd));
+			}
+		}
+
+		if (s.isBuildNeed() && s.neededForBuild() > 0) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.build_click")
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		}
+
+		// Raw id last, dark gray — where vanilla advanced tooltips put it.
+		lines.add(Component.literal(com.chestmemory.client.data.ItemStackKeys.baseId(s.itemId()))
+			.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		return lines;
+	}
+
+	private void normalModeLines(
+		List<Component> lines,
+		ItemSummary s,
+		com.chestmemory.client.data.ChestMemoryStorage storage
+	) {
+		// Amount, with real stack size — 16 for pearls, 1 for tools, not always 64.
+		// Compact: "×372 (5 ст. + 52)"; the stack size itself is noise here.
+		int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
+		int stacks = s.fullStacks(per);
+		int rem = s.remainder(per);
+		if (stacks > 0 && rem > 0) {
+			lines.add(gray(Component.translatable(
+				"screen.chestmemory.tooltip.amount_stacks", s.totalCount(), stacks, rem)));
+		} else if (stacks > 0) {
+			lines.add(gray(Component.translatable(
+				"screen.chestmemory.tooltip.amount_stacks_even", s.totalCount(), stacks)));
+		} else {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount())));
+		}
+		if (s.hasDistance()) {
+			lines.add(gray(Component.translatable(
+				"screen.chestmemory.tooltip.containers_nearest",
+				s.containerCount(), (int) s.nearestDistance()
+			)));
+		} else {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())));
+		}
+
+		// ── Where it lies: per-world breakdown (multiworld servers) — plain gray lines ──
+		boolean live = storage.isViewingLive();
+		Minecraft mc = this.minecraft;
+		String playerDim = live && mc != null && mc.level != null
+			? com.chestmemory.client.data.ChestMemoryStorage.dimensionId(mc.level)
+			: null;
+		String currentTag = live
+			? com.chestmemory.client.data.WorldFingerprint.current(mc)
+			: null;
+		List<com.chestmemory.client.data.ContainerRecord> all = storage.allContainers();
+		List<com.chestmemory.client.data.WorldBreakdown.Entry> groups =
+			com.chestmemory.client.data.WorldBreakdown.of(all, s.itemId(), playerDim, currentTag);
+		// Only worth lines when the answer is not simply "all of it is right here".
+		boolean informative = groups.size() > 1
+			|| (groups.size() == 1 && !groups.getFirst().here());
+		if (informative) {
+			int shown = 0;
+			for (com.chestmemory.client.data.WorldBreakdown.Entry e : groups) {
+				if (shown >= 4) {
+					lines.add(Component.literal("…").withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+					break;
+				}
+				if (e.here()) {
+					lines.add(gray(Component.translatable(
+						"screen.chestmemory.tooltip.where_line_here", e.count(), e.containers())));
+				} else {
+					lines.add(gray(Component.translatable(
+						"screen.chestmemory.tooltip.where_line",
+						worldLabel(e), e.count(), e.containers())));
+				}
+				shown++;
+			}
+		}
+		// Personal storage, split the way players think about it: shulkers on you vs ender.
+		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(all, s.itemId());
+		int inEnder = com.chestmemory.client.data.WorldBreakdown.enderCount(all, s.itemId());
+		if (inShulkers > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.shulkers", inShulkers)));
+		}
+		if (inEnder > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.ender", inEnder)));
+		}
+
+		if (live) {
+			int staging = storage.countInStaging(s.itemId());
+			if (staging > 0) {
+				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.staging_line", staging)));
+			}
+		}
+	}
+
+	private void buildModeLines(List<Component> lines, ItemSummary s) {
+		// Facts in plain gray; only the one status line that decides "go / don't go"
+		// carries colour.
+		if (s.schematicTotal() > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_total", s.schematicTotal())));
+		}
+		if (s.neededForBuild() <= 0) {
+			lines.add(Component.translatable("screen.chestmemory.tooltip.build_done")
+				.withStyle(net.minecraft.ChatFormatting.GREEN));
+		} else {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_needed", s.neededForBuild())));
+		}
+		if (s.inPlayer() >= 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_player", s.inPlayer())));
+		}
+		int staging = com.chestmemory.client.data.ChestMemoryStorage.get().countInStaging(s.itemId());
+		if (staging > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_staging", staging)));
+		}
+		lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_in_chests", s.totalCount())));
+		if (s.neededForBuild() > 0 && s.canGatherFromChests() > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_can_gather", s.canGatherFromChests())));
+		}
+		if (s.neededForBuild() > 0) {
+			if (s.totalCount() <= 0) {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.build_none_chests")
+					.withStyle(net.minecraft.ChatFormatting.RED));
+			} else if (s.stillShort() > 0) {
+				lines.add(gray(Component.translatable("screen.chestmemory.tooltip.build_short", s.stillShort())));
+			} else {
+				lines.add(Component.translatable("screen.chestmemory.tooltip.build_enough")
+					.withStyle(net.minecraft.ChatFormatting.GREEN));
+			}
+		}
+		if (s.hasDistance()) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.nearest", (int) s.nearestDistance())));
+		}
+	}
+
+	/** Label for a non-"here" breakdown group. */
+	static Component worldLabel(com.chestmemory.client.data.WorldBreakdown.Entry e) {
+		if (e.otherWorld()) {
+			// Same dimension id as the player, provably another world: the id cannot name
+			// it, so it is called what it is.
+			return Component.translatable("chestmemory.world.other");
+		}
+		return Component.literal(com.chestmemory.client.data.DimensionChoice.prettyName(e.dimensionId()));
 	}
 
 	/** True when the pointer is over the scrollbar strip (with a little slack). */
@@ -378,65 +506,6 @@ public class ItemGridWidget extends AbstractWidget {
 	@Override
 	protected void updateWidgetNarration(NarrationElementOutput output) {
 		output.add(NarratedElementType.TITLE, Component.translatable("screen.chestmemory.grid"));
-	}
-
-	/**
-	 * Draw count bottom-right in the slot, scaled down so 3–4 digits fit cleanly.
-	 * No black plate — shadow only for readability.
-	 */
-	private static void drawSlotCount(
-		GuiGraphicsExtractor graphics,
-		net.minecraft.client.gui.Font font,
-		String countText,
-		int slotX,
-		int slotY,
-		int countColor
-	) {
-		float scale = 0.72f;
-		int textW = font.width(countText);
-		// Bottom-right of the 16px icon area (slot is 18 with 1px border)
-		float drawX = slotX + 17 - textW * scale;
-		float drawY = slotY + 17 - 7.2f * scale;
-		if (drawX < slotX + 1) {
-			drawX = slotX + 1;
-		}
-		graphics.pose().pushMatrix();
-		graphics.pose().translate(drawX, drawY);
-		graphics.pose().scale(scale, scale);
-		// Soft shadow (no dark plate)
-		graphics.text(font, countText, 1, 1, 0xE0000000, false);
-		graphics.text(font, countText, 0, 0, countColor, false);
-		graphics.pose().popMatrix();
-	}
-
-	/** Compact counts for 18px slots: 999, 1k, 1.5k, 12k, 1.2M */
-	private static String formatCount(int count) {
-		if (count < 0) {
-			return "0";
-		}
-		if (count >= 1_000_000) {
-			double m = count / 1_000_000.0;
-			return m >= 10 ? String.format("%.0fM", m) : String.format("%.1fM", m);
-		}
-		// From 1000: always compact so full "1234" never overflows the slot
-		if (count >= 1000) {
-			double k = count / 1000.0;
-			if (k >= 100) {
-				return String.format("%.0fk", k);
-			}
-			if (k >= 10) {
-				// 12k / 12.5k — prefer short
-				if (Math.abs(k - Math.rint(k)) < 0.05) {
-					return String.format("%.0fk", k);
-				}
-				return String.format("%.0fk", k);
-			}
-			if (Math.abs(k - Math.rint(k)) < 0.05) {
-				return String.format("%.0fk", k);
-			}
-			return String.format("%.1fk", k);
-		}
-		return String.valueOf(count);
 	}
 
 	/** Muted tone for the tooltip's secondary lines, so the title stands out. */

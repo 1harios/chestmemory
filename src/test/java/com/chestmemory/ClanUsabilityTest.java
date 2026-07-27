@@ -91,11 +91,15 @@ class ClanUsabilityTest {
 		@Test
 		@DisplayName("Entering a gather does not demand Litematica during a clan gather")
 		void clanGatherSkipsLitematicaGate() throws Exception {
-			String src = read(SCREEN);
+			// The gate moved with the UI: the gather screen's mode picker asks the session
+			// FIRST, so a member without Litematica still gets the clan grid from the hub.
+			String src = read(CLAN_SCREEN);
+			int decl = src.indexOf("private GatherMode gatherMode()");
+			assertTrue(decl > 0, "mode picker not found");
+			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
-				src.contains("boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInSession()")
-					&& src.contains("if (!clanGather && !LitematicaAccess.isAvailable())"),
-				"enterGatherMode must let a clan gather through without Litematica"
+				body.indexOf("GatherMode.CLAN") < body.indexOf("hasActiveMaterialListSafe"),
+				"a clan session must win before any Litematica check"
 			);
 		}
 
@@ -202,22 +206,21 @@ class ClanUsabilityTest {
 	@DisplayName("A button that cannot be pressed looks different")
 	class DisabledIsVisible {
 		@Test
-		@DisplayName("Measured: disabled is desaturated, not just another brown")
+		@DisplayName("Measured: disabled is clearly darker in the neutral palette")
 		void disabledIsDesaturated() throws Exception {
 			String src = read(STYLE);
 			int row = constant(src, "ROW_WOOD");
 			int disabled = constant(src, "ROW_WOOD_DISABLED");
-			// The old value was 0x2A2018 — 1.03:1 against ROW_WOOD, effectively invisible.
-			// Wood is deeply saturated, so draining the colour is what reads as "dead"; the
-			// palette is too dark for brightness alone to carry the difference.
+			// The gray-chest skin has no saturation to drain (both faces are neutral), so
+			// "dead" must be carried by brightness — a full step darker.
 			assertTrue(
-				saturation(row) - saturation(disabled) > 0.4,
-				"disabled must be clearly less saturated than wood: "
+				saturation(row) < 0.05 && saturation(disabled) < 0.05,
+				"both faces must stay neutral gray: "
 					+ saturation(row) + " vs " + saturation(disabled)
 			);
 			assertTrue(
-				contrast(row, disabled) > 1.15,
-				"disabled must also differ in brightness: " + contrast(row, disabled) + ":1"
+				contrast(row, disabled) > 1.5,
+				"disabled must be clearly darker: " + contrast(row, disabled) + ":1"
 			);
 		}
 
@@ -295,7 +298,7 @@ class ClanUsabilityTest {
 		void doubleSwitchIsRejected() throws Exception {
 			String screen = read(CLAN_SCREEN);
 			int decl = screen.indexOf("public boolean mouseClicked");
-			String body = screen.substring(decl, decl + 900);
+			String body = screen.substring(decl, decl + 3200);
 			assertTrue(
 				body.contains("ClanSessionManager.switchingTo() != null"),
 				"clicking another row mid-switch must not start a second one"
@@ -342,7 +345,7 @@ class ClanUsabilityTest {
 					);
 				}
 			}
-			assertEquals(5, checked, "expected to inspect every busy guard");
+			assertEquals(8, checked, "expected to inspect every busy guard");
 		}
 
 		@Test
@@ -374,11 +377,16 @@ class ClanUsabilityTest {
 			String src = read(CLAN_SCREEN);
 			assertTrue(src.contains("private String codeDraft"), "the draft must be kept");
 			int boxes = src.split("new EditBox\\(", -1).length - 1;
-			int restores = src.split("setValue\\(this\\.codeDraft\\)", -1).length - 1;
-			int responders = src.split("this\\.codeDraft = v", -1).length - 1;
-			// One EditBox is the hub URL field, which has its own value.
-			assertEquals(boxes - 1, restores, "every code box must restore the draft");
-			assertEquals(boxes - 1, responders, "every code box must record what is typed");
+			int restores = src.split("setValue\\(this\\.codeDraft\\)", -1).length - 1
+				+ src.split("setValue\\(this\\.renameDraft\\)", -1).length - 1
+				+ src.split("setValue\\(this\\.gatherQuery\\)", -1).length - 1;
+			int responders = src.split("this\\.codeDraft = v", -1).length - 1
+				+ src.split("this\\.renameDraft = v", -1).length - 1
+				+ src.split("this\\.gatherQuery = v", -1).length - 1;
+			// One EditBox is the hub URL field, which has its own value; the code box, the
+			// rename box and the gather search each keep a draft that survives the rebuild.
+			assertEquals(boxes - 1, restores, "every draft box must restore its draft");
+			assertEquals(boxes - 1, responders, "every draft box must record what is typed");
 		}
 	}
 }

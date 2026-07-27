@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -192,16 +193,21 @@ class ClanFlowTest {
 	class Finish {
 
 		@Test
-		@DisplayName("Finish ends the clan session too, not only the local queue")
+		@DisplayName("Ending the session still drops the warehouse — the manager owns it now")
 		void finishLeavesClan() throws Exception {
-			// Reported: pressing "Завершить" left the gather running, because only the local
-			// side was cleared and the session kept polling.
-			String body = methodBody(read(SCREEN), "private void finishGatherMode()");
+			// «Завершить» is gone with the panel's scheme mode; leaving/closing lives on the
+			// gather screen and runs through leaveAsync, which drops the warehouse marks.
 			assertTrue(
-				body.contains("ClanSessionManager.leaveAsync("),
-				"finishing has to end the clan side as well"
+				read(CLAN_SCREEN).contains("ClanSessionManager.leaveAsync("),
+				"the gather screen must end the clan side"
 			);
-			assertTrue(body.contains("clearStaging()"), "and drop the warehouse marks");
+			String manager = read(CLAN);
+			int leave = manager.indexOf("clan_closed");
+			assertTrue(leave > 0, "leave path not found");
+			assertTrue(
+				manager.substring(Math.max(0, leave - 900), leave).contains("clearStaging()"),
+				"leaveAsync must drop warehouse marks"
+			);
 		}
 	}
 
@@ -431,15 +437,23 @@ class ClanFlowTest {
 	class Reachability {
 
 		@Test
-		@DisplayName("The gather button is always clickable")
+		@DisplayName("The gather button is always clickable and leads to the gather screen")
 		void gatherButtonAlwaysClickable() throws Exception {
 			// A clan member who relogged could not continue: Litematica had no material list
-			// yet, so the only button that opens the materials view was disabled with no
-			// explanation. Pressing it now reports why.
-			String body = methodBody(read(SCREEN), "private void updateLitematicaButtonState()");
+			// yet, so the old button was disabled with no explanation. The button now opens
+			// the gather screen unconditionally — the screen itself explains every state.
+			String src = read(SCREEN);
 			assertTrue(
-				body.contains("this.litematicaButton.active = true"),
+				src.contains("this.litematicaButton.active = true"),
 				"the button must not be gated on having a list right now"
+			);
+			assertTrue(
+				src.contains("new ClanGatherScreen(this)"),
+				"the middle button is the single entry to gathering"
+			);
+			assertFalse(
+				src.contains("litematicaBuildMode"),
+				"the panel keeps no schematic mode of its own — no duplicated gather UI"
 			);
 		}
 
@@ -449,14 +463,15 @@ class ClanFlowTest {
 			// Reported: after leaving one gather there was no way to pick another already joined.
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("drawGatherList(graphics, null, left, contentW)"),
-				"the list has to render with no active gather"
+				src.contains("case TAB_LIST -> drawGatherList(graphics, s, left, contentW);"),
+				"the list has to render with no active gather (s is null then)"
 			);
-			int init = src.indexOf("boolean in = ClanSessionManager.isInSession();");
-			assertTrue(init > 0, "init not found");
-			String tail = src.substring(init, src.indexOf("if (!in) {", init));
 			assertTrue(
-				!tail.contains("this.tabsY = -1;"),
+				src.contains("return new int[]{TAB_GATHER, TAB_LIST};"),
+				"outside a session the strip still offers the gathers list"
+			);
+			assertFalse(
+				src.contains("this.tabsY = -1;"),
 				"the tab strip must exist outside a session, or the list cannot be opened"
 			);
 		}
@@ -467,20 +482,20 @@ class ClanFlowTest {
 	class HostRights {
 
 		@Test
-		@DisplayName("Only the creator sees the delete button, and it asks twice")
+		@DisplayName("Closing lives in host settings only, and it asks twice")
 		void hostCanDelete() throws Exception {
+			// The list tab lost its delete button: ending the build for everyone is a
+			// deliberate trip behind the pencil, not a row next to «Вступить».
 			String src = read(CLAN_SCREEN);
-			assertTrue(src.contains("ClanSessionManager.isHost("), "the button is host-only");
-			assertTrue(src.contains("clan.delete_confirm"), "deleting ends the build for everyone");
-			// Check the two-step guard in the button body, not just anywhere in the file: the
-			// field name alone still matched after the arming logic was gutted.
-			int del = src.indexOf("clan.delete_confirm");
-			assertTrue(del > 0, "delete button not found");
-			String around = src.substring(Math.max(0, del - 400), Math.min(src.length(), del + 1200));
+			assertTrue(src.contains("ClanSessionManager.isHost("), "the entry is host-only");
+			assertTrue(src.contains("clan.close_confirm"), "closing ends the build for everyone");
+			int del = src.indexOf("clan.close_confirm");
+			String around = src.substring(Math.max(0, del - 600), Math.min(src.length(), del + 1200));
 			assertTrue(
-				around.contains("if (!this.deleteArmed)") && around.contains("this.deleteArmed = true"),
+				around.contains("if (!this.closeArmed)") && around.contains("this.closeArmed = true"),
 				"a single misclick must not end a gather for everyone"
 			);
+			assertFalse(src.contains("deleteArmed"), "the redundant list-tab delete is gone");
 		}
 
 		@Test
@@ -492,19 +507,18 @@ class ClanFlowTest {
 		}
 
 		@Test
-		@DisplayName("Delete labels fit the half-width row")
+		@DisplayName("Close labels fit their full-width settings row")
 		void deleteLabelsFit() throws Exception {
-			// 316px content, two columns with a 4px gap, minus padding.
 			String ru = read("src/main/resources/assets/chestmemory/lang/ru_ru.json");
-			for (String key : new String[] {"delete", "delete_confirm"}) {
+			for (String key : new String[] {"close_session", "close_confirm"}) {
 				java.util.regex.Matcher m = java.util.regex.Pattern
 					.compile("\"screen\\.chestmemory\\.clan\\." + key + "\":\\s*\"([^\"]*)\"")
 					.matcher(ru);
 				assertTrue(m.find(), "missing lang key: " + key);
 				String text = m.group(1);
 				assertTrue(
-					text.length() * 6 <= 144,
-					"label too wide: '" + text + "' ~" + (text.length() * 6) + "px of 144"
+					text.length() * 6 <= 304,
+					"label too wide: '" + text + "' ~" + (text.length() * 6) + "px of 304"
 				);
 			}
 		}

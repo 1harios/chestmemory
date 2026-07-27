@@ -37,6 +37,14 @@ public class SettingRowButton extends AbstractWidget {
 		this.swatch = swatch;
 	}
 
+	/** Hover description; wrapped by vanilla tooltip handling. */
+	public SettingRowButton describe(@Nullable Component description) {
+		if (description != null) {
+			this.setTooltip(net.minecraft.client.gui.components.Tooltip.create(description));
+		}
+		return this;
+	}
+
 	@Override
 	public void onClick(MouseButtonEvent event, boolean doubleClick) {
 		if (this.active && this.onPress != null) {
@@ -50,6 +58,7 @@ public class SettingRowButton extends AbstractWidget {
 		int x0 = this.getX();
 		int y0 = this.getY();
 
+		// Hover state is the row itself: lighter face + white outline (vanilla grammar).
 		ChestGuiStyle.drawSettingRow(graphics, x0, y0, this.width, this.height, hover, this.active);
 
 		var font = net.minecraft.client.Minecraft.getInstance().font;
@@ -63,14 +72,15 @@ public class SettingRowButton extends AbstractWidget {
 			String text = ChestGuiStyle.ellipsize(font, this.getMessage().getString(), this.width - 12);
 			ChestGuiStyle.drawCentered(graphics, font, text, x0 + this.width / 2, textY, labelColor);
 		} else {
-			String valueText = this.value != null ? this.value.getString() : "";
-			int valueW = this.value != null ? font.width(valueText) : 0;
+			// Component-aware width/draw: values keep their own styles (colours, italics).
+			int valueW = this.value != null ? font.width(this.value) : 0;
 			int labelMax = this.width - 12 - valueW - swatchW - (valueW > 0 ? 6 : 0);
 			String label = ChestGuiStyle.ellipsize(font, this.getMessage().getString(), Math.max(16, labelMax));
-			graphics.text(font, label, x0 + 6, textY, labelColor, false);
+			graphics.text(font, label, x0 + 7, textY, labelColor, false);
 			if (valueW > 0) {
 				int vx = x0 + this.width - 6 - swatchW - (swatchW > 0 ? 4 : 0) - valueW;
-				graphics.text(font, valueText, vx, textY, this.active ? ChestGuiStyle.TEXT_GOLD : ChestGuiStyle.TEXT_DISABLED, false);
+				graphics.text(font, this.value, vx, textY,
+					this.active ? ChestGuiStyle.VALUE_TEXT : ChestGuiStyle.TEXT_DISABLED, false);
 			}
 		}
 
@@ -80,6 +90,8 @@ public class SettingRowButton extends AbstractWidget {
 			int sy = y0 + (this.height - 10) / 2;
 			graphics.fill(sx - 1, sy - 1, sx + 15, sy + 11, ChestGuiStyle.WOOD_DARK);
 			graphics.fill(sx, sy, sx + 14, sy + 10, 0xFF000000 | rgb);
+			// Tiny top gloss so the swatch reads as a chip, not a paint spill
+			graphics.fill(sx, sy, sx + 14, sy + 1, ChestGuiStyle.withAlpha(0xFFFFFF, 0.30F));
 		}
 	}
 

@@ -230,16 +230,71 @@ public final class BuildGatherSession {
 		return total;
 	}
 
+	// ── the main panel's filter, honoured by the gather ───────────────────
+	// "Рядом ≤256м · Все миры" on the panel is a promise about what the mod is looking
+	// at. The gather used to ignore it and route to chests half a world away.
+
+	private static ListScope filterScope() {
+		return ModSettings.get().listScope() == ListScope.NEARBY
+			? ListScope.NEARBY : ListScope.WORLD_TOTAL;
+	}
+
+	private static DimensionChoice filterDim() {
+		DimensionChoice dc = ModSettings.get().resolveDimensionChoice();
+		return dc != null ? dc : DimensionChoice.ALL;
+	}
+
+	private static double filterRange() {
+		return ModSettings.get().nearbyRangeEnum().blocks();
+	}
+
+	/** Source chests the panel filter allows: dimension choice, and range when NEARBY. */
+	private static List<ContainerRecord> filteredSources(String itemId) {
+		Minecraft mc = Minecraft.getInstance();
+		String dim = mc != null && mc.level != null ? ChestMemoryStorage.dimensionId(mc.level) : null;
+		List<ContainerRecord> base =
+			ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId, filterDim(), dim);
+		if (filterScope() != ListScope.NEARBY || mc == null || mc.player == null || dim == null) {
+			return base;
+		}
+		double range = filterRange();
+		Vec3 pos = mc.player.position();
+		List<ContainerRecord> out = new ArrayList<>(base.size());
+		for (ContainerRecord r : base) {
+			double d = ChestMemoryStorage.distanceTo(r, pos, dim);
+			if (d >= 0 && d <= range) {
+				out.add(r);
+			}
+		}
+		return out;
+	}
+
 	/**
-	 * Count in <b>source</b> chests only (live memory, excludes build-site warehouse).
-	 * All dimensions (routes / global stock).
+	 * Count in <b>source</b> chests only (live memory, excludes build-site warehouse),
+	 * under the panel's filter: "рядом" set on the panel means the gather counts and
+	 * routes only what is nearby; "весь профиль" means everything.
 	 */
 	public static int countInChestsLive(String itemId) {
-		return ChestMemoryStorage.get().countInSourceChests(itemId);
+		int total = 0;
+		for (ContainerRecord r : filteredSources(itemId)) {
+			total += r.countOf(itemId);
+		}
+		return total;
 	}
 
 	public static int countInChestsLive(String itemId, DimensionChoice dimFilter, @Nullable String playerDim) {
 		return ChestMemoryStorage.get().countInSourceChests(itemId, dimFilter, playerDim);
+	}
+
+	/** Nearest live source chest holding the item, in blocks — or -1 when unknown. */
+	public static double nearestChestDistance(@Nullable Minecraft client, String itemId) {
+		if (client == null || client.player == null || client.level == null || itemId == null) {
+			return -1;
+		}
+		return nearestLiveDist(
+			itemId, client.player.position(),
+			ChestMemoryStorage.dimensionId(client.level), filterDim()
+		);
 	}
 
 	/** Source containers (not staging) for routes / glow — all dimensions. */
@@ -624,7 +679,7 @@ public final class BuildGatherSession {
 				continue;
 			}
 			int band = hasChests ? (inChests >= need ? 0 : 1) : 2;
-			double dist = nearestLiveDist(n.itemId(), pos, dim, DimensionChoice.ALL);
+			double dist = nearestLiveDist(n.itemId(), pos, dim, filterDim());
 			out.add(new RankedItem(n.itemId(), need, inChests, band, dist, n.total()));
 		}
 
@@ -645,7 +700,7 @@ public final class BuildGatherSession {
 				continue;
 			}
 			int band = hasChests ? (inChests >= need ? 0 : 1) : 2;
-			double dist = nearestLiveDist(e.getKey(), pos, dim, DimensionChoice.ALL);
+			double dist = nearestLiveDist(e.getKey(), pos, dim, filterDim());
 			out.add(new RankedItem(e.getKey(), need, inChests, band, dist, e.getValue()));
 		}
 
@@ -705,6 +760,21 @@ public final class BuildGatherSession {
 		if (session == null) {
 			return null;
 		}
+		// Click order first: glass claimed before wool means glass is worked first.
+		// The session map's order is the hub's, not the player's.
+		for (String itemId : com.chestmemory.client.clan.ClanSessionManager.myClaimOrder(client)) {
+			if (exclude != null && exclude.equals(itemId)) {
+				continue;
+			}
+			if (skipped.contains(itemId)) {
+				continue;
+			}
+			if (remainingNeed(itemId, client.player) <= 0) {
+				continue;
+			}
+			return itemId;
+		}
+		// Claims with no recorded order (made before a relog) fall back to the map.
 		for (var e : session.materials.entrySet()) {
 			String itemId = e.getKey();
 			if (exclude != null && exclude.equals(itemId)) {
@@ -817,7 +887,7 @@ public final class BuildGatherSession {
 		// Route from LIVE memory only
 		String dimension = ChestMemoryStorage.dimensionId(client.level);
 		Vec3 pos = client.player.position();
-		List<ContainerRecord> world = liveHighlightableWithItem(currentItemId);
+		List<ContainerRecord> world = filteredSources(currentItemId);
 		int need = remainingNeed(currentItemId);
 		if (need <= 0) {
 			need = queueMissing.getOrDefault(currentItemId, 1);
@@ -900,6 +970,21 @@ public final class BuildGatherSession {
 		DimensionChoice dimensionFilter,
 		double rangeBlocks
 	) {
+		return buildPanelList(client, query, scope, dimensionFilter, rangeBlocks, filter);
+	}
+
+	/**
+	 * Same list under an explicit filter. The gather screen always wants ALL, and must not
+	 * inherit whatever the Ё panel's cycling filter happens to be set to at the moment.
+	 */
+	public static List<ItemSummary> buildPanelList(
+		Minecraft client,
+		String query,
+		ListScope scope,
+		DimensionChoice dimensionFilter,
+		double rangeBlocks,
+		BuildFilter useFilter
+	) {
 		List<LitematicaCompat.MaterialNeed> needs = LitematicaAccess.missingMaterials();
 		if (needs.isEmpty()) {
 			return List.of();
@@ -958,7 +1043,7 @@ public final class BuildGatherSession {
 				need.total()
 			);
 
-			if (!filter.matches(summary)) {
+			if (!useFilter.matches(summary)) {
 				continue;
 			}
 			out.add(summary);
@@ -991,7 +1076,7 @@ public final class BuildGatherSession {
 					n.itemId(),
 					inChests,
 					0,
-					nearestLiveDist(n.itemId(), pos, dim, DimensionChoice.ALL)
+					nearestLiveDist(n.itemId(), pos, dim, filterDim())
 				));
 			}
 		}

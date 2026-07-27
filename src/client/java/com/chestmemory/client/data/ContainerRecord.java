@@ -28,6 +28,13 @@ public final class ContainerRecord {
 	private String virtualId;
 	/** item id -> total count */
 	private Map<String, Integer> items = new LinkedHashMap<>();
+	/**
+	 * item id -> the part of {@link #items} that lies inside shulker boxes stored in this
+	 * container. Nested shulker contents are merged into the flat totals at scan time; this
+	 * keeps their origin, so the panel can answer "how much of it is in shulkers". Null on
+	 * records written before the field existed and on containers with no shulkers.
+	 */
+	private Map<String, Integer> shulkerItems;
 	private long lastSeenMillis;
 	/** Display name for inventory shulkers, etc. */
 	private String displayName;
@@ -123,6 +130,22 @@ public final class ContainerRecord {
 		this.items = items != null ? new LinkedHashMap<>(items) : new LinkedHashMap<>();
 	}
 
+	/** Portion of the totals that lies inside shulker boxes stored in this container. */
+	public Map<String, Integer> shulkerItems() {
+		return shulkerItems == null ? Collections.emptyMap() : shulkerItems;
+	}
+
+	public void setShulkerItems(Map<String, Integer> shulkerItems) {
+		this.shulkerItems = shulkerItems == null || shulkerItems.isEmpty()
+			? null
+			: new LinkedHashMap<>(shulkerItems);
+	}
+
+	/** How many of this item lie inside shulker boxes stored in this container. */
+	public int shulkerCountOf(String itemId) {
+		return shulkerItems == null ? 0 : shulkerItems.getOrDefault(itemId, 0);
+	}
+
 	public long lastSeenMillis() {
 		return lastSeenMillis;
 	}
@@ -214,15 +237,31 @@ public final class ContainerRecord {
 		return items == null ? 0 : items.size();
 	}
 
+	/**
+	 * Storage key for this record. World blocks carry the world tag as a suffix when one is
+	 * known ({@code dim|x,y,z@w1a2b3c4}), so two worlds that share a dimension id can hold a
+	 * chest at the same coordinates without colliding. Records with no tag keep the legacy
+	 * key ({@code dim|x,y,z}) — the two forms coexist in one profile during migration.
+	 * Virtual records (ender chest, inventory shulkers) are personal, not per-world.
+	 */
 	public String positionKey() {
 		if (isVirtual()) {
 			return "virtual|" + virtualId;
 		}
-		return dimension + "|" + x + "," + y + "," + z;
+		return makeKey(dimension, x, y, z, worldTag);
 	}
 
 	public static String makeKey(String dimension, int x, int y, int z) {
 		return dimension + "|" + x + "," + y + "," + z;
+	}
+
+	/** Key with a world-tag suffix; falls back to the legacy form when the tag is unknown. */
+	public static String makeKey(String dimension, int x, int y, int z, String worldTag) {
+		String base = dimension + "|" + x + "," + y + "," + z;
+		if (worldTag == null || worldTag.isEmpty()) {
+			return base;
+		}
+		return base + "@" + worldTag;
 	}
 
 	public String shortLocation() {

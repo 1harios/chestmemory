@@ -43,6 +43,8 @@ class GatherWiringTest {
 		"src/client/java/com/chestmemory/client/gui/ChestMemoryScreen.java";
 	private static final String CLAN =
 		"src/client/java/com/chestmemory/client/clan/ClanSessionManager.java";
+	private static final String CLAN_SCREEN =
+		"src/client/java/com/chestmemory/client/gui/ClanGatherScreen.java";
 
 	@Nested
 	@DisplayName("Claims drive the gather")
@@ -80,23 +82,31 @@ class GatherWiringTest {
 		@DisplayName("Claiming from the panel moves the HUD onto that item at once")
 		void claimingFocusesImmediately() throws Exception {
 			// Second complaint: "I take an item and the HUD still names the old one."
+			// The claim click lives on the gather screen now; the wiring must too.
+			String clan = read(CLAN_SCREEN);
 			assertTrue(
-				read(SCREEN).contains("BuildGatherSession.focusClaimed("),
-				"the panel must retarget the gather when a claim is made"
+				clan.contains("BuildGatherSession.focusClaimed("),
+				"the gather screen must retarget the gather when a claim is made"
+			);
+			assertTrue(
+				clan.contains("BuildGatherSession.startQueue(mc, itemId, List.of())"),
+				"a claim with no gather running must start one — «взял» means «пошёл собирать»"
 			);
 		}
 
 		@Test
 		@DisplayName("Clicking your own claim gives it up")
 		void claimCanBeReleased() throws Exception {
-			String src = read(SCREEN);
+			String src = read(CLAN_SCREEN);
+			int decl = src.indexOf("private void claimFromList(String itemId)");
+			assertTrue(decl > 0, "claim path not found");
+			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
-				src.contains("isClaimedByMe(client, summary.itemId())")
-					&& src.contains("claimToggleAsync"),
+				body.contains("claimToggleAsync"),
 				"clicking an item you already claimed must release it"
 			);
 			assertTrue(
-				src.contains("dropCurrentClaimFocus("),
+				body.contains("dropCurrentClaimFocus("),
 				"releasing the current target must move the gather off it"
 			);
 		}
@@ -110,10 +120,12 @@ class GatherWiringTest {
 		@DisplayName("Finishing the gather clears the warehouse")
 		void finishClearsWarehouse() throws Exception {
 			// Reported: the warehouse chest kept glowing after the clan gather was finished.
-			String body = methodBody(read(SCREEN), "private void finishGatherMode()");
+			// Clearing is explicit now — the gather screen's own button, synced to the hub.
+			String body = methodBody(read(CLAN_SCREEN), "private void clearStagingChests()");
+			assertTrue(body.contains("clearStaging()"), "the button must clear warehouse marks");
 			assertTrue(
-				body.contains("clearStaging()"),
-				"finishGatherMode must clear warehouse marks"
+				body.contains("pushStagingKeysAsync(this.minecraft, true)"),
+				"in a session the cleared list must replace the hub's, for every member"
 			);
 		}
 
@@ -218,13 +230,12 @@ class GatherWiringTest {
 		void pendingPickRemembered() throws Exception {
 			// claimToggleAsync is a network call, so reading the claim back immediately found
 			// nothing and the ranking won — the HUD named an item the player never picked.
-			String screen = read(SCREEN);
+			String screen = read(CLAN_SCREEN);
+			int at = screen.indexOf("setPendingClaimFocus(");
+			assertTrue(at > 0, "the gather screen must remember the pick before the hub answers");
+			String after = screen.substring(at, Math.min(screen.length(), at + 600));
 			assertTrue(
-				screen.contains("setPendingClaimFocus("),
-				"the panel must remember the pick before the hub answers"
-			);
-			assertTrue(
-				screen.contains("() -> BuildGatherSession.focusClaimed("),
+				after.contains("claimToggleAsync") && after.contains("focusClaimed("),
 				"retargeting must happen in the claim callback, not before it"
 			);
 		}

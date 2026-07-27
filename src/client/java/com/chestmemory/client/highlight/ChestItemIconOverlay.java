@@ -146,7 +146,21 @@ public final class ChestItemIconOverlay {
 		return new int[]{sx, sy};
 	}
 
+	/** Last resolved icon stack — this runs per frame, and the key changes rarely. */
+	private static @org.jspecify.annotations.Nullable String cachedStackId;
+	private static ItemStack cachedStack = ItemStack.EMPTY;
+
 	private static ItemStack resolveStack(String itemId) {
+		if (itemId.equals(cachedStackId)) {
+			return cachedStack;
+		}
+		ItemStack resolved = resolveStackUncached(itemId);
+		cachedStackId = itemId;
+		cachedStack = resolved;
+		return resolved;
+	}
+
+	private static ItemStack resolveStackUncached(String itemId) {
 		ItemStack keyed = com.chestmemory.client.data.ItemStackKeys.toStack(itemId);
 		if (!keyed.isEmpty() && !keyed.is(Items.AIR)) {
 			return keyed;
@@ -163,26 +177,35 @@ public final class ChestItemIconOverlay {
 	}
 
 	/**
-	 * 26.2: {@code gameRenderer.mainCamera()}
-	 * 26.1.x: {@code gameRenderer.getMainCamera()}
+	 * Camera accessor resolved once — the name differs across versions, and the previous
+	 * reflective {@code getMethod} lookup ran on every frame.
+	 * 26.2: {@code gameRenderer.mainCamera()}; 26.1.x: {@code gameRenderer.getMainCamera()}.
 	 */
+	private static java.lang.reflect.@org.jspecify.annotations.Nullable Method cameraMethod;
+	private static boolean cameraMethodResolved;
+
 	private static Camera getMainCamera(Minecraft client) {
 		if (client == null || client.gameRenderer == null) {
 			return null;
 		}
-		try {
-			// Prefer 26.2 method name if present
-			return (Camera) client.gameRenderer.getClass()
-				.getMethod("mainCamera")
-				.invoke(client.gameRenderer);
-		} catch (ReflectiveOperationException ignored) {
+		if (!cameraMethodResolved) {
+			cameraMethodResolved = true;
+			for (String name : new String[]{"mainCamera", "getMainCamera"}) {
+				try {
+					cameraMethod = client.gameRenderer.getClass().getMethod(name);
+					break;
+				} catch (ReflectiveOperationException ignored) {
+					// try the next known name
+				}
+			}
+		}
+		if (cameraMethod == null) {
+			return null;
 		}
 		try {
-			return (Camera) client.gameRenderer.getClass()
-				.getMethod("getMainCamera")
-				.invoke(client.gameRenderer);
-		} catch (ReflectiveOperationException ignored) {
+			return (Camera) cameraMethod.invoke(client.gameRenderer);
+		} catch (ReflectiveOperationException e) {
+			return null;
 		}
-		return null;
 	}
 }

@@ -121,7 +121,7 @@ class ClanDeliveryTest {
 			String src = read(SCANNER);
 			assertTrue(
 				src.contains("ClanSessionManager.isInSession()")
-					&& src.contains("isStagingKey(")
+					&& src.contains("isStagingAt(")
 					&& src.contains("pushStagingProgress(client)"),
 				"the periodic push is every ~10s, so dropping a stack off and opening the "
 					+ "panel showed nothing counted — which reads as 'it did not register'"
@@ -136,7 +136,7 @@ class ClanDeliveryTest {
 			assertTrue(at > 0, "the push is missing");
 			String around = src.substring(Math.max(0, at - 400), at);
 			assertTrue(
-				around.contains("isStagingKey("),
+				around.contains("isStagingAt("),
 				"pushing on every chest open would hammer the hub while a player loots"
 			);
 		}
@@ -190,7 +190,7 @@ class ClanDeliveryTest {
 				src.contains("private static final int CELL = ChestGuiStyle.GRID_SLOT"),
 				"the grid must use the shared slot size, not one of its own"
 			);
-			String draw = body(src, "private void drawMaterials(");
+			String draw = body(src, "private int drawMaterialGrid(");
 			assertTrue(
 				draw.contains("ChestGuiStyle.drawSlot(") && draw.contains("perRow"),
 				"a 30-material gather as one row each is a wall of text needing constant "
@@ -201,36 +201,36 @@ class ClanDeliveryTest {
 		@Test
 		@DisplayName("Taking an item leaves the screen open")
 		void screenStaysOpen() throws Exception {
+			// The panel's own claim path is gone — the gather screen is the claim path now,
+			// and it refreshes in place so reserving three items is one visit.
 			String clan = body(read(CLAN_SCREEN), "private void claimFromList(String itemId)");
-			assertFalse(clan.contains("onClose()"), "the clan screen must not close on a claim");
-			// Scoped to the block right after startQueue. Searching the whole file matched
-			// those two lines somewhere else entirely, so the check passed even with the
-			// branch deleted — the break test caught that.
-			String chest = read(CHEST_SCREEN);
-			int at = chest.indexOf("BuildGatherSession.startQueue(client, summary.itemId(), ordered);");
-			assertTrue(at > 0, "the clan claim path moved — update this test");
-			String after = chest.substring(at, at + 500);
+			assertFalse(clan.contains("onClose()"), "the gather screen must not close on a claim");
 			assertTrue(
-				after.contains("ClanSessionManager.isInSession()") && after.contains("rebuildWidgets()"),
-				"the chest panel closed on every pick, so reserving three items meant "
-					+ "opening it three times"
+				clan.contains("rebuildWidgets"),
+				"the claim callback refreshes the grid in place"
 			);
-			assertTrue(
-				after.contains("} else {") && after.contains("this.onClose();"),
-				"solo must still close: there the pick IS the whole interaction"
+			assertFalse(
+				read(CHEST_SCREEN).contains("claimToggleAsync"),
+				"the chest panel must carry no claim wiring of its own any more"
 			);
 		}
 
 		@Test
-		@DisplayName("The summary no longer duplicates the Materials grid")
-		void summaryDoesNotDuplicateTheGrid() throws Exception {
-			// The quick-take strip was the same slots doing the same thing one tab away, and
-			// it cost the detail card the room it needed. The card points at Materials now.
+		@DisplayName("One grid, shared by both modes — no duplicate strip anywhere")
+		void oneGridOnly() throws Exception {
+			// The quick-take strip was the same slots one tab away; now the grid IS the tab,
+			// and solo mode draws the same renderer instead of inventing a second one.
 			String src = read(CLAN_SCREEN);
 			assertFalse(src.contains("private int quickAt("), "the duplicate strip is back");
+			int clanDecl = src.indexOf("private void drawClanGather");
 			assertTrue(
-				src.contains("screen.chestmemory.clan.hint_free"),
-				"removing it means the card has to say where the items are"
+				src.substring(clanDecl, src.indexOf("\n\t}", clanDecl)).contains("drawMaterialGrid("),
+				"the clan view must draw the shared grid"
+			);
+			int soloDecl = src.indexOf("private void drawSoloGather");
+			assertTrue(
+				src.substring(soloDecl, src.indexOf("\n\t}", soloDecl)).contains("drawMaterialGrid("),
+				"the solo view must draw the same grid"
 			);
 		}
 
@@ -266,9 +266,9 @@ class ClanDeliveryTest {
 		void controlsAtTheBottom() throws Exception {
 			String src = read(CLAN_SCREEN);
 			assertTrue(
-				src.contains("int ctlTop = this.panelTop + this.panelH - 70"),
-				"laid out from the top they sat exactly where the summary paints — "
-					+ "'Нажми ещё' across the schematic name, 'Копировать код' across progress"
+				src.contains("int row2 = this.panelTop + this.panelH - 26;")
+					&& src.contains("int row1 = row2 - rowH - gap;"),
+				"controls are anchored to the bottom, so the body cannot collide with them"
 			);
 		}
 
@@ -291,14 +291,14 @@ class ClanDeliveryTest {
 	@DisplayName("The tab is named for what it is for")
 	class Naming {
 		@Test
-		@DisplayName("It is not called 'Что нужно' any more")
-		void renamed() throws Exception {
-			String label = lang("screen.chestmemory.clan.tab_materials");
+		@DisplayName("The Materials tab is gone — the grid lives in «Сбор»")
+		void materialsTabIsGone() throws Exception {
 			assertFalse(
-				label.equalsIgnoreCase("Что нужно"),
-				"the tab is where work is picked up, not a shopping list"
+				read(RU).contains("\"screen.chestmemory.clan.tab_materials\""),
+				"the merged tab must not leave a stray caption behind"
 			);
-			assertTrue(px(label) <= (340 - 24) / 5 - 6, "the caption is clipped: " + label);
+			String label = lang("screen.chestmemory.clan.tab_gather");
+			assertTrue(px(label) <= (340 - 24) / 4 - 6, "the caption is clipped: " + label);
 		}
 
 		@Test

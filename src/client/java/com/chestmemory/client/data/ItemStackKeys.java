@@ -95,17 +95,25 @@ public final class ItemStackKeys {
 		return base + "#" + String.join("+", parts);
 	}
 
-	/** Anvil / data-pack custom name, or null when the item uses its default name. */
+	/**
+	 * Anvil / data-pack custom name, or null when the item uses its default name.
+	 * <p>
+	 * Styled names keep their colours as legacy §-codes (see
+	 * {@link com.chestmemory.client.util.LegacyText}): a "§6Меч босса" renamed in colour
+	 * must list and tooltip in colour, not as plain text. Unstyled names encode to their
+	 * exact old plain form, so existing keys stay stable.
+	 */
 	private static @Nullable String customName(ItemStack stack) {
 		Component name = stack.get(DataComponents.CUSTOM_NAME);
 		if (name == null) {
 			return null;
 		}
-		String text = name.getString().trim();
-		if (text.isEmpty() || text.length() > 64) {
-			return text.isEmpty() ? null : text.substring(0, 64);
+		String text = com.chestmemory.client.util.LegacyText.toLegacy(name).trim();
+		if (text.isEmpty()) {
+			return null;
 		}
-		return text;
+		// Cap generously: legacy codes inflate the length beyond the visible characters.
+		return text.length() > 96 ? text.substring(0, 96) : text;
 	}
 
 	/** Keep the key parseable: '+' separates parts and '=' splits enchant level. */
@@ -247,6 +255,12 @@ public final class ItemStackKeys {
 	}
 
 	private static String computeDisplayName(String key) {
+		// Unknown / removed-mod items: show the raw key rather than the chest icon fallback
+		// toStack() uses for rendering — a list row saying "Chest" for a modded ingot lies.
+		Identifier baseIdent = Identifier.tryParse(baseId(key));
+		if (baseIdent == null || BuiltInRegistries.ITEM.getValue(baseIdent) == Items.AIR) {
+			return key;
+		}
 		ItemStack stack = toStack(key);
 		String custom = customNameOf(key);
 		// Renamed items are listed under their own name, which is how the player thinks
@@ -274,9 +288,24 @@ public final class ItemStackKeys {
 		if (cached != null) {
 			return cached;
 		}
-		String blob = (key + " " + displayName(key)).toLowerCase(Locale.ROOT);
-		SEARCH_BLOB_CACHE.put(key, blob);
-		return blob;
+		// Colour codes inside renamed items would split words apart for the contains-check
+		// ("§6Алмазный §bМеч" no longer contains "алмазный меч"), so search sees plain text.
+		String blob = net.minecraft.ChatFormatting.stripFormatting(
+			(key + " " + displayName(key)).toLowerCase(Locale.ROOT)
+		);
+		SEARCH_BLOB_CACHE.put(key, blob == null ? "" : blob);
+		return blob == null ? "" : blob;
+	}
+
+	/** True when the base item exists in this game's registry. */
+	public static boolean isKnown(String key) {
+		Identifier id = Identifier.tryParse(baseId(key));
+		return id != null && BuiltInRegistries.ITEM.getValue(id) != Items.AIR;
+	}
+
+	/** Localized enchantment names encoded in a key — for rich tooltips. */
+	public static List<String> enchantNames(String key) {
+		return enchantDisplayNames(key);
 	}
 
 	private static List<String> enchantDisplayNames(String key) {

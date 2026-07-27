@@ -1,0 +1,5 @@
+*.tgz
+hub.log
+data/
+.clan_token
+sessions.json

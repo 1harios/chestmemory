@@ -24,6 +24,21 @@ public final class ClanHubClient {
 		.connectTimeout(Duration.ofSeconds(8))
 		.build();
 
+	/** One client per configuration — building a new one per call was pure allocation churn. */
+	private static volatile @Nullable ClanHubClient cached;
+
+	/**
+	 * Identity hint sent with every request as plain headers.
+	 * <p>
+	 * The verified Mojang session is the real identity, but offline-mode launchers can
+	 * never complete that handshake — and without any identity the hub could not refresh
+	 * the member's heartbeat on polls, so their claims were silently released after the
+	 * timeout even though they were online the whole time. The hint closes that hole
+	 * while REQUIRE_AUTH is off; a verified session always wins over it on the hub.
+	 */
+	private static volatile String hintUuid = "";
+	private static volatile String hintName = "";
+
 	private final String baseUrl;
 	private final String token;
 
@@ -34,6 +49,32 @@ public final class ClanHubClient {
 		}
 		this.baseUrl = u;
 		this.token = token == null ? "" : token.trim();
+	}
+
+	/** Shared instance for this configuration; rebuilt only when url/token change. */
+	public static ClanHubClient of(String baseUrl, String token) {
+		ClanHubClient c = cached;
+		String u = baseUrl == null ? "" : baseUrl.trim();
+		String t = token == null ? "" : token.trim();
+		if (c != null && c.baseUrl.equals(stripSlashes(u)) && c.token.equals(t)) {
+			return c;
+		}
+		c = new ClanHubClient(u, t);
+		cached = c;
+		return c;
+	}
+
+	private static String stripSlashes(String u) {
+		while (u.endsWith("/")) {
+			u = u.substring(0, u.length() - 1);
+		}
+		return u;
+	}
+
+	/** Who this client acts as — sent as heartbeat headers on every request. */
+	public static void setIdentityHint(@Nullable String uuid, @Nullable String name) {
+		hintUuid = uuid == null ? "" : uuid;
+		hintName = name == null ? "" : name;
 	}
 
 	public boolean isConfigured() {
@@ -56,6 +97,20 @@ public final class ClanHubClient {
 		return getReq("/v1/sessions/" + enc(code));
 	}
 
+	/**
+	 * Poll with the last seen revision: the hub answers a tiny {@code unchanged} stub
+	 * (status 304 in the result) when nothing moved, so the steady-state poll costs a
+	 * heartbeat instead of a full snapshot parse + diff every three seconds.
+	 */
+	public Result<ClanSession> getSince(String code, int revision) {
+		return getReq("/v1/sessions/" + enc(code) + "?since=" + revision);
+	}
+
+	/** Report several items' warehouse totals in one request: {"amounts": {item: n}}. */
+	public Result<ClanSession> deliverBatch(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/deliver", body);
+	}
+
 	public Result<ClanSession> claim(String code, JsonObject body) {
 		return post("/v1/sessions/" + enc(code) + "/claim", body);
 	}
@@ -75,6 +130,21 @@ public final class ClanHubClient {
 	/** Push / replace shared warehouse (staging) chest keys. */
 	public Result<ClanSession> staging(String code, JsonObject body) {
 		return post("/v1/sessions/" + enc(code) + "/staging", body);
+	}
+
+	/** Rename the gather (host only): every member's panel picks the new name up. */
+	public Result<ClanSession> update(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/update", body);
+	}
+
+	/** Remove a member (host only). The hub releases their claims with them. */
+	public Result<ClanSession> kick(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/kick", body);
+	}
+
+	/** Clear every claim (host only) — the reset for a stalled evening. */
+	public Result<ClanSession> releaseClaims(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/release_claims", body);
 	}
 
 	/** Ask for a nonce to sign via Mojang joinServer. Returns the nonce. */
@@ -197,6 +267,12 @@ public final class ClanHubClient {
 		if (session != null) {
 			b.header("X-Clan-Session", session);
 		}
+		// Heartbeat hint for hubs running without strict auth (offline-mode servers):
+		// lets a plain poll refresh lastSeen, so claims stop timing out mid-game.
+		if (!hintUuid.isEmpty()) {
+			b.header("X-Clan-Uuid", hintUuid);
+			b.header("X-Clan-Name", hintName.isEmpty() ? "?" : hintName);
+		}
 	}
 
 	private static String enc(String code) {
@@ -208,10 +284,17 @@ public final class ClanHubClient {
 		String body = resp.body() == null ? "" : resp.body();
 		if (code >= 200 && code < 300) {
 			try {
+				JsonObject probe = GSON.fromJson(body, JsonObject.class);
+				if (probe != null && probe.has("unchanged")
+					&& probe.get("unchanged").getAsBoolean()) {
+					// since-poll: nothing moved on the hub. Not an error, not a snapshot.
+					return Result.err("unchanged", 304);
+				}
 				ClanSession s = GSON.fromJson(body, ClanSession.class);
 				if (s == null || s.code == null || s.code.isBlank()) {
 					return Result.err("bad response");
 				}
+				s.receivedAt = System.currentTimeMillis();
 				return Result.ok(s);
 			} catch (Exception e) {
 				ChestMemoryMod.LOGGER.warn("Clan hub parse failed: {}", e.toString());
@@ -261,6 +344,11 @@ public final class ClanHubClient {
 		/** The hub authoritatively reported that this session no longer exists. */
 		public boolean isNotFound() {
 			return status == 404;
+		}
+
+		/** since-poll answered "nothing changed" — keep the current snapshot. */
+		public boolean isUnchanged() {
+			return status == 304;
 		}
 	}
 
