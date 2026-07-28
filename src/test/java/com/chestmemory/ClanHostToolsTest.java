@@ -174,13 +174,13 @@ class ClanHostToolsTest {
 		}
 
 		@Test
-		@DisplayName("READY is marked: blue tint when the chests already hold enough")
+		@DisplayName("READY is green — GO — in both grids, and said in words on hover")
 		void readyMarkExists() throws Exception {
 			String src = read(CLAN_SCREEN);
 			int clanBody = src.indexOf("private void drawClanGather");
 			int soloBody = src.indexOf("private void drawSoloGather");
 			assertTrue(
-				src.indexOf("0x445CB8E8", clanBody) > 0 && src.indexOf("0x445CB8E8", soloBody) > 0,
+				src.indexOf("0x4430E060", clanBody) > 0 && src.indexOf("0x4430E060", soloBody) > 0,
 				"both grids must mark items whose need is fully covered by chest stock"
 			);
 			assertTrue(
@@ -321,14 +321,16 @@ class ClanHostToolsTest {
 			String src = read(CLAN_SCREEN);
 			int clanBody = src.indexOf("private void drawClanGather");
 			int soloBody = src.indexOf("private void drawSoloGather");
-			// green done / blue covered / amber partial / dark none — in both modes.
+			// Traffic light in both modes: green GO, yellow partial, red none, done dims
+			// with a green check — finished work retires instead of glowing like GO.
 			for (int at : new int[]{clanBody, soloBody}) {
 				String body = src.substring(at, src.indexOf("\n\t}", at));
 				assertTrue(
-					body.contains("0x4430E060") && body.contains("0x445CB8E8")
-						&& body.contains("0x44E0A83C") && body.contains("0x50101010"),
+					body.contains("0x4430E060") && body.contains("0x44FFE040")
+						&& body.contains("0x44E03030") && body.contains("0x99101010"),
 					"all four stock states need a colour"
 				);
+				assertTrue(body.contains("\"✓\""), "done cells carry the check badge");
 			}
 			assertTrue(
 				src.contains("int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;")
@@ -456,6 +458,163 @@ class ClanHostToolsTest {
 			assertTrue(
 				style.contains("TEXT_ON_WOOD_MUTED = 0xFFE2E2E2"),
 				"the wood-row secondary column had the same problem"
+			);
+		}
+	}
+	@Nested
+	@DisplayName("Round six: scan order, stock detail, and two claim bugs")
+	class ClaimPolish {
+		private static final String SESSION =
+			"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+		private static final String GRID =
+			"src/client/java/com/chestmemory/client/gui/ItemGridWidget.java";
+
+		@Test
+		@DisplayName("The clan grid scans ready → partial → none → done")
+		void bandOrder() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("private int clanBand("), "the band classifier is missing");
+			int sort = src.indexOf("rows.sort((a, b) -> {");
+			String body = src.substring(sort, sort + 400);
+			assertTrue(
+				body.contains("clanBand(s, a.getKey())"),
+				"the sort must lead with the stock band, remainder second"
+			);
+		}
+
+		@Test
+		@DisplayName("Tooltips carry full stacks and shulker contents")
+		void tooltipStockDetail() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("private void addStockDetail("), "stock detail missing");
+			assertTrue(
+				src.contains("tooltip.gather_stacks") && src.contains("tooltip.gather_shulkers"),
+				"stacks and shulkers must be one hover away"
+			);
+			assertTrue(
+				src.contains("WorldBreakdown.shulkerCount("),
+				"shulker counts come from the shared breakdown, chests included"
+			);
+			// 27 slots to a box: 1728 of a 64-stack item IS one shulker. The equivalence
+			// respects real stack sizes — 432 pearls, 27 tools.
+			assertTrue(
+				src.contains("int boxCap = per * 27;")
+					&& src.contains("tooltip.gather_boxes"),
+				"big stock must be readable as shulker boxes"
+			);
+		}
+
+		@Test
+		@DisplayName("The main list never promises a claim on an item outside the gather")
+		void mainListClaimGated() throws Exception {
+			String grid = read(GRID);
+			assertTrue(
+				grid.contains("ClanSessionManager.isInActiveGather(s.itemId())"),
+				"«Клан: свободно — клик = взять» on a random remembered item was a lie"
+			);
+		}
+
+		@Test
+		@DisplayName("Releasing a claim refocuses only after the hub confirms")
+		void unclaimRefocusAfterConfirm() throws Exception {
+			String src = read(CLAN_SCREEN);
+			int mine = src.indexOf("// Giving the item back also drops it as the gather target");
+			assertTrue(mine > 0);
+			String body = src.substring(mine, mine + 700);
+			int toggleAt = body.indexOf("claimToggleAsync(mc, itemId, () -> {");
+			int dropAt = body.indexOf("dropCurrentClaimFocus(mc)");
+			assertTrue(
+				toggleAt >= 0 && dropAt > toggleAt,
+				"refocusing before the hub answers reads the stale session and re-picks "
+					+ "the item that was just released"
+			);
+		}
+
+		@Test
+		@DisplayName("Dropping the target moves to the next OWN claim, or goes idle and says so")
+		void dropIsClanAware() throws Exception {
+			String session = read(SESSION);
+			int drop = session.indexOf("public static void dropCurrentClaimFocus");
+			String body = session.substring(drop, session.indexOf("\n\t}", drop));
+			assertTrue(
+				body.contains("firstOwnClaim(client, null)"),
+				"in a clan the ranking must not pick the next target"
+			);
+			assertTrue(
+				body.contains("clan_no_target"),
+				"an idle gather must say it went idle, not stay silently on the old glow"
+			);
+		}
+	}
+	@Nested
+	@DisplayName("The ender chest is with you — never metres away")
+	class EnderIsPersonal {
+		private static final String STORAGE =
+			"src/client/java/com/chestmemory/client/data/ChestMemoryStorage.java";
+		private static final String SESSION =
+			"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+		private static final String GRID =
+			"src/client/java/com/chestmemory/client/gui/ItemGridWidget.java";
+
+		@Test
+		@DisplayName("distanceTo answers 0 for the ender chest, glow position or not")
+		void enderDistanceIsZero() throws Exception {
+			String storage = read(STORAGE);
+			int at = storage.indexOf("reachable from ANY ender chest");
+			assertTrue(at > 0, "the rationale comment anchors the rule");
+			String around = storage.substring(at, at + 400);
+			assertTrue(
+				around.contains("\"ender_chest\".equals(record.virtualId())")
+					&& around.contains("return 0;")
+					&& !around.contains("hasHighlightPos()"),
+				"the old code fell through to metres when a glow position was remembered"
+			);
+		}
+
+		@Test
+		@DisplayName("«До ближайшего» measures world chests only, everywhere")
+		void nearestIsWorldChestsOnly() throws Exception {
+			assertTrue(
+				read(STORAGE).contains("if (dist >= 0 && !record.isVirtual()) {"),
+				"the list aggregation must not let a personal record win 'nearest'"
+			);
+			String grid = read(GRID);
+			assertTrue(
+				grid.contains("tooltip.containers_none"),
+				"all-personal stock says so instead of showing metres"
+			);
+			String session = read(SESSION);
+			int near = session.indexOf("private static double nearestLiveDist");
+			String body = session.substring(near, session.indexOf("\n\t}", near));
+			assertTrue(
+				body.contains("if (r.isVirtual())"),
+				"gather distances must skip personal records too"
+			);
+		}
+
+		@Test
+		@DisplayName("Routes and chest stock are world chests; ender rides its own line")
+		void routesSkipEnder() throws Exception {
+			String session = read(SESSION);
+			int filtered = session.indexOf("private static List<ContainerRecord> filteredSources");
+			String body = session.substring(filtered, session.indexOf("\n\t}", filtered));
+			assertTrue(
+				body.contains("if (!r.isVirtual())"),
+				"a route stop at 'the ender chest you once opened 300м away' is nonsense"
+			);
+			assertTrue(
+				read(CLAN_SCREEN).contains("WorldBreakdown.enderCount("),
+				"ender holdings must stay visible — on the tooltip's own ender line"
+			);
+		}
+
+		@Test
+		@DisplayName("Chat never reports metres to a virtual record")
+		void chatSkipsVirtuals() throws Exception {
+			String panel = read(PANEL);
+			assertTrue(
+				panel.contains(".filter(r -> r.isWorldBlock())"),
+				"the nearest-chest chat line must not point at the remembered ender spot"
 			);
 		}
 	}

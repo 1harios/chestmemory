@@ -181,14 +181,18 @@ class ClanRedesignTest {
 		}
 
 		@Test
-		@DisplayName("Unfinished materials sort to the top, largest remainder first")
+		@DisplayName("Materials scan ready → partial → none, done last, remainder inside")
 		void sortedByWhatMatters() throws Exception {
 			String src = read(CLAN_SCREEN);
 			int decl = src.indexOf("private void drawClanGather");
 			String body = src.substring(decl, src.indexOf("\n\t}", decl));
 			assertTrue(
-				body.contains("rows.sort(") && body.contains("(ra == 0) != (rb == 0)"),
-				"finished items must sink; hub order is not useful order"
+				body.contains("rows.sort(") && body.contains("clanBand(s, a.getKey())"),
+				"the stock band leads the sort; hub order is not useful order"
+			);
+			assertTrue(
+				body.contains("s.remaining(b.getKey()), s.remaining(a.getKey())"),
+				"inside a band the biggest remainder comes first"
 			);
 		}
 
