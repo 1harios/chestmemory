@@ -174,13 +174,13 @@ class ClanHostToolsTest {
 		}
 
 		@Test
-		@DisplayName("READY is marked: blue tint when the chests already hold enough")
+		@DisplayName("READY is green — GO — in both grids, and said in words on hover")
 		void readyMarkExists() throws Exception {
 			String src = read(CLAN_SCREEN);
 			int clanBody = src.indexOf("private void drawClanGather");
 			int soloBody = src.indexOf("private void drawSoloGather");
 			assertTrue(
-				src.indexOf("0x445CB8E8", clanBody) > 0 && src.indexOf("0x445CB8E8", soloBody) > 0,
+				src.indexOf("0x4430E060", clanBody) > 0 && src.indexOf("0x4430E060", soloBody) > 0,
 				"both grids must mark items whose need is fully covered by chest stock"
 			);
 			assertTrue(
@@ -321,14 +321,16 @@ class ClanHostToolsTest {
 			String src = read(CLAN_SCREEN);
 			int clanBody = src.indexOf("private void drawClanGather");
 			int soloBody = src.indexOf("private void drawSoloGather");
-			// green done / blue covered / amber partial / dark none — in both modes.
+			// Traffic light in both modes: green GO, yellow partial, red none, done dims
+			// with a green check — finished work retires instead of glowing like GO.
 			for (int at : new int[]{clanBody, soloBody}) {
 				String body = src.substring(at, src.indexOf("\n\t}", at));
 				assertTrue(
-					body.contains("0x4430E060") && body.contains("0x445CB8E8")
-						&& body.contains("0x44E0A83C") && body.contains("0x50101010"),
+					body.contains("0x4430E060") && body.contains("0x44FFE040")
+						&& body.contains("0x44E03030") && body.contains("0x99101010"),
 					"all four stock states need a colour"
 				);
+				assertTrue(body.contains("\"✓\""), "done cells carry the check badge");
 			}
 			assertTrue(
 				src.contains("int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;")
@@ -492,6 +494,13 @@ class ClanHostToolsTest {
 			assertTrue(
 				src.contains("WorldBreakdown.shulkerCount("),
 				"shulker counts come from the shared breakdown, chests included"
+			);
+			// 27 slots to a box: 1728 of a 64-stack item IS one shulker. The equivalence
+			// respects real stack sizes — 432 pearls, 27 tools.
+			assertTrue(
+				src.contains("int boxCap = per * 27;")
+					&& src.contains("tooltip.gather_boxes"),
+				"big stock must be readable as shulker boxes"
 			);
 		}
 

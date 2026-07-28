@@ -1359,21 +1359,22 @@ public class ClanGatherScreen extends Screen {
 			boolean done = remaining <= 0;
 			boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 			boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
-			// Every cell answers "can the chests cover this?" by colour: green done,
-			// blue fully covered, amber partial, dark nothing. Claims ride the rim.
+			// Traffic-light stock states — green means GO: the chests can close this item
+			// right now. Yellow is partial, red is nothing anywhere, and a finished item
+			// dims out with a green check instead of glowing. Claims ride the rim.
 			int stock = done ? 0 : chestStock(e.getKey());
-			int tint = done ? 0x4430E060
-				: stock >= remaining ? 0x445CB8E8
-				: stock > 0 ? 0x44E0A83C
-				: 0x50101010;
-			int countColour = done ? 0xFF80FFA0
-				: stock >= remaining ? 0xFFA8DCFF
-				: stock > 0 ? 0xFFFFD080
-				: 0xFFC8C8C8;
+			int tint = done ? 0x99101010
+				: stock >= remaining ? 0x4430E060
+				: stock > 0 ? 0x44FFE040
+				: 0x44E03030;
+			int countColour = done ? 0xFFC8C8C8
+				: stock >= remaining ? 0xFF7FE08A
+				: stock > 0 ? 0xFFFFE066
+				: 0xFFFF9090;
 			int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;
-			String badge = null;
-			int badgeColour = 0;
-			if (mine || taken) {
+			String badge = done ? "✓" : null;
+			int badgeColour = done ? 0xFF7FE08A : 0;
+			if (!done && (mine || taken)) {
 				// Claimer's initial, same badge the chest panel uses — a glance tells who
 				// is on what without opening the roster.
 				badge = m.claimedName == null || m.claimedName.isBlank()
@@ -1471,19 +1472,22 @@ public class ClanGatherScreen extends Screen {
 			int missing = Math.max(0, r.neededForBuild());
 			boolean done = missing <= 0;
 			boolean isFocus = r.itemId().equals(focus);
-			// Stock states colour the face — green done, blue covered, amber partial,
-			// dark none — and the gold ring marks the current target.
+			// Traffic light, same as the clan grid: green GO, yellow partial, red none,
+			// done dims out with a check. The gold ring marks the current target.
 			int stock = r.totalCount();
-			int tint = done ? 0x4430E060
-				: stock >= missing ? 0x445CB8E8
-				: stock > 0 ? 0x44E0A83C
-				: 0x50101010;
-			int countColour = done ? 0xFF80FFA0
-				: stock >= missing ? 0xFFA8DCFF
-				: stock > 0 ? 0xFFFFD080
-				: 0xFFC8C8C8;
+			int tint = done ? 0x99101010
+				: stock >= missing ? 0x4430E060
+				: stock > 0 ? 0x44FFE040
+				: 0x44E03030;
+			int countColour = done ? 0xFFC8C8C8
+				: stock >= missing ? 0xFF7FE08A
+				: stock > 0 ? 0xFFFFE066
+				: 0xFFFF9090;
 			int border = isFocus ? 0xFFFFD56A : 0;
-			cells.add(new MatCell(r.itemId(), done ? 0 : missing, tint, countColour, null, 0, border));
+			cells.add(new MatCell(
+				r.itemId(), done ? 0 : missing, tint, countColour,
+				done ? "✓" : null, done ? 0xFF7FE08A : 0, border
+			));
 		}
 		appendExternalMatches(cells, q, gatherIds);
 		int hoverIdx = drawMaterialGrid(graphics, cells, left, y, contentW);
@@ -1629,7 +1633,7 @@ public class ClanGatherScreen extends Screen {
 		} else if (remaining > 0) {
 			if (ready) {
 				lines.add(Component.translatable("screen.chestmemory.clan.mat_ready_hint")
-					.withStyle(net.minecraft.ChatFormatting.AQUA));
+					.withStyle(net.minecraft.ChatFormatting.GREEN));
 			}
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_take_hint")
 				.withStyle(net.minecraft.ChatFormatting.GRAY));
@@ -1675,7 +1679,7 @@ public class ClanGatherScreen extends Screen {
 				.withStyle(net.minecraft.ChatFormatting.GOLD));
 		} else if (r.totalCount() >= missing) {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_ready")
-				.withStyle(net.minecraft.ChatFormatting.AQUA));
+				.withStyle(net.minecraft.ChatFormatting.GREEN));
 		} else if (r.totalCount() > 0) {
 			lines.add(Component.translatable(
 				"screen.chestmemory.clan.solo_hover_route", r.totalCount()
@@ -1687,7 +1691,10 @@ public class ClanGatherScreen extends Screen {
 		return lines;
 	}
 
-	/** Stock detail: how many full stacks that is, and how much sits inside shulkers. */
+	/**
+	 * Stock detail: full stacks, the shulker-box equivalent (27 stacks to a box — 1728
+	 * of a 64-stack item IS one shulker), and how much already sits inside shulkers.
+	 */
 	private void addStockDetail(List<Component> lines, String itemId, int stock) {
 		int per = Math.max(1, icon(itemId).getMaxStackSize());
 		if (stock >= per) {
@@ -1698,6 +1705,12 @@ public class ClanGatherScreen extends Screen {
 				: Component.translatable("screen.chestmemory.tooltip.gather_stacks_even", stacks))
 				.withStyle(net.minecraft.ChatFormatting.GRAY));
 		}
+		int boxCap = per * 27;
+		if (stock >= boxCap) {
+			lines.add(Component.translatable(
+				"screen.chestmemory.tooltip.gather_boxes", formatBoxes(stock, boxCap)
+			).withStyle(net.minecraft.ChatFormatting.GRAY));
+		}
 		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(
 			ChestMemoryStorage.get().liveContainersSnapshot(), itemId
 		);
@@ -1706,6 +1719,16 @@ public class ClanGatherScreen extends Screen {
 				"screen.chestmemory.tooltip.gather_shulkers", inShulkers
 			).withStyle(net.minecraft.ChatFormatting.GRAY));
 		}
+	}
+
+	/** «1», «1.5», «12» — shulker boxes, one decimal while it still matters. */
+	private static String formatBoxes(int stock, int boxCap) {
+		double v = stock / (double) boxCap;
+		if (v >= 10) {
+			return String.valueOf(Math.round(v));
+		}
+		String s = String.format(java.util.Locale.ROOT, "%.1f", v);
+		return s.endsWith(".0") ? s.substring(0, s.length() - 2) : s;
 	}
 
 	/** A found-by-search memory item: where it lies and that a click only glows chests. */
