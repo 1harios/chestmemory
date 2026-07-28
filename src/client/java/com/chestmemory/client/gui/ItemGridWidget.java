@@ -280,7 +280,10 @@ public class ItemGridWidget extends AbstractWidget {
 		}
 
 		// ── Clan claims ──
-		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()
+			&& com.chestmemory.client.clan.ClanSessionManager.isInActiveGather(s.itemId())) {
+			// Only for items the gather actually contains: «Клан: свободно — клик = взять»
+			// on a random remembered item promised a claim that could never happen.
 			lines.add(Component.empty());
 			if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(this.minecraft, s.itemId())) {
 				lines.add(Component.translatable("screen.chestmemory.tooltip.clan_claim_me"));

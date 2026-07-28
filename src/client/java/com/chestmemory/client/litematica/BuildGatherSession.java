@@ -835,6 +835,22 @@ public final class BuildGatherSession {
 		currentItemId = null;
 		currentRoute = List.of();
 		highlightPaused = false;
+		ChestHighlighter.clear();
+		// In a clan the next target is the player's next OWN claim in click order — never
+		// the ranking's idea. Dropping glass with stone still claimed moves to stone;
+		// dropping the last claim leaves the gather idle and says so, instead of walking
+		// the player to an item they never picked.
+		if (com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
+			String next = firstOwnClaim(client, null);
+			if (next != null) {
+				focusItem(client, next, true);
+			} else {
+				hudLines = List.of();
+				chat(client, Component.translatable("message.chestmemory.clan_no_target"));
+			}
+			refreshHud(client);
+			return;
+		}
 		if (!focusBestInPhase(client, false)) {
 			hudLines = List.of();
 		}

@@ -459,4 +459,82 @@ class ClanHostToolsTest {
 			);
 		}
 	}
+	@Nested
+	@DisplayName("Round six: scan order, stock detail, and two claim bugs")
+	class ClaimPolish {
+		private static final String SESSION =
+			"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+		private static final String GRID =
+			"src/client/java/com/chestmemory/client/gui/ItemGridWidget.java";
+
+		@Test
+		@DisplayName("The clan grid scans ready → partial → none → done")
+		void bandOrder() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("private int clanBand("), "the band classifier is missing");
+			int sort = src.indexOf("rows.sort((a, b) -> {");
+			String body = src.substring(sort, sort + 400);
+			assertTrue(
+				body.contains("clanBand(s, a.getKey())"),
+				"the sort must lead with the stock band, remainder second"
+			);
+		}
+
+		@Test
+		@DisplayName("Tooltips carry full stacks and shulker contents")
+		void tooltipStockDetail() throws Exception {
+			String src = read(CLAN_SCREEN);
+			assertTrue(src.contains("private void addStockDetail("), "stock detail missing");
+			assertTrue(
+				src.contains("tooltip.gather_stacks") && src.contains("tooltip.gather_shulkers"),
+				"stacks and shulkers must be one hover away"
+			);
+			assertTrue(
+				src.contains("WorldBreakdown.shulkerCount("),
+				"shulker counts come from the shared breakdown, chests included"
+			);
+		}
+
+		@Test
+		@DisplayName("The main list never promises a claim on an item outside the gather")
+		void mainListClaimGated() throws Exception {
+			String grid = read(GRID);
+			assertTrue(
+				grid.contains("ClanSessionManager.isInActiveGather(s.itemId())"),
+				"«Клан: свободно — клик = взять» on a random remembered item was a lie"
+			);
+		}
+
+		@Test
+		@DisplayName("Releasing a claim refocuses only after the hub confirms")
+		void unclaimRefocusAfterConfirm() throws Exception {
+			String src = read(CLAN_SCREEN);
+			int mine = src.indexOf("// Giving the item back also drops it as the gather target");
+			assertTrue(mine > 0);
+			String body = src.substring(mine, mine + 700);
+			int toggleAt = body.indexOf("claimToggleAsync(mc, itemId, () -> {");
+			int dropAt = body.indexOf("dropCurrentClaimFocus(mc)");
+			assertTrue(
+				toggleAt >= 0 && dropAt > toggleAt,
+				"refocusing before the hub answers reads the stale session and re-picks "
+					+ "the item that was just released"
+			);
+		}
+
+		@Test
+		@DisplayName("Dropping the target moves to the next OWN claim, or goes idle and says so")
+		void dropIsClanAware() throws Exception {
+			String session = read(SESSION);
+			int drop = session.indexOf("public static void dropCurrentClaimFocus");
+			String body = session.substring(drop, session.indexOf("\n\t}", drop));
+			assertTrue(
+				body.contains("firstOwnClaim(client, null)"),
+				"in a clan the ranking must not pick the next target"
+			);
+			assertTrue(
+				body.contains("clan_no_target"),
+				"an idle gather must say it went idle, not stay silently on the old glow"
+			);
+		}
+	}
 }

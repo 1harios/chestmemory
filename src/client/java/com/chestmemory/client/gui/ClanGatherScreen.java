@@ -903,11 +903,15 @@ public class ClanGatherScreen extends Screen {
 		boolean mine = m != null && m.claimedBy != null && m.claimedBy.equals(me);
 		net.minecraft.client.Minecraft mc = this.minecraft;
 		if (mine) {
-			// Giving the item back also drops it as the gather target.
-			ClanSessionManager.claimToggleAsync(mc, itemId, this::rebuildWidgets);
-			if (itemId.equals(com.chestmemory.client.litematica.BuildGatherSession.currentItemId())) {
-				com.chestmemory.client.litematica.BuildGatherSession.dropCurrentClaimFocus(mc);
-			}
+			// Giving the item back also drops it as the gather target — AFTER the hub
+			// confirms. Refocusing immediately read the stale session, still saw this
+			// claim as ours, and re-targeted the very item that was just released.
+			ClanSessionManager.claimToggleAsync(mc, itemId, () -> {
+				if (itemId.equals(com.chestmemory.client.litematica.BuildGatherSession.currentItemId())) {
+					com.chestmemory.client.litematica.BuildGatherSession.dropCurrentClaimFocus(mc);
+				}
+				this.rebuildWidgets();
+			});
 			return;
 		}
 		// Taking an item aims the gather at it the moment the hub confirms — unless the
@@ -1328,17 +1332,17 @@ public class ClanGatherScreen extends Screen {
 	) {
 		int y = this.tabsY + (this.searchOnGatherTab ? 44 : 22);
 
-		// Unfinished first, biggest remainder at the front: the top-left of the grid is
-		// always the work that matters most, not whatever order the hub sent.
+		// Ordered the way a gatherer scans: ready to hand in first (chests cover the
+		// whole remainder), then partial stock, then nothing anywhere, done last —
+		// biggest remainder first inside each band.
 		List<java.util.Map.Entry<String, ClanSession.ClanMaterial>> rows =
 			new java.util.ArrayList<>(s.materials.entrySet());
 		rows.sort((a, b) -> {
-			int ra = s.remaining(a.getKey());
-			int rb = s.remaining(b.getKey());
-			if ((ra == 0) != (rb == 0)) {
-				return ra == 0 ? 1 : -1;
+			int band = Integer.compare(clanBand(s, a.getKey()), clanBand(s, b.getKey()));
+			if (band != 0) {
+				return band;
 			}
-			return Integer.compare(rb, ra);
+			return Integer.compare(s.remaining(b.getKey()), s.remaining(a.getKey()));
 		});
 
 		// Search filters the gather; general-memory matches are appended dimmed below.
@@ -1542,6 +1546,19 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
+	/** 0 ready · 1 partial · 2 none · 3 done — the scan order of the clan grid. */
+	private int clanBand(ClanSession s, String itemId) {
+		int remaining = s.remaining(itemId);
+		if (remaining <= 0) {
+			return 3;
+		}
+		int stock = chestStock(itemId);
+		if (stock >= remaining) {
+			return 0;
+		}
+		return stock > 0 ? 1 : 2;
+	}
+
 	/** Live chest stock, briefly cached — the grid asks for it per cell per frame. */
 	private int chestStock(String itemId) {
 		long now = System.currentTimeMillis();
@@ -1596,6 +1613,7 @@ public class ClanGatherScreen extends Screen {
 		}
 		lines.add(Component.literal(stockLine(itemId))
 			.withStyle(net.minecraft.ChatFormatting.GRAY));
+		addStockDetail(lines, itemId, chestStock(itemId));
 		lines.add(Component.empty());
 		boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 		boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
@@ -1647,6 +1665,7 @@ public class ClanGatherScreen extends Screen {
 			"screen.chestmemory.clan.hover_stock_solo",
 			r.totalCount(), dist, Math.max(0, r.inPlayer())
 		).withStyle(net.minecraft.ChatFormatting.GRAY));
+		addStockDetail(lines, r.itemId(), r.totalCount());
 		lines.add(Component.empty());
 		if (missing <= 0) {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_done")
@@ -1666,6 +1685,27 @@ public class ClanGatherScreen extends Screen {
 				.withStyle(net.minecraft.ChatFormatting.GRAY));
 		}
 		return lines;
+	}
+
+	/** Stock detail: how many full stacks that is, and how much sits inside shulkers. */
+	private void addStockDetail(List<Component> lines, String itemId, int stock) {
+		int per = Math.max(1, icon(itemId).getMaxStackSize());
+		if (stock >= per) {
+			int stacks = stock / per;
+			int rem = stock % per;
+			lines.add((rem > 0
+				? Component.translatable("screen.chestmemory.tooltip.gather_stacks", stacks, rem)
+				: Component.translatable("screen.chestmemory.tooltip.gather_stacks_even", stacks))
+				.withStyle(net.minecraft.ChatFormatting.GRAY));
+		}
+		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(
+			ChestMemoryStorage.get().liveContainersSnapshot(), itemId
+		);
+		if (inShulkers > 0) {
+			lines.add(Component.translatable(
+				"screen.chestmemory.tooltip.gather_shulkers", inShulkers
+			).withStyle(net.minecraft.ChatFormatting.GRAY));
+		}
 	}
 
 	/** A found-by-search memory item: where it lies and that a click only glows chests. */
