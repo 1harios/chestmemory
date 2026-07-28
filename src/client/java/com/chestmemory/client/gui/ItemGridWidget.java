@@ -332,13 +332,37 @@ public class ItemGridWidget extends AbstractWidget {
 		} else {
 			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount())));
 		}
-		if (s.hasDistance()) {
+		// Containers and metres — WORLD chests only. The ender chest is reachable from
+		// any ender chest in any world: "320м до эндер-сундука" was nonsense, and the
+		// «Эндер-сундук: ×N» line below already says where that part lies.
+		int worldHolders = 0;
+		double worldNearest = -1;
+		{
+			Minecraft mcNear = this.minecraft;
+			net.minecraft.world.phys.Vec3 pPos = mcNear != null && mcNear.player != null
+				? mcNear.player.position() : null;
+			String pDim = mcNear != null && mcNear.level != null
+				? com.chestmemory.client.data.ChestMemoryStorage.dimensionId(mcNear.level) : null;
+			for (com.chestmemory.client.data.ContainerRecord r : storage.allContainers()) {
+				if (r.isVirtual() || r.countOf(s.itemId()) <= 0) {
+					continue;
+				}
+				worldHolders++;
+				double d = com.chestmemory.client.data.ChestMemoryStorage.distanceTo(r, pPos, pDim);
+				if (d >= 0 && (worldNearest < 0 || d < worldNearest)) {
+					worldNearest = d;
+				}
+			}
+		}
+		if (worldHolders > 0 && worldNearest >= 0) {
 			lines.add(gray(Component.translatable(
 				"screen.chestmemory.tooltip.containers_nearest",
-				s.containerCount(), (int) s.nearestDistance()
+				worldHolders, (int) worldNearest
 			)));
+		} else if (worldHolders > 0) {
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", worldHolders)));
 		} else {
-			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers", s.containerCount())));
+			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.containers_none")));
 		}
 
 		// ── Where it lies: per-world breakdown (multiworld servers) — plain gray lines ──

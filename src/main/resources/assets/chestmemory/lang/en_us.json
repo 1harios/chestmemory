@@ -267,6 +267,7 @@
 	"screen.chestmemory.tooltip.stacks": "Stacks: %s×%s + %s",
 	"screen.chestmemory.tooltip.less_than_stack": "Less than a stack: ×%s",
 	"screen.chestmemory.tooltip.containers": "Containers: %s",
+	"screen.chestmemory.tooltip.containers_none": "No world chests — see the lines below",
 	"screen.chestmemory.tooltip.nearest": "Nearest: %s m",
 	"screen.chestmemory.tooltip.build_total": "Schematic needs: ×%s",
 	"screen.chestmemory.tooltip.build_needed": "Still need (after inv.): ×%s",

@@ -738,8 +738,10 @@ public class ChestMemoryScreen extends Screen {
 			rangeBlocks()
 		);
 
+		// World blocks only: the ender chest (virtual, with a remembered glow position)
+		// must not become "ближайший на 320м" in chat — it is reachable anywhere.
 		List<ContainerRecord> worldMatches = matches.stream()
-			.filter(r -> r.isWorldBlock() || r.hasHighlightPos())
+			.filter(r -> r.isWorldBlock())
 			.sorted(Comparator.comparingDouble(r -> ChestMemoryStorage.distanceTo(r, pos, dimension)))
 			.collect(Collectors.toList());
 

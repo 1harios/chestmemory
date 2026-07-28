@@ -1441,7 +1441,9 @@ public final class ChestMemoryStorage {
 				int[] values = aggregated.computeIfAbsent(entry.getKey(), k -> new int[2]);
 				values[0] += entry.getValue();
 				values[1] += 1;
-				if (dist >= 0) {
+				// "Nearest" means the nearest WORLD chest: the ender chest and carried
+				// shulkers are with the player, and a distance to them reads as nonsense.
+				if (dist >= 0 && !record.isVirtual()) {
 					nearest.merge(entry.getKey(), dist, Math::min);
 				}
 			}
@@ -1601,7 +1603,9 @@ public final class ChestMemoryStorage {
 				int[] values = aggregated.computeIfAbsent(entry.getKey(), k -> new int[2]);
 				values[0] += entry.getValue();
 				values[1] += 1;
-				if (dist >= 0) {
+				// "Nearest" means the nearest WORLD chest: the ender chest and carried
+				// shulkers are with the player, and a distance to them reads as nonsense.
+				if (dist >= 0 && !record.isVirtual()) {
 					nearest.merge(entry.getKey(), dist, Math::min);
 				}
 			}
@@ -1711,7 +1715,10 @@ public final class ChestMemoryStorage {
 		if (record.isVirtual() && record.virtualId() != null && record.virtualId().startsWith("inv_shulker")) {
 			return 0;
 		}
-		if (record.isVirtual() && "ender_chest".equals(record.virtualId()) && !record.hasHighlightPos()) {
+		// The ender chest is reachable from ANY ender chest in any world, so metres to
+		// the one it was last opened at are meaningless — it is always "with you". The
+		// remembered position stays, but only for the glow.
+		if (record.isVirtual() && "ender_chest".equals(record.virtualId())) {
 			return 0;
 		}
 		int x;

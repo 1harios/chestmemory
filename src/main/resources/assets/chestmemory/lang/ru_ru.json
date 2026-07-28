@@ -267,6 +267,7 @@
 	"screen.chestmemory.tooltip.stacks": "Стаков: %s×%s + %s",
 	"screen.chestmemory.tooltip.less_than_stack": "Меньше стака: ×%s",
 	"screen.chestmemory.tooltip.containers": "Контейнеров: %s",
+	"screen.chestmemory.tooltip.containers_none": "В сундуках мира: нет — смотри строки ниже",
 	"screen.chestmemory.tooltip.nearest": "Ближайший: %s м",
 	"screen.chestmemory.tooltip.build_total": "Нужно по схеме: ×%s",
 	"screen.chestmemory.tooltip.build_needed": "Ещё нужно (с учётом инв.): ×%s",

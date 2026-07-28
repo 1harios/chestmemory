@@ -546,4 +546,76 @@ class ClanHostToolsTest {
 			);
 		}
 	}
+	@Nested
+	@DisplayName("The ender chest is with you — never metres away")
+	class EnderIsPersonal {
+		private static final String STORAGE =
+			"src/client/java/com/chestmemory/client/data/ChestMemoryStorage.java";
+		private static final String SESSION =
+			"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+		private static final String GRID =
+			"src/client/java/com/chestmemory/client/gui/ItemGridWidget.java";
+
+		@Test
+		@DisplayName("distanceTo answers 0 for the ender chest, glow position or not")
+		void enderDistanceIsZero() throws Exception {
+			String storage = read(STORAGE);
+			int at = storage.indexOf("reachable from ANY ender chest");
+			assertTrue(at > 0, "the rationale comment anchors the rule");
+			String around = storage.substring(at, at + 400);
+			assertTrue(
+				around.contains("\"ender_chest\".equals(record.virtualId())")
+					&& around.contains("return 0;")
+					&& !around.contains("hasHighlightPos()"),
+				"the old code fell through to metres when a glow position was remembered"
+			);
+		}
+
+		@Test
+		@DisplayName("«До ближайшего» measures world chests only, everywhere")
+		void nearestIsWorldChestsOnly() throws Exception {
+			assertTrue(
+				read(STORAGE).contains("if (dist >= 0 && !record.isVirtual()) {"),
+				"the list aggregation must not let a personal record win 'nearest'"
+			);
+			String grid = read(GRID);
+			assertTrue(
+				grid.contains("tooltip.containers_none"),
+				"all-personal stock says so instead of showing metres"
+			);
+			String session = read(SESSION);
+			int near = session.indexOf("private static double nearestLiveDist");
+			String body = session.substring(near, session.indexOf("\n\t}", near));
+			assertTrue(
+				body.contains("if (r.isVirtual())"),
+				"gather distances must skip personal records too"
+			);
+		}
+
+		@Test
+		@DisplayName("Routes and chest stock are world chests; ender rides its own line")
+		void routesSkipEnder() throws Exception {
+			String session = read(SESSION);
+			int filtered = session.indexOf("private static List<ContainerRecord> filteredSources");
+			String body = session.substring(filtered, session.indexOf("\n\t}", filtered));
+			assertTrue(
+				body.contains("if (!r.isVirtual())"),
+				"a route stop at 'the ender chest you once opened 300м away' is nonsense"
+			);
+			assertTrue(
+				read(CLAN_SCREEN).contains("WorldBreakdown.enderCount("),
+				"ender holdings must stay visible — on the tooltip's own ender line"
+			);
+		}
+
+		@Test
+		@DisplayName("Chat never reports metres to a virtual record")
+		void chatSkipsVirtuals() throws Exception {
+			String panel = read(PANEL);
+			assertTrue(
+				panel.contains(".filter(r -> r.isWorldBlock())"),
+				"the nearest-chest chat line must not point at the remembered ender spot"
+			);
+		}
+	}
 }

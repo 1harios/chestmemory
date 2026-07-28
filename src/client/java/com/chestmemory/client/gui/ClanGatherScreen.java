@@ -1719,6 +1719,16 @@ public class ClanGatherScreen extends Screen {
 				"screen.chestmemory.tooltip.gather_shulkers", inShulkers
 			).withStyle(net.minecraft.ChatFormatting.GRAY));
 		}
+		// Ender holdings are no longer "chest stock" (no metres to something that is
+		// with you) — say where they are instead, in the vanilla ender line.
+		int inEnder = com.chestmemory.client.data.WorldBreakdown.enderCount(
+			ChestMemoryStorage.get().liveContainersSnapshot(), itemId
+		);
+		if (inEnder > 0) {
+			lines.add(Component.translatable(
+				"screen.chestmemory.tooltip.ender", inEnder
+			).withStyle(net.minecraft.ChatFormatting.GRAY));
+		}
 	}
 
 	/** «1», «1.5», «12» — shulker boxes, one decimal while it still matters. */

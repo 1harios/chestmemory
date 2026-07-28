@@ -252,8 +252,15 @@ public final class BuildGatherSession {
 	private static List<ContainerRecord> filteredSources(String itemId) {
 		Minecraft mc = Minecraft.getInstance();
 		String dim = mc != null && mc.level != null ? ChestMemoryStorage.dimensionId(mc.level) : null;
-		List<ContainerRecord> base =
-			ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId, filterDim(), dim);
+		// World chests only: the ender chest is personal (reachable anywhere), so it is
+		// neither a route stop nor "chest stock" — its holdings ride the tooltip line.
+		List<ContainerRecord> base = new ArrayList<>();
+		for (ContainerRecord r
+			: ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId, filterDim(), dim)) {
+			if (!r.isVirtual()) {
+				base.add(r);
+			}
+		}
 		if (filterScope() != ListScope.NEARBY || mc == null || mc.player == null || dim == null) {
 			return base;
 		}
@@ -283,7 +290,14 @@ public final class BuildGatherSession {
 	}
 
 	public static int countInChestsLive(String itemId, DimensionChoice dimFilter, @Nullable String playerDim) {
-		return ChestMemoryStorage.get().countInSourceChests(itemId, dimFilter, playerDim);
+		int total = 0;
+		for (ContainerRecord r
+			: ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId, dimFilter, playerDim)) {
+			if (!r.isVirtual()) {
+				total += r.countOf(itemId);
+			}
+		}
+		return total;
 	}
 
 	/** Nearest live source chest holding the item, in blocks — or -1 when unknown. */
@@ -316,6 +330,10 @@ public final class BuildGatherSession {
 		List<ContainerRecord> list = ChestMemoryStorage.get()
 			.liveSourceHighlightableWithItem(itemId, dimFilter, dim);
 		for (ContainerRecord r : list) {
+			if (r.isVirtual()) {
+				// The ender chest is "with you"; a distance to it reads as nonsense.
+				continue;
+			}
 			double d = ChestMemoryStorage.distanceTo(r, pos, dim);
 			if (d < 0) {
 				continue;
