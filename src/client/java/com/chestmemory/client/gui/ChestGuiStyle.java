@@ -358,6 +358,14 @@ public final class ChestGuiStyle {
 	public static final int STOCK_NONE = 0x44E03030;
 	/** Finished: retires dark instead of glowing like GO. */
 	public static final int STOCK_DONE = 0x99101010;
+	/**
+	 * Struck off the gather by the host: blacked out, not merely dimmed.
+	 * <p>
+	 * Deliberately far heavier than {@link #STOCK_DONE} — "done" and "we are not collecting
+	 * this" are opposite outcomes and must not look alike at a glance. The item stays faintly
+	 * readable through it so the row is still identifiable.
+	 */
+	public static final int STOCK_EXCLUDED = 0xE0080808;
 	/** Claimer's-initial badge over a slot: gold when the claim is yours… */
 	public static final int CLAIM_MINE = 0xFFFFEE88;
 	/** …light magenta when a teammate holds it. */

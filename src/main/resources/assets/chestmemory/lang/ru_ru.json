@@ -484,5 +484,19 @@
 	"screen.chestmemory.settings.unit.percent": "%s%%",
 	"screen.chestmemory.tooltip.amount_stacks_even": "Всего: ×%s (%s ст.)",
 	"screen.chestmemory.tooltip.shulkers": "В шалкерах: ×%s",
-	"screen.chestmemory.tooltip.ender": "Эндер-сундук: ×%s"
+	"screen.chestmemory.tooltip.ender": "Эндер-сундук: ×%s",
+	"screen.chestmemory.clan.mat_excluded": "исключено из сбора",
+	"screen.chestmemory.clan.mat_excluded_hint": "Хост убрал это из сбора",
+	"screen.chestmemory.clan.mat_excluded_host_hint": "ПКМ — вернуть в сбор",
+	"screen.chestmemory.clan.mat_exclude_hint": "ПКМ — убрать из сбора",
+	"screen.chestmemory.tooltip.gather_percent": "Готово: %s%%",
+	"screen.chestmemory.tooltip.gather_left_bulk": "Это %s",
+	"screen.chestmemory.tooltip.box_holds": "1 ШБ = %s шт (27 × %s)",
+	"screen.chestmemory.tooltip.unit_box": "%s ШБ",
+	"screen.chestmemory.tooltip.unit_stack": "%s ст.",
+	"screen.chestmemory.tooltip.unit_item": "%s шт",
+	"message.chestmemory.clan_excluded": "§dКлан§r · %s убрано из сбора",
+	"message.chestmemory.clan_unexcluded": "§dКлан§r · %s снова в сборе",
+	"message.chestmemory.clan_exclude_host_only": "§dКлан§r · только создатель сбора убирает предметы",
+	"message.chestmemory.clan_claim_excluded": "%s убрано из сбора — бронировать нечего"
 }

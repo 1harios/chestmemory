@@ -652,10 +652,33 @@ public final class ClanSessionManager {
 		synchronized (myClaimOrder) {
 			myClaimOrder.removeIf(id -> {
 				ClanSession.ClanMaterial m = s.material(id);
-				return m == null || m.claimedBy == null || !me.equalsIgnoreCase(m.claimedBy);
+				return m == null || m.excluded || m.claimedBy == null
+					|| !me.equalsIgnoreCase(m.claimedBy);
 			});
 			return java.util.List.copyOf(myClaimOrder);
 		}
+	}
+
+	/**
+	 * The material this member took first, for the members panel.
+	 * <p>
+	 * For ourselves the locally recorded click order wins — it is the same list the gather
+	 * queue and the HUD follow, so the panel cannot disagree with what the player is
+	 * actually collecting. For everybody else the hub's {@code claimedAt} is the only
+	 * evidence there is, and it says the same thing their own client says.
+	 */
+	public static @Nullable String firstClaimOf(Minecraft mc, @Nullable String uuid) {
+		ClanSession s = session;
+		if (s == null || uuid == null || uuid.isBlank()) {
+			return null;
+		}
+		if (uuid.equalsIgnoreCase(localUuid(mc))) {
+			java.util.List<String> mine = myClaimOrder(mc);
+			if (!mine.isEmpty()) {
+				return mine.get(0);
+			}
+		}
+		return s.firstClaimOf(uuid);
 	}
 
 	private static void rememberClaimOrder(String itemId, boolean unclaim) {
@@ -837,9 +860,120 @@ public final class ClanSessionManager {
 		});
 	}
 
+	/**
+	 * Strike a material off the gather, or put it back (host only).
+	 * <p>
+	 * The host is the one who opened the schematic and knows the shell is already standing,
+	 * so the host is the one who gets to say "nobody hauls stone for this". The material
+	 * keeps its delivered history — this marks it, it does not delete it — and the hub
+	 * releases any claim on it so no member is left carrying something nobody wants.
+	 * <p>
+	 * The hub enforces the host check as well; this one only spares a doomed request and
+	 * gives a member a clear message instead of a 403.
+	 */
+	public static void excludeAsync(
+		Minecraft mc, String itemId, boolean excluded, @Nullable Runnable onDone
+	) {
+		if (session == null || itemId == null || itemId.isBlank()) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!isHost(mc)) {
+			chat(mc, Component.translatable("message.chestmemory.clan_exclude_host_only"));
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!isInActiveGather(itemId)) {
+			chat(mc, Component.translatable(
+				"message.chestmemory.clan_not_in_gather",
+				ChestMemoryStorage.itemDisplayName(itemId)
+			));
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
+		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("uuid", localUuid(mc));
+		body.addProperty("name", localName(mc));
+		body.addProperty("itemId", itemId);
+		body.addProperty("excluded", excluded);
+		String code = session.code;
+		IO.execute(() -> {
+			try {
+				var res = authedRequest(mc, client(), c -> c.exclude(code, body));
+				mc.execute(() -> {
+					busy.set(false);
+					if (res.ok && res.value != null) {
+						adoptSession(res.value);
+						lastError = null;
+						// An excluded material is no longer part of anyone's queue, so drop it
+						// from the local click order too — otherwise the HUD would keep naming
+						// a target the gather has struck off. If it WAS the target, hand the
+						// focus on the same way releasing a claim does: after the hub confirms,
+						// so the move reads a session that already knows the material is out.
+						if (excluded) {
+							rememberClaimOrder(itemId, true);
+							if (itemId.equals(
+								com.chestmemory.client.litematica.BuildGatherSession.currentItemId()
+							)) {
+								com.chestmemory.client.litematica.BuildGatherSession
+									.dropCurrentClaimFocus(mc);
+							}
+						}
+						chat(mc, Component.translatable(
+							excluded
+								? "message.chestmemory.clan_excluded"
+								: "message.chestmemory.clan_unexcluded",
+							ChestMemoryStorage.itemDisplayName(itemId)
+						));
+					} else {
+						failResult(mc, res, "exclude failed");
+					}
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			} catch (Exception e) {
+				mc.execute(() -> {
+					busy.set(false);
+					failRaw(e.getMessage(), mc);
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			}
+		});
+	}
+
 	/** Toggle claim on item for local player. */
 	public static void claimToggleAsync(Minecraft mc, String itemId, @Nullable Runnable onDone) {
 		if (session == null || itemId == null) {
+			return;
+		}
+		// An excluded material is off the gather: refuse before the round trip, with the
+		// reason spelled out, rather than letting the hub answer 409.
+		if (session.isExcluded(itemId)) {
+			chat(mc, Component.translatable(
+				"message.chestmemory.clan_claim_excluded",
+				ChestMemoryStorage.itemDisplayName(itemId)
+			));
+			if (onDone != null) {
+				onDone.run();
+			}
 			return;
 		}
 		// Refuse locally rather than letting the hub answer "unknown item": the panel can show
@@ -1155,6 +1289,48 @@ public final class ClanSessionManager {
 		return cur != null && code != null && code.equalsIgnoreCase(cur.code);
 	}
 
+	/**
+	 * Fold a since-poll stub into the snapshot we already hold.
+	 * <p>
+	 * The stub is the steady state of a working gather: members' {@code lastSeen} moves on
+	 * every poll, but a heartbeat deliberately does not bump the revision, so the hub keeps
+	 * answering "unchanged" and there is no fresh snapshot to adopt. The away timer,
+	 * however, keeps counting — against a {@code lastSeen} frozen at the last real change.
+	 * Three minutes after the last claim, everybody read as offline while they were in fact
+	 * out collecting. So the stub's clock and roster freshness are applied here.
+	 * <p>
+	 * Our own row is refreshed from the hub's clock whether or not the hub sent a roster:
+	 * the poll succeeded, which is itself proof the hub accepted our heartbeat. That keeps
+	 * the local player correct even against a hub that has not been updated yet.
+	 */
+	private static void applyHeartbeat(Minecraft mc, String code, ClanHubClient.Heartbeat hb) {
+		ClanSession cur = session;
+		if (cur == null || !isFollowing(code)) {
+			return;
+		}
+		long hubNow = hb.now();
+		if (hubNow <= 0) {
+			return;
+		}
+		cur.now = hubNow;
+		cur.receivedAt = System.currentTimeMillis();
+		String me = localUuid(mc);
+		for (ClanSession.ClanMember m : cur.members) {
+			String uuid = m.uuid == null ? "" : m.uuid;
+			if (uuid.isEmpty()) {
+				continue;
+			}
+			if (uuid.equalsIgnoreCase(me)) {
+				m.lastSeen = Math.max(m.lastSeen, hubNow);
+				continue;
+			}
+			Long seen = hb.lastSeen().get(uuid.toLowerCase(java.util.Locale.ROOT));
+			if (seen != null && seen > m.lastSeen) {
+				m.lastSeen = seen;
+			}
+		}
+	}
+
 	private static @Nullable ClanSession adoptSession(@Nullable ClanSession next) {
 		ClanSession cur = session;
 		if (next == null) {
@@ -1184,12 +1360,25 @@ public final class ClanSessionManager {
 		return s != null && itemId != null && s.material(itemId) != null;
 	}
 
+	/**
+	 * How much of this material the gather still wants, or 0 when the host struck it off.
+	 * <p>
+	 * Reporting 0 for an excluded material is what keeps it out of the local gather queue
+	 * and the route planner: nothing needed means nothing to collect, with no separate
+	 * exclusion check in each of those call sites.
+	 */
 	public static int clanNeed(String itemId) {
 		if (session == null || itemId == null) {
 			return 0;
 		}
 		ClanSession.ClanMaterial m = session.material(itemId);
-		return m == null ? 0 : Math.max(0, m.need);
+		return m == null || m.excluded ? 0 : Math.max(0, m.need);
+	}
+
+	/** True when the host struck this material off the active gather. */
+	public static boolean isExcluded(@Nullable String itemId) {
+		ClanSession s = session;
+		return s != null && s.isExcluded(itemId);
 	}
 
 	/** True if another member claimed this item. */
@@ -1272,6 +1461,13 @@ public final class ClanSessionManager {
 				// steady state — no snapshot parse, no diffing, just the heartbeat.
 				var res = sinceRevision > 0 ? c.getSince(code, sinceRevision) : c.get(code);
 				if (res.isUnchanged()) {
+					// A stub is not "nothing happened" — it is proof the hub just heard
+					// from us. Returning without applying it is what made everyone go
+					// offline three minutes into a quiet gather.
+					var hb = res.heartbeat;
+					if (hb != null) {
+						mc.execute(() -> applyHeartbeat(mc, code, hb));
+					}
 					return;
 				}
 				if (res.ok && res.value != null) {

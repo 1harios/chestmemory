@@ -250,12 +250,25 @@ def _release_stale_claims(sess: dict[str, Any]) -> list[str]:
     for mat in (sess.get("materials") or {}).values():
         holder = str(mat.get("claimedBy") or "").lower()
         if holder and holder in stale:
-            mat["claimedBy"] = None
-            mat["claimedName"] = None
+            _clear_claim(mat)
             if stale[holder] not in released:
                 released.append(stale[holder])
     # Keep the member listed but visibly stale; the roster shows who is away.
     return released
+
+
+def _clear_claim(mat: dict[str, Any]) -> None:
+    """
+    Release one material's claim, every field of it.
+
+    A claim is three fields now, not two: claimedAt joined claimedBy/claimedName so the
+    client can order a member's claims by when they were taken. Five call sites release
+    claims (stale sweep, unclaim, leave, kick, release_claims) and every one of them has
+    to drop all three, or a released material keeps a timestamp that outlives its claim.
+    """
+    mat["claimedBy"] = None
+    mat["claimedName"] = None
+    mat["claimedAt"] = 0
 
 
 def _touch(sess: dict[str, Any]) -> None:
@@ -478,11 +491,23 @@ class Handler(BaseHTTPRequestHandler):
                         _mark_dirty()
                 # since-poll: nothing the client does not already have — answer a stub.
                 if since > 0 and int(sess.get("revision", 0)) == since:
+                    # The stub still carries the heartbeat. A poll refreshes every
+                    # member's lastSeen but deliberately does not bump the revision —
+                    # bumping it would defeat since-polling entirely — so a quiet gather
+                    # answers this stub forever. Without the seen map below the client
+                    # measured its away timer against a lastSeen frozen at the last real
+                    # change and flipped everybody to "offline" three minutes later,
+                    # while they were standing right there collecting.
                     self._send(200, {
                         "code": sess.get("code"),
                         "revision": since,
                         "unchanged": True,
                         "now": _now(),
+                        "seen": {
+                            str(m.get("uuid")): int(m.get("lastSeen", 0) or 0)
+                            for m in (sess.get("members") or [])
+                            if m.get("uuid")
+                        },
                     })
                     return
                 self._send_session(sess)
@@ -551,6 +576,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._kick(code, body)
             elif action == "release_claims":
                 self._release_claims(code, body)
+            elif action == "exclude":
+                self._exclude(code, body)
             else:
                 self._send(404, {"error": "not found"})
             return
@@ -592,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
                 "delivered": 0,
                 "claimedBy": None,
                 "claimedName": None,
+                "claimedAt": 0,
+                "excluded": False,
             }
         if not materials:
             self._send(400, {"error": "empty materials"})
@@ -701,9 +730,13 @@ class Handler(BaseHTTPRequestHandler):
             cur = m.get("claimedBy")
             if unclaim:
                 if cur and str(cur).lower() == uuid.lower():
-                    m["claimedBy"] = None
-                    m["claimedName"] = None
+                    _clear_claim(m)
             else:
+                if m.get("excluded"):
+                    # The host struck this material off the gather; claiming it would
+                    # put a member to work on something nobody is collecting.
+                    self._send(409, {"error": "item excluded from this gather"})
+                    return
                 if cur and str(cur).lower() != uuid.lower():
                     self._send(
                         409,
@@ -712,6 +745,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 m["claimedBy"] = uuid
                 m["claimedName"] = name
+                # When the claim was taken, in hub time. The client shows "who is
+                # carrying what" from this: a member holding glass and stone is working
+                # the one they clicked first, and every client agrees on which that was.
+                m["claimedAt"] = _now()
             _member_upsert(sess, name, uuid)
             _touch(sess)
             _mark_dirty()
@@ -824,8 +861,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             for m in (sess.get("materials") or {}).values():
                 if str(m.get("claimedBy") or "").lower() == uuid.lower():
-                    m["claimedBy"] = None
-                    m["claimedName"] = None
+                    _clear_claim(m)
             members = sess.get("members") or []
             sess["members"] = [
                 m
@@ -903,8 +939,7 @@ class Handler(BaseHTTPRequestHandler):
             sess["members"] = kept
             for m in (sess.get("materials") or {}).values():
                 if str(m.get("claimedBy") or "").lower() == target:
-                    m["claimedBy"] = None
-                    m["claimedName"] = None
+                    _clear_claim(m)
             kicked = sess.setdefault("kicked", [])
             if target not in {str(k).lower() for k in kicked}:
                 kicked.append(target)
@@ -922,10 +957,68 @@ class Handler(BaseHTTPRequestHandler):
                 return
             for m in (sess.get("materials") or {}).values():
                 if m.get("claimedBy"):
-                    m["claimedBy"] = None
-                    m["claimedName"] = None
+                    _clear_claim(m)
             _touch(sess)
             _mark_dirty()
+            self._send_session(sess)
+
+    def _exclude(self, code: str, body: dict[str, Any]) -> None:
+        """
+        Strike materials off the gather, or put them back (host only).
+
+        The host opened the schematic, so the host is the one who knows the shell is
+        already built and nobody should be hauling 40k stone for it. Excluded materials
+        stay in the session — their delivered history is real and must not be rewritten —
+        they are just marked, and every client greys them out and stops counting them
+        toward progress.
+
+        Body is either {"itemId": id, "excluded": bool} or, for a bulk edit,
+        {"items": {id: bool, ...}}. Verified identity is required and must match
+        hostUuid: _host_session enforces both, exactly as kick and release_claims do.
+        """
+        updates: dict[str, bool] = {}
+        raw_items = body.get("items")
+        if isinstance(raw_items, dict):
+            for k, v in raw_items.items():
+                key = str(k)[:MAX_ITEM_ID_LEN]
+                if key:
+                    updates[key] = bool(v)
+        else:
+            item = str(body.get("itemId") or "").strip()[:MAX_ITEM_ID_LEN]
+            if not item:
+                self._send(400, {"error": "itemId required"})
+                return
+            # Absent "excluded" means exclude: a bare {"itemId"} reads as "drop this one".
+            updates[item] = bool(body.get("excluded", True))
+        if not updates:
+            self._send(400, {"error": "no items"})
+            return
+        if len(updates) > MAX_MATERIALS_PER_SESSION:
+            self._send(400, {"error": "too many items"})
+            return
+        with _lock:
+            sess = self._host_session(code, "only the gather host can exclude items")
+            if sess is None:
+                return
+            mats = sess.get("materials") or {}
+            unknown = [k for k in updates if k not in mats]
+            if unknown:
+                self._send(404, {"error": "unknown item " + unknown[0]})
+                return
+            changed = False
+            for key, flag in updates.items():
+                mat = mats[key]
+                if bool(mat.get("excluded")) == flag:
+                    continue
+                mat["excluded"] = flag
+                if flag:
+                    # Whoever was on it is off it. Leaving the claim would show a member
+                    # carrying a material the gather no longer wants.
+                    _clear_claim(mat)
+                changed = True
+            if changed:
+                _touch(sess)
+                _mark_dirty()
             self._send_session(sess)
 
     def _close(self, code: str) -> None:

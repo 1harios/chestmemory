@@ -279,6 +279,22 @@ function clean_staging_keys($keysIn): array
 }
 
 /**
+ * Release one material's claim, every field of it.
+ *
+ * A claim is three fields now, not two: claimedAt joined claimedBy/claimedName so the client
+ * can order a member's claims by when they were taken. Five paths release claims (stale
+ * sweep, unclaim, leave, kick, release_claims) and each has to drop all three, or a released
+ * material keeps a timestamp that outlives its claim. Mirrors _clear_claim in clan_hub.py —
+ * both write the same sessions.json, so they cannot disagree about the shape.
+ */
+function clear_claim(array &$mat): void
+{
+    $mat['claimedBy'] = null;
+    $mat['claimedName'] = null;
+    $mat['claimedAt'] = 0;
+}
+
+/**
  * Drop claims held by members whose client stopped talking to us. Without this an
  * alt-F4 left a material reserved for the whole session lifetime.
  *
@@ -302,8 +318,7 @@ function release_stale_claims(array &$sess, int $timeoutMs): array
         foreach ($sess['materials'] as &$mat) {
             $holder = strtolower((string)($mat['claimedBy'] ?? ''));
             if ($holder !== '' && isset($stale[$holder])) {
-                $mat['claimedBy'] = null;
-                $mat['claimedName'] = null;
+                clear_claim($mat);
                 if (!in_array($stale[$holder], $released, true)) {
                     $released[] = $stale[$holder];
                 }
@@ -597,6 +612,8 @@ if ($method === 'POST' && $path === '/v1/sessions') {
                 'delivered' => 0,
                 'claimedBy' => null,
                 'claimedName' => null,
+                'claimedAt' => 0,
+                'excluded' => false,
             ];
         }
     }
@@ -645,7 +662,7 @@ if ($method === 'POST' && $path === '/v1/sessions') {
     respond_session($sess);
 }
 
-if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close|update|kick|release_claims)/?$#', $path, $m)) {
+if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close|update|kick|release_claims|exclude)/?$#', $path, $m)) {
     $code = normalize_code($m[1]);
     $action = $m[2];
     $body = read_body();
@@ -691,15 +708,23 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         $cur = (string)($mat['claimedBy'] ?? '');
         if ($unclaim) {
             if ($cur !== '' && strcasecmp($cur, $uuid) === 0) {
-                $mat['claimedBy'] = null;
-                $mat['claimedName'] = null;
+                clear_claim($mat);
             }
         } else {
+            if (!empty($mat['excluded'])) {
+                // The host struck this material off the gather; claiming it would put a
+                // member to work on something nobody is collecting.
+                respond(409, ['error' => 'item excluded from this gather']);
+            }
             if ($cur !== '' && strcasecmp($cur, $uuid) !== 0) {
                 respond(409, ['error' => 'already claimed by ' . ($mat['claimedName'] ?? $cur)]);
             }
             $mat['claimedBy'] = $uuid;
             $mat['claimedName'] = $name;
+            // When the claim was taken, in hub time. The client shows "who is carrying what"
+            // from this, so a member holding glass and stone is shown on the one they took
+            // first — and every client agrees on which that was.
+            $mat['claimedAt'] = now_ms();
         }
         member_upsert($sess, $name, $uuid);
         touch_sess($sess);
@@ -800,8 +825,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         [$uuid, $actorName] = clan_actor($body);
         foreach ($sess['materials'] as &$mat) {
             if (strcasecmp((string)($mat['claimedBy'] ?? ''), $uuid) === 0) {
-                $mat['claimedBy'] = null;
-                $mat['claimedName'] = null;
+                clear_claim($mat);
             }
         }
         unset($mat);
@@ -852,8 +876,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if (is_array($sess['materials'] ?? null)) {
             foreach ($sess['materials'] as &$mat) {
                 if (strtolower((string)($mat['claimedBy'] ?? '')) === $target) {
-                    $mat['claimedBy'] = null;
-                    $mat['claimedName'] = null;
+                    clear_claim($mat);
                 }
             }
             unset($mat);
@@ -883,14 +906,69 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if (is_array($sess['materials'] ?? null)) {
             foreach ($sess['materials'] as &$mat) {
                 if (!empty($mat['claimedBy'])) {
-                    $mat['claimedBy'] = null;
-                    $mat['claimedName'] = null;
+                    clear_claim($mat);
                 }
             }
             unset($mat);
         }
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
+        respond_session($sess);
+    }
+
+    if ($action === 'exclude') {
+        // Strike materials off the gather, or put them back (host only).
+        //
+        // The host opened the schematic, so the host is the one who knows the shell is
+        // already built and nobody should be hauling 40k stone for it. Excluded materials
+        // stay in the session — their delivered history is real and must not be rewritten —
+        // they are just marked, and every client greys them out and stops counting them
+        // toward progress. Mirrors _exclude in clan_hub.py.
+        require_verified_host($sess, 'only the gather host can exclude items');
+        $updates = [];
+        if (isset($body['items']) && is_array($body['items'])) {
+            foreach ($body['items'] as $k => $v) {
+                $key = clamp_str(trim((string)$k), MAX_ITEM_ID_LEN);
+                if ($key !== '') {
+                    $updates[$key] = (bool)$v;
+                }
+            }
+        } else {
+            $item = clamp_str(trim((string)($body['itemId'] ?? '')), MAX_ITEM_ID_LEN);
+            if ($item === '') {
+                respond(400, ['error' => 'itemId required']);
+            }
+            // Absent "excluded" means exclude: a bare {"itemId"} reads as "drop this one".
+            $updates[$item] = array_key_exists('excluded', $body) ? (bool)$body['excluded'] : true;
+        }
+        if ($updates === []) {
+            respond(400, ['error' => 'no items']);
+        }
+        foreach (array_keys($updates) as $key) {
+            if (!isset($sess['materials'][$key])) {
+                respond(404, ['error' => 'unknown item ' . $key]);
+            }
+        }
+        $changed = false;
+        foreach ($updates as $key => $flag) {
+            $mat = &$sess['materials'][$key];
+            if ((bool)($mat['excluded'] ?? false) === $flag) {
+                unset($mat);
+                continue;
+            }
+            $mat['excluded'] = $flag;
+            if ($flag) {
+                // Whoever was on it is off it. Leaving the claim would show a member
+                // carrying a material the gather no longer wants.
+                clear_claim($mat);
+            }
+            $changed = true;
+            unset($mat);
+        }
+        if ($changed) {
+            touch_sess($sess);
+            save_sessions($sessionsFile, $sessions);
+        }
         respond_session($sess);
     }
 

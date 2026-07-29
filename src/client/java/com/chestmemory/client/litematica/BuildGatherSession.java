@@ -875,16 +875,28 @@ public final class BuildGatherSession {
 			}
 			return itemId;
 		}
-		// Claims with no recorded order (made before a relog) fall back to the map.
+		// Claims with no recorded order (made before a relog) fall back to when the hub says
+		// they were taken — not to the map, whose order is the hub's storage order and means
+		// nothing to the player. Sorting here is what keeps a rejoined member's HUD agreeing
+		// with the material the members panel shows them carrying.
+		java.util.List<String> byClaimTime = new java.util.ArrayList<>();
 		for (var e : session.materials.entrySet()) {
-			String itemId = e.getKey();
+			if (e.getValue().excluded) {
+				continue;
+			}
+			if (com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(client, e.getKey())) {
+				byClaimTime.add(e.getKey());
+			}
+		}
+		byClaimTime.sort(java.util.Comparator.comparingLong(id -> {
+			var mat = session.material(id);
+			return mat == null ? 0L : mat.claimedAt;
+		}));
+		for (String itemId : byClaimTime) {
 			if (exclude != null && exclude.equals(itemId)) {
 				continue;
 			}
 			if (skipped.contains(itemId)) {
-				continue;
-			}
-			if (!com.chestmemory.client.clan.ClanSessionManager.isClaimedByMe(client, itemId)) {
 				continue;
 			}
 			if (remainingNeed(itemId, client.player) <= 0) {
