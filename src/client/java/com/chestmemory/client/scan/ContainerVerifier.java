@@ -13,6 +13,8 @@ import net.minecraft.world.level.block.DispenserBlock;
 import net.minecraft.world.level.block.EnderChestBlock;
 import net.minecraft.world.level.block.HopperBlock;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.ChestType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -111,12 +113,19 @@ public final class ContainerVerifier {
 				stillHere.add(key);
 				continue;
 			}
-			// Double chest: the record is keyed on one half, and breaking that half leaves
-			// the other standing. Keep the record if its partner is still a chest — the next
-			// open will rewrite it as a single.
+			// Double chest: the record is keyed on one half, and breaking that half leaves the
+			// other standing. Spare the record only while the partner is still paired with THIS
+			// position — a lone chest next door is a different container.
+			//
+			// Sparing it whenever the partner was any container at all was a leak with no exit.
+			// The rewrite this used to promise never arrived: opening the surviving half runs as
+			// a SINGLE chest, and the supersede path only clears keys at the position it scanned.
+			// So the old double_chest record sat at the broken half's coordinates forever, every
+			// sweep re-blessed it through this very check, its contents kept being counted on top
+			// of the new single's, and the highlighter glowed on air.
 			if (record.hasOtherHalf()) {
 				BlockPos other = new BlockPos(record.otherX(), record.otherY(), record.otherZ());
-				if (level.isLoaded(other) && isContainerBlock(level.getBlockState(other).getBlock())) {
+				if (level.isLoaded(other) && stillPairedWith(level, other, pos)) {
 					stillHere.add(key);
 					continue;
 				}
@@ -143,6 +152,22 @@ public final class ContainerVerifier {
 		if (!gone.isEmpty()) {
 			ChestMemoryStorage.get().saveIfNeeded();
 		}
+	}
+
+	/**
+	 * True when the chest at {@code other} is still one half of a double chest whose partner
+	 * is exactly {@code expected} — the only condition under which a record keyed on a broken
+	 * half still describes something that exists.
+	 */
+	private static boolean stillPairedWith(Level level, BlockPos other, BlockPos expected) {
+		BlockState state = level.getBlockState(other);
+		if (!(state.getBlock() instanceof ChestBlock)) {
+			return false;
+		}
+		if (state.getValue(ChestBlock.TYPE) == ChestType.SINGLE) {
+			return false;
+		}
+		return ChestBlock.getConnectedBlockPos(other, state).equals(expected);
 	}
 
 	private static boolean isContainerBlock(Block block) {

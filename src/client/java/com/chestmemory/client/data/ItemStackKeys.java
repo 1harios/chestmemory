@@ -19,6 +19,7 @@ import org.jspecify.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -42,8 +43,28 @@ public final class ItemStackKeys {
 	 * Keyed by item key; invalidated when the language changes, since the cached strings
 	 * are localized. Access is confined to the client thread.
 	 */
-	private static final Map<String, String> DISPLAY_NAME_CACHE = new HashMap<>();
-	private static final Map<String, String> SEARCH_BLOB_CACHE = new HashMap<>();
+	/**
+	 * Cap on the memo maps below.
+	 * <p>
+	 * The cache key embeds the item's anvil name, which on a shop or anarchy server is
+	 * effectively unbounded — so an unbounded map grew for the whole process lifetime and the
+	 * only thing that ever evicted anything was the player changing language.
+	 */
+	private static final int NAME_CACHE_MAX = 4096;
+
+	private static final Map<String, String> DISPLAY_NAME_CACHE = boundedCache();
+	private static final Map<String, String> SEARCH_BLOB_CACHE = boundedCache();
+	private static final Map<String, ItemStack> STACK_CACHE = boundedCache();
+
+	/** Access-ordered LRU. Confined to the client thread, like the rest of this class. */
+	private static <V> Map<String, V> boundedCache() {
+		return new LinkedHashMap<>(256, 0.75F, true) {
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<String, V> eldest) {
+				return size() > NAME_CACHE_MAX;
+			}
+		};
+	}
 	private static @Nullable String cachedLanguage;
 
 	private ItemStackKeys() {
@@ -59,6 +80,7 @@ public final class ItemStackKeys {
 			cachedLanguage = lang;
 			DISPLAY_NAME_CACHE.clear();
 			SEARCH_BLOB_CACHE.clear();
+			STACK_CACHE.clear();
 		}
 	}
 
@@ -66,6 +88,7 @@ public final class ItemStackKeys {
 	public static void clearNameCache() {
 		DISPLAY_NAME_CACHE.clear();
 		SEARCH_BLOB_CACHE.clear();
+		STACK_CACHE.clear();
 		cachedLanguage = null;
 	}
 
@@ -121,8 +144,30 @@ public final class ItemStackKeys {
 		return raw.replace("\\", "\\\\").replace("+", "\\p").replace("=", "\\e").replace("#", "\\h");
 	}
 
+	/**
+	 * Single left-to-right pass, because sequential replaces cannot round-trip: a name holding
+	 * a literal {@code \p} escapes to {@code \\p}, and the {@code \\p -> +} replacement then fired
+	 * on the second backslash before {@code \\} collapsed, yielding {@code \+}. Any anvil name with
+	 * a backslash before p, e or h came back corrupted and failed {@link #matches}.
+	 */
 	private static String unescapeNamePart(String raw) {
-		return raw.replace("\\h", "#").replace("\\e", "=").replace("\\p", "+").replace("\\\\", "\\");
+		StringBuilder out = new StringBuilder(raw.length());
+		for (int i = 0; i < raw.length(); i++) {
+			char c = raw.charAt(i);
+			if (c != '\\' || i + 1 >= raw.length()) {
+				out.append(c);
+				continue;
+			}
+			char next = raw.charAt(++i);
+			switch (next) {
+				case 'h' -> out.append('#');
+				case 'e' -> out.append('=');
+				case 'p' -> out.append('+');
+				case '\\' -> out.append('\\');
+				default -> out.append(c).append(next);
+			}
+		}
+		return out.toString();
 	}
 
 	/** Custom name encoded in the key, or null. */
@@ -156,11 +201,40 @@ public final class ItemStackKeys {
 		if (stack == null || stack.isEmpty() || key == null) {
 			return false;
 		}
+		// Settle it on the registry id first. keyOf allocates a list, walks both enchantment
+		// components, escapes the anvil name and joins the result — and this runs for every
+		// non-empty slot, every frame, while a container screen is open during a gather. Nearly
+		// every slot is a different item and loses on the id alone.
+		Identifier id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+		if (id == null || !id.toString().equals(baseId(key))) {
+			return false;
+		}
 		return keyOf(stack).equals(key);
 	}
 
-	/** Build an ItemStack for icons / display from a key. */
+	/**
+	 * Build an ItemStack for icons / display from a key.
+	 * <p>
+	 * Memoised: resolving a key hits the item registry and parses enchantments and the anvil
+	 * name, and the grids asked for whole result lists at a time — thousands of builds per
+	 * refresh on a large memory. A copy is handed out rather than the cached instance, because
+	 * an ItemStack is mutable and a caller adjusting one for display must not poison the cache.
+	 */
 	public static ItemStack toStack(String key) {
+		if (key != null) {
+			ensureLanguageFresh();
+			ItemStack cached = STACK_CACHE.get(key);
+			if (cached != null) {
+				return cached.copy();
+			}
+			ItemStack built = buildStack(key);
+			STACK_CACHE.put(key, built);
+			return built.copy();
+		}
+		return buildStack(key);
+	}
+
+	private static ItemStack buildStack(String key) {
 		if (key == null || key.isBlank()) {
 			return new ItemStack(Items.CHEST);
 		}

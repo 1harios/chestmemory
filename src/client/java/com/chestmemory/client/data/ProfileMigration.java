@@ -37,6 +37,12 @@ public final class ProfileMigration {
 			if (record == null) {
 				continue;
 			}
+			// Gson accepts "items": {"minecraft:stone": null} and a hand-edited or partly
+			// truncated file can carry one. The parse then succeeds, so loadFromDisk's guard
+			// never fires, and the null only surfaces later as an unboxing NPE inside countOf
+			// and listItems — on the render thread, every tick, for as long as the profile is
+			// loaded. This walks every record already, so it is the right place to scrub.
+			record.dropUnusableCounts();
 			String sanitized = WorldTags.sanitize(record.worldTag());
 			if (sanitized == null && record.worldTag() != null) {
 				record.setWorldTag(null);
