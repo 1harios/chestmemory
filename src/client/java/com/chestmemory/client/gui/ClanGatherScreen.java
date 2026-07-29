@@ -255,6 +255,20 @@ public class ClanGatherScreen extends Screen {
 	 */
 	private List<com.chestmemory.client.clan.ClanRoster.Entry> rosterRows = java.util.List.of();
 	private long rosterRowsAt;
+	/** Width of the remove-from-list zone at the right of a gather row. */
+	private static final int CLOSE_W = 12;
+	/** Recorded during render, so a click is judged against the pixels that were painted. */
+	private int gatherCloseX0 = -1;
+	private int gatherCloseX1 = -1;
+	/**
+	 * Gather whose removal is armed, or null.
+	 * <p>
+	 * Only the row being followed arms: dropping the others is local and reversible by
+	 * rejoining with the code, but leaving the gather you are in has a visible effect on the
+	 * clan's roster, and the glyph is small enough to hit by accident.
+	 */
+	private @org.jspecify.annotations.Nullable String forgetArmCode;
+	private int forgetArmTicks;
 	/** Y where the material grid must stop, set by init() next to the controls below it. */
 	private int gridBottom = -1;
 	/**
@@ -318,6 +332,10 @@ public class ClanGatherScreen extends Screen {
 		}
 		if (this.kickArmUuid != null && --this.kickArmTicks <= 0) {
 			this.kickArmUuid = null;
+			disarmed = true;
+		}
+		if (this.forgetArmCode != null && --this.forgetArmTicks <= 0) {
+			this.forgetArmCode = null;
 			disarmed = true;
 		}
 		if (disarmed) {
@@ -1351,6 +1369,9 @@ public class ClanGatherScreen extends Screen {
 				return true;
 			}
 		}
+		if (forgetClick(event)) {
+			return true;
+		}
 		String pick = gatherAt(event.x(), event.y());
 		if (pick != null) {
 			if (ClanSessionManager.switchingTo() != null) {
@@ -1388,6 +1409,59 @@ public class ClanGatherScreen extends Screen {
 	 * Rows are painted rather than built as widgets, so clicks are mapped from the geometry
 	 * recorded during the last render.
 	 */
+	/**
+	 * Code of the gather whose remove-glyph is under the cursor, or null.
+	 * <p>
+	 * Checked before {@link #gatherAt}, and deliberately a narrow strip: a miss must fall
+	 * through to "switch to this gather", never the other way round.
+	 */
+	private @org.jspecify.annotations.Nullable String gatherCloseAt(double mx, double my) {
+		if (this.tab != TAB_LIST || this.gatherCloseX1 <= this.gatherCloseX0) {
+			return null;
+		}
+		if (mx < this.gatherCloseX0 || mx > this.gatherCloseX1) {
+			return null;
+		}
+		int idx = this.gatherScroll.rowAt(mx, my, 20);
+		if (idx < 0) {
+			return null;
+		}
+		var entries = rosterRows();
+		return idx < entries.size() ? entries.get(idx).code() : null;
+	}
+
+	/**
+	 * The ✕ on a gather row: take it off this player's list.
+	 * <p>
+	 * Kept out of mouseClicked so that method stays readable — and so the switch-to branch
+	 * below it is not pushed past the point where anything reading it gives up.
+	 *
+	 * @return true when the click was consumed
+	 */
+	private boolean forgetClick(MouseButtonEvent event) {
+		String remove = gatherCloseAt(event.x(), event.y());
+		if (remove == null || this.minecraft == null) {
+			return remove != null;
+		}
+		ClanSession cur = ClanSessionManager.session();
+		boolean isActive = cur != null && remove.equalsIgnoreCase(cur.code);
+		if (isActive && !remove.equalsIgnoreCase(this.forgetArmCode)) {
+			// Removing the gather you are in also leaves it, which the rest of the clan sees.
+			// Two clicks for that; one is enough for the others, where nothing leaves this
+			// machine and the code brings it back.
+			this.forgetArmCode = remove;
+			this.forgetArmTicks = ARM_TIMEOUT_TICKS;
+			this.status = Component.translatable(
+				"screen.chestmemory.clan.forget_confirm", remove
+			).getString();
+			return true;
+		}
+		this.forgetArmCode = null;
+		this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+		ClanSessionManager.forgetAsync(this.minecraft, remove, this::rebuildWidgets);
+		return true;
+	}
+
 	private @org.jspecify.annotations.Nullable String gatherAt(double mx, double my) {
 		if (this.tab != TAB_LIST) {
 			return null;
@@ -2093,14 +2167,8 @@ public class ClanGatherScreen extends Screen {
 		lines.add(Component.translatable(
 			"screen.chestmemory.tooltip.gather_delivered", delivered, need
 		).withStyle(net.minecraft.ChatFormatting.GRAY));
-		// The share of this one material, so a big entry that is nearly done reads
-		// differently from a small one that has not been started.
-		if (need > 0) {
-			lines.add(Component.translatable(
-				"screen.chestmemory.tooltip.gather_percent",
-				Math.min(100, (int) (100L * delivered / need))
-			).withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
-		}
+		// No percentage line: "сдано 128 / 1728" already carries it, and a second way of
+		// saying the same thing pushed the numbers that differ further down the tooltip.
 		if (m.excluded) {
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_excluded")
 				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
@@ -2118,6 +2186,7 @@ public class ClanGatherScreen extends Screen {
 		lines.add(Component.literal(stockLine(itemId))
 			.withStyle(net.minecraft.ChatFormatting.GRAY));
 		addStockDetail(lines, itemId, chestStock(itemId));
+		addWorldSplit(lines, itemId);
 		lines.add(Component.empty());
 		boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 		boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
@@ -2190,6 +2259,7 @@ public class ClanGatherScreen extends Screen {
 			r.totalCount(), dist, Math.max(0, r.inPlayer())
 		).withStyle(net.minecraft.ChatFormatting.GRAY));
 		addStockDetail(lines, r.itemId(), r.totalCount());
+		addWorldSplit(lines, r.itemId());
 		lines.add(Component.empty());
 		if (missing <= 0) {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_done")
@@ -2267,20 +2337,48 @@ public class ClanGatherScreen extends Screen {
 		if (total <= 0) {
 			return Component.translatable("screen.chestmemory.clan.hover_stock_none").getString();
 		}
-		String dim = this.minecraft != null && this.minecraft.level != null
-			? ChestMemoryStorage.dimensionId(this.minecraft.level)
-			: null;
-		int here = com.chestmemory.client.litematica.BuildGatherSession.countInChestsLive(
-			itemId, com.chestmemory.client.data.DimensionChoice.CURRENT, dim
-		);
 		double dist = com.chestmemory.client.litematica.BuildGatherSession
 			.nearestChestDistance(this.minecraft, itemId);
 		String distLabel = dist >= 0
 			? Component.translatable("screen.chestmemory.clan.dist_m", (int) Math.round(dist)).getString()
 			: "—";
+		// The count is what the panel's own filter allows, which is also what decides the
+		// slot's colour — so the number here can never disagree with the green/yellow/red.
+		// Where the rest of it lives is a separate question, answered by addWorldSplit.
 		return Component.translatable(
-			"screen.chestmemory.clan.hover_stock", total, here, distLabel
+			"screen.chestmemory.clan.hover_stock", total, distLabel
 		).getString();
+	}
+
+	/**
+	 * Where the stock actually is, when that differs from the filtered count.
+	 * <p>
+	 * The grid counts only what the panel's filter allows — "рядом ≤64м" in the current
+	 * world, say. That is the right basis for the colour, and it is also why a red cell can
+	 * be misleading: the item may exist in thousands, just not here. These lines say so, and
+	 * only when they add something: a figure equal to the one above is noise.
+	 */
+	private void addWorldSplit(List<Component> lines, String itemId) {
+		String dim = this.minecraft != null && this.minecraft.level != null
+			? ChestMemoryStorage.dimensionId(this.minecraft.level)
+			: null;
+		int filtered = chestStock(itemId);
+		int here = com.chestmemory.client.litematica.BuildGatherSession.countInChestsLive(
+			itemId, com.chestmemory.client.data.DimensionChoice.CURRENT, dim
+		);
+		int everywhere = com.chestmemory.client.litematica.BuildGatherSession.countInChestsLive(
+			itemId, com.chestmemory.client.data.DimensionChoice.ALL, dim
+		);
+		if (here > filtered) {
+			// The filter is narrower than the world — usually "nearby" with a radius.
+			lines.add(Component.translatable("screen.chestmemory.clan.stock_here", here)
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		}
+		int elsewhere = Math.max(0, everywhere - here);
+		if (elsewhere > 0) {
+			lines.add(Component.translatable("screen.chestmemory.clan.stock_elsewhere", elsewhere)
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		}
 	}
 
 	/** Info tab: identity, progress and the facts — everything the grid tab gave up. */
@@ -3096,7 +3194,7 @@ public class ClanGatherScreen extends Screen {
 				: "";
 			// A number said "34%"; the bar shows a third at a glance.
 			int barW = !loading && e.need() > 0 ? 40 : 0;
-			int rightW = right.isEmpty() ? barW : this.font.width(right);
+			int rightW = (right.isEmpty() ? barW : this.font.width(right)) + CLOSE_W;
 			int textY = y + (rowH - this.font.lineHeight) / 2 + 1;
 
 			// Code, then the build, then who runs it: a list of bare codes told the player
@@ -3120,11 +3218,27 @@ public class ClanGatherScreen extends Screen {
 				);
 			} else if (barW > 0) {
 				ChestGuiStyle.drawProgressBar(
-					graphics, left + rowW - 6 - barW, y + 7, barW, 6,
+					graphics, left + rowW - 6 - CLOSE_W - barW, y + 7, barW, 6,
 					e.delivered() / (float) e.need()
 				);
 			}
+			// Remove-from-my-list, at the far right of every row. Armed rows say so in the
+			// glyph itself, because a status line at the bottom of the panel is not where the
+			// eye is when the cursor is on the row.
+			boolean armed = e.code().equalsIgnoreCase(this.forgetArmCode);
+			int closeX = left + rowW - CLOSE_W + 2;
+			boolean hovered = this.hoverX >= closeX - 2 && this.hoverX <= left + rowW
+				&& this.hoverY >= y && this.hoverY <= y + rowH;
+			graphics.text(
+				this.font, armed ? "!" : "✕", closeX, textY,
+				armed ? 0xFFFF8080 : (hovered ? ChestGuiStyle.TEXT_LIGHT : ChestGuiStyle.TEXT_ON_WOOD_MUTED),
+				false
+			);
 		}
+		// Recorded for the click mapping, exactly as the material grid does it: the geometry
+		// the rows were painted with is the only geometry a click may be judged against.
+		this.gatherCloseX0 = left + rowW - CLOSE_W;
+		this.gatherCloseX1 = left + rowW;
 		this.gatherScroll.drawScrollbar(graphics);
 	}
 

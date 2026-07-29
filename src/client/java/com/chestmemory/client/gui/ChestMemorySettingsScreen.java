@@ -230,6 +230,19 @@ public class ChestMemorySettingsScreen extends Screen {
 			() -> Component.translatable(hudCornerKey(ModSettings.get().gatherHudCorner())),
 			() -> ModSettings.get().cycleGatherHudCorner(),
 			() -> ModSettings.get().showGatherHud());
+		y = addSlider(y,
+			"screen.chestmemory.settings.row.hud_scale",
+			"screen.chestmemory.settings.row.hud_scale.desc",
+			60, 150, 5,
+			() -> ModSettings.get().gatherHudScalePct(),
+			pct -> ModSettings.get().setGatherHudScalePct(pct),
+			pct -> Component.literal(pct + "%"));
+		y = addSwitch(y,
+			"screen.chestmemory.settings.row.hud_compact",
+			"screen.chestmemory.settings.row.hud_compact.desc",
+			() -> ModSettings.get().gatherHudCompact(),
+			() -> ModSettings.get().toggleGatherHudCompact(),
+			() -> ModSettings.get().showGatherHud());
 		y = addSwitch(y,
 			"screen.chestmemory.settings.row.gather_chat",
 			"screen.chestmemory.settings.row.gather_chat.desc",

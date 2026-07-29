@@ -590,6 +590,41 @@ public final class ClanSessionManager {
 		CLOSE
 	}
 
+	/**
+	 * Remove a gather from this player's list.
+	 * <p>
+	 * The ✕ in the gathers list. For a gather being followed it has to stop following first,
+	 * and it does so with a plain leave — never a close, even for the creator: taking a row
+	 * off your own screen must not end the evening for the whole clan. For any other gather
+	 * it is purely local and costs no request at all, because there is nothing on the hub to
+	 * tell; rejoining by code brings it straight back.
+	 */
+	public static void forgetAsync(Minecraft mc, String code, @Nullable Runnable onDone) {
+		String key = ClanCodes.normalize(code);
+		if (key.isEmpty()) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		ClanSession s = session;
+		if (s != null && key.equalsIgnoreCase(s.code)) {
+			exitAsync(mc, Exit.LEAVE, onDone);
+			return;
+		}
+		ClanRoster.forget(key);
+		ClanHostSecrets.forget(key);
+		if (key.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
+			// A stale active code would have the resume logic chase a gather the player has
+			// just removed from their own list.
+			ModSettings.get().setClanActiveCode("");
+		}
+		chat(mc, Component.translatable("message.chestmemory.clan_forgot", key));
+		if (onDone != null) {
+			onDone.run();
+		}
+	}
+
 	/** Leave the gather — as its creator this closes it for everyone. */
 	public static void leaveAsync(Minecraft mc, @Nullable Runnable onDone) {
 		exitAsync(mc, isHost(mc) ? Exit.CLOSE : Exit.LEAVE, onDone);
