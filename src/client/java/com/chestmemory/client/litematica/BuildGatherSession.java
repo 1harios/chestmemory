@@ -178,6 +178,20 @@ public final class BuildGatherSession {
 		if (itemId == null) {
 			return 0;
 		}
+		return remainingNeedCounted(itemId, countInPlayer(player, itemId));
+	}
+
+	/**
+	 * {@link #remainingNeed} with the inventory walk hoisted out: the HUD and panel count
+	 * the whole inventory once per refresh and pass per-item counts in, instead of walking
+	 * 41 slots (with a key allocation per non-empty slot) once per material row.
+	 *
+	 * @param inPlayerRaw actual backpack count — the clan-gather zeroing happens here
+	 */
+	private static int remainingNeedCounted(String itemId, int inPlayerRaw) {
+		if (itemId == null) {
+			return 0;
+		}
 		int inStaging = countInStaging(itemId);
 		// Clan delivered (shared warehouse progress) merges as max with local staging
 		int clanDel = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(itemId);
@@ -190,13 +204,15 @@ public final class BuildGatherSession {
 		// Solo it stays as it was — there is no warehouse to require, and carrying the
 		// material IS having gathered it.
 		boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInActiveGather(itemId);
-		int inPlayer = clanGather ? 0 : countInPlayer(player, itemId);
+		int inPlayer = clanGather ? 0 : inPlayerRaw;
 		int covered = inPlayer + warehouse;
-		for (LitematicaCompat.MaterialNeed n : LitematicaAccess.missingMaterials()) {
-			if (itemId.equals(n.itemId())) {
-				// Progress = inv + staging / clan delivered (not source chests)
-				return Math.max(0, n.total() - covered);
-			}
+		// total() always carries the full need — the clan fallback list included (see
+		// clanMaterials in LitematicaAccess) — so deliveries are netted out exactly once,
+		// right here.
+		LitematicaCompat.MaterialNeed n = LitematicaAccess.missingMaterialsById().get(itemId);
+		if (n != null) {
+			// Progress = inv + staging / clan delivered (not source chests)
+			return Math.max(0, n.total() - covered);
 		}
 		int snapTotal = queueMissing.getOrDefault(itemId, 0);
 		if (snapTotal <= 0) {
@@ -228,6 +244,29 @@ public final class BuildGatherSession {
 			}
 		}
 		return total;
+	}
+
+	/**
+	 * One walk over the whole inventory: item key → count.
+	 * <p>
+	 * ItemStackKeys.keyOf allocates on every call, and matching per material row re-keyed
+	 * all 41 slots once per row — E rows × 41 slots several times a second was pure garbage
+	 * for information one walk already had. Refresh-scoped: build it, use it for every row
+	 * of that refresh, drop it.
+	 */
+	private static Map<String, Integer> inventoryCounts(@Nullable LocalPlayer player) {
+		if (player == null) {
+			return Map.of();
+		}
+		Inventory inv = player.getInventory();
+		Map<String, Integer> out = new HashMap<>();
+		for (int i = 0; i < inv.getContainerSize(); i++) {
+			ItemStack stack = inv.getItem(i);
+			if (!stack.isEmpty()) {
+				out.merge(com.chestmemory.client.data.ItemStackKeys.keyOf(stack), stack.getCount(), Integer::sum);
+			}
+		}
+		return out;
 	}
 
 	// ── the main panel's filter, honoured by the gather ───────────────────
@@ -434,12 +473,15 @@ public final class BuildGatherSession {
 			hudLines = List.of();
 			return;
 		}
-		if (!LitematicaAccess.isAvailable() || !LitematicaAccess.hasActiveMaterialList()) {
-			refreshHud(client);
+		// The tick gate must sit ABOVE the degraded branch. Below it, losing the material
+		// list (portal, wrong server, broken bridge) ran refreshHud at the full 20Hz — five
+		// times the healthy rate, exactly when every refresh was already the expensive kind
+		// that falls through cache and clan lookups.
+		if (++tickCounter % 5 != 0) {
 			return;
 		}
-
-		if (++tickCounter % 5 != 0) {
+		if (!LitematicaAccess.isAvailable() || !LitematicaAccess.hasActiveMaterialList()) {
+			refreshHud(client);
 			return;
 		}
 

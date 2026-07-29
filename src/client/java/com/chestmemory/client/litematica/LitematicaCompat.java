@@ -29,6 +29,32 @@ import java.util.Map;
 public final class LitematicaCompat {
 	public static final String MOD_ID = "litematica";
 
+	/**
+	 * Set on the first throwable out of the bridge; never retried this session.
+	 * <p>
+	 * The catch blocks below are what turn a 26.1-vs-26.2 signature drift into a no-op
+	 * instead of a crash. But a no-op that silently retries re-enters the broken call every
+	 * tick — re-mutating Litematica's entries through {@code updateAvailableCounts} on the
+	 * way — and the degraded mode is indistinguishable from "no schematic open": the gather
+	 * button goes dead, the HUD stays empty, and the real incompatibility hides forever.
+	 * So the first failure is logged once at WARN and the bridge stays down.
+	 */
+	private static boolean bridgeBroken;
+	/**
+	 * {@code updateAvailableCounts} drifting alone must not take the read path down: we
+	 * never read the available counts it writes (inPlayer is recomputed below) — the call
+	 * only keeps Litematica's own GUI in step with ours. See the note at the call site.
+	 */
+	private static boolean availableRefreshBroken;
+	/** One WARN per session total — this runs on a tick path and must not spam. */
+	private static boolean failureLogged;
+	/**
+	 * List we have watched report {@code countMissing > 0} at least once. Entries carry no
+	 * setters for missing, so if the same list object later reads all-zero, a rescan really
+	 * found the build done — it cannot have quietly "un-refreshed".
+	 */
+	private static java.lang.ref.WeakReference<MaterialListBase> trustedList = new java.lang.ref.WeakReference<>(null);
+
 	private LitematicaCompat() {
 	}
 
@@ -36,35 +62,81 @@ public final class LitematicaCompat {
 		return FabricLoader.getInstance().isModLoaded(MOD_ID);
 	}
 
+	/** True after any Litematica call has thrown this session — callers must expect no data. */
+	public static boolean isBridgeBroken() {
+		return bridgeBroken;
+	}
+
+	private static void markBridgeBroken(String where, Throwable t) {
+		bridgeBroken = true;
+		logFailureOnce(where, t);
+	}
+
+	private static void logFailureOnce(String where, Throwable t) {
+		if (failureLogged) {
+			return;
+		}
+		failureLogged = true;
+		com.chestmemory.ChestMemoryMod.LOGGER.warn(
+			"Litematica bridge failed in {} ({}: {}) — schematic materials will read as absent for this session",
+			where, t.getClass().getName(), t.getMessage()
+		);
+	}
+
 	public static List<MaterialNeed> getMissingMaterialsSafe() {
-		if (!isLoaded()) {
+		if (!isLoaded() || bridgeBroken) {
 			return List.of();
 		}
 		try {
 			return getMissingMaterials();
 		} catch (Throwable t) {
+			markBridgeBroken("getMissingMaterials", t);
 			return List.of();
 		}
 	}
 
 	public static @Nullable String getActiveListNameSafe() {
-		if (!isLoaded()) {
+		if (!isLoaded() || bridgeBroken) {
 			return null;
 		}
 		try {
 			return getActiveListName();
 		} catch (Throwable t) {
+			markBridgeBroken("getActiveListName", t);
 			return null;
 		}
 	}
 
 	public static boolean hasActiveMaterialListSafe() {
-		if (!isLoaded()) {
+		if (!isLoaded() || bridgeBroken) {
 			return false;
 		}
 		try {
 			return DataManager.getMaterialList() != null;
 		} catch (Throwable t) {
+			markBridgeBroken("getMaterialList", t);
+			return false;
+		}
+	}
+
+	/**
+	 * True when Litematica's own list says the build is complete: totals exist, nothing missing.
+	 * <p>
+	 * Reads the list-level aggregates, which are written only when a count task completes
+	 * ({@code setMaterialListEntries → updateCounts}, verified against the bundled 26.2 jar).
+	 * An uncounted list still has 0/0 aggregates, so a nonzero total is proof these numbers
+	 * came from a real world scan — which is what separates "finished" from "not yet
+	 * refreshed" and lets the cache stop resurrecting the full bill for a done build.
+	 */
+	public static boolean isListFinishedSafe() {
+		if (!isLoaded() || bridgeBroken) {
+			return false;
+		}
+		try {
+			MaterialListBase list = DataManager.getMaterialList();
+			return list != null && list.getCountTotal() > 0 && list.getCountMissing() == 0;
+		} catch (Throwable t) {
+			markBridgeBroken("isListFinished", t);
 			return false;
 		}
 	}
@@ -100,12 +172,16 @@ public final class LitematicaCompat {
 			return List.of();
 		}
 
-		// Ask Litematica to refresh available from player (best-effort)
+		// Ask Litematica to refresh available from player (best-effort). This MUTATES
+		// Litematica's own entries — it must run at most once per rebuild, which is why
+		// LitematicaAccess snapshots this result instead of re-fetching per material row.
 		LocalPlayer player = Minecraft.getInstance().player;
-		if (player != null) {
+		if (player != null && !availableRefreshBroken) {
 			try {
 				MaterialListUtils.updateAvailableCounts(entries, player);
-			} catch (Throwable ignored) {
+			} catch (Throwable t) {
+				availableRefreshBroken = true;
+				logFailureOnce("updateAvailableCounts", t);
 			}
 		}
 
@@ -129,6 +205,21 @@ public final class LitematicaCompat {
 			}
 		}
 		boolean useMissingCounts = anyMissing || !anyTotal;
+		if (!useMissingCounts) {
+			// All-zero missing with real totals is where "finished" and "stale" collide, and
+			// resolving it as "stale" made a genuinely finished build (or a list opened just
+			// to check a done schematic) report the entire bill of materials again. Two
+			// independent proofs of "finished" break the tie:
+			//  - the list's own aggregates carry a nonzero total only after a completed
+			//    world scan wrote these entries (see isListFinishedSafe), so their zeros
+			//    mean "placed", not "not yet counted";
+			//  - we watched this same list object report missing > 0 earlier — see trustedList.
+			// Neither proof present → keep the stale-safe fallback to full totals.
+			useMissingCounts = listCountsAreFromScan(list) || list == trustedList.get();
+		}
+		if (anyMissing && list != trustedList.get()) {
+			trustedList = new java.lang.ref.WeakReference<>(list);
+		}
 
 		Map<String, MaterialNeed> merged = new LinkedHashMap<>();
 		for (MaterialListEntry entry : entries) {
@@ -174,6 +265,17 @@ public final class LitematicaCompat {
 		}
 
 		return new ArrayList<>(merged.values());
+	}
+
+	private static boolean listCountsAreFromScan(MaterialListBase list) {
+		try {
+			return list.getCountTotal() > 0;
+		} catch (Throwable t) {
+			// Only the aggregate getters drifting: fall back to the stale-safe heuristic
+			// instead of taking the whole (still working) read path down with them.
+			logFailureOnce("getCountTotal", t);
+			return false;
+		}
 	}
 
 	private static int countInPlayerMatching(@Nullable LocalPlayer player, String key) {
