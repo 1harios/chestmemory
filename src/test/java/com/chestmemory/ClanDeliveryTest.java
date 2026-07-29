@@ -181,11 +181,19 @@ class ClanDeliveryTest {
 		@Test
 		@DisplayName("A delivery is logged")
 		void deliveryIsLogged() throws Exception {
-			String src = body(read(CLAN), "public static void reportDeliveredAsync(Minecraft mc, String itemId, int amount)");
+			// The hub records deliveries now: it is the only party that sees every change, so
+			// the feed survives a relog and shows what happened while you were offline. The
+			// client's job is to render the line in the player's language.
 			assertTrue(
-				src.contains("ClanEventLog.Kind.DELIVER"),
+				Files.readString(Path.of("hub/clan_hub.py")).contains("_event(sess, \"deliver\""),
 				"the feed logged claims and arrivals but never a delivery, so a gather where "
 					+ "everyone was working looked idle"
+			);
+			assertTrue(
+				Files.readString(Path.of(
+					"src/client/java/com/chestmemory/client/clan/ClanEventLog.java"
+				)).contains("clan.ev_deliver"),
+				"and the client still has to say it in words"
 			);
 		}
 

@@ -271,6 +271,78 @@ try:
     )
     clan_ratelimit.reset()
 
+    print("\n== event history: the feed survives switching and relogging ==")
+    st, hsess = call("POST", "/v1/sessions", "tok-host", {
+        "name": "Hist", "schemaName": "Hist",
+        "materials": {"minecraft:glass": 128, "minecraft:stone": 128},
+    })
+    hcode = hsess.get("code", "")
+    hsecret = hsess.get("hostSecret")
+    kinds = lambda snap: [e.get("kind") for e in (snap.get("events") or [])]
+    check("creating a gather is itself an event", kinds(hsess) == ["create"], str(kinds(hsess)))
+
+    call("POST", f"/v1/sessions/{hcode}/join", "tok-member")
+    call("POST", f"/v1/sessions/{hcode}/claim", "tok-member", {"itemId": "minecraft:glass"})
+    st, after = call("POST", f"/v1/sessions/{hcode}/deliver", "tok-member",
+                     {"itemId": "minecraft:glass", "amount": 64})
+    seq = kinds(after)
+    check(
+        "join, claim and deliver are all recorded, in order",
+        seq == ["create", "join", "claim", "deliver"],
+        str(seq),
+    )
+    delivered = [e for e in after["events"] if e["kind"] == "deliver"][0]
+    check(
+        "a delivery records who and how many",
+        delivered["who"] == MEMBER_ID["name"] and delivered["n"] == 64,
+        json.dumps(delivered),
+    )
+
+    # The whole point: a client that was not watching still gets the history.
+    st, fresh = call("GET", f"/v1/sessions/{hcode}", "tok-host")
+    check(
+        "a client that saw none of it still receives the history",
+        kinds(fresh) == seq,
+        "this is what a relog or a switch back used to lose entirely",
+    )
+
+    st, rejoin = call("POST", f"/v1/sessions/{hcode}/join", "tok-member")
+    check(
+        "re-joining does not log a second arrival",
+        kinds(rejoin).count("join") == 1,
+        "join doubles as 'switch to', so this would bury the feed: " + str(kinds(rejoin)),
+    )
+
+    print("\n== releasing one claim instead of all of them ==")
+    call("POST", f"/v1/sessions/{hcode}/claim", "tok-member", {"itemId": "minecraft:stone"})
+    st, one = call("POST", f"/v1/sessions/{hcode}/release_claims", None,
+                   {"itemId": "minecraft:glass", "hostSecret": hsecret})
+    check(
+        "the named claim is freed and the other is untouched",
+        st == 200
+        and one["materials"]["minecraft:glass"]["claimedBy"] is None
+        and one["materials"]["minecraft:stone"]["claimedBy"] is not None,
+        f"HTTP {st}",
+    )
+    check(
+        "and it names who lost it, not who took it away",
+        [e for e in one["events"] if e["kind"] == "release"][-1]["who"] == MEMBER_ID["name"],
+    )
+    st, unknown = call("POST", f"/v1/sessions/{hcode}/release_claims", None,
+                       {"itemId": "minecraft:dirt", "hostSecret": hsecret})
+    check("an unknown item is refused", st == 404, f"HTTP {st}")
+    st, denied = call("POST", f"/v1/sessions/{hcode}/release_claims", "tok-member",
+                      {"itemId": "minecraft:stone"})
+    check("a member cannot free anyone's claim", st == 403, f"HTTP {st}")
+    st, all_freed = call("POST", f"/v1/sessions/{hcode}/release_claims", None,
+                         {"hostSecret": hsecret})
+    check(
+        "no item named still clears everything — the old behaviour",
+        st == 200 and all_freed["materials"]["minecraft:stone"]["claimedBy"] is None
+        and kinds(all_freed)[-1] == "release_all",
+        f"HTTP {st} {kinds(all_freed)[-3:]}",
+    )
+
     print("\n== old sessions without the new fields ==")
     with clan_hub._lock:  # noqa: SLF001
         legacy = clan_hub._sessions[code]  # noqa: SLF001

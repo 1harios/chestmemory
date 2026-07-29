@@ -189,7 +189,13 @@ public final class ClanHubClient {
 		return post("/v1/sessions/" + enc(code) + "/kick", body);
 	}
 
-	/** Clear every claim (host only) — the reset for a stalled evening. */
+	/**
+	 * Free reserved materials (host only).
+	 * <p>
+	 * An empty body clears every claim — the reset for a stalled evening. Add
+	 * {@code itemId} to free exactly one, which is the everyday case: somebody reserved the
+	 * glass and logged off.
+	 */
 	public Result<ClanSession> releaseClaims(String code, JsonObject body) {
 		return post("/v1/sessions/" + enc(code) + "/release_claims", body);
 	}

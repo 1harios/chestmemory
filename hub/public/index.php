@@ -174,6 +174,37 @@ function save_sessions(string $file, array $sessions): void
     rename($tmp, $file);
 }
 
+/**
+ * Record one thing that happened, for the activity feed.
+ *
+ * Structured, never a sentence: the client renders these through its own translation keys,
+ * so the hub must not decide what language a player reads. Oldest entries fall off past the
+ * cap. Mirrors _event in clan_hub.py.
+ */
+function push_event(
+    array &$sess, string $kind, string $who = '', string $item = '', int $n = 0
+): void {
+    if (!isset($sess['events']) || !is_array($sess['events'])) {
+        $sess['events'] = [];
+    }
+    $sess['events'][] = [
+        'at' => now_ms(),
+        'kind' => $kind,
+        'who' => clamp_str($who, MAX_NAME_LEN),
+        'item' => clamp_str($item, MAX_ITEM_ID_LEN),
+        'n' => $n,
+    ];
+    $over = count($sess['events']) - MAX_EVENTS_PER_SESSION;
+    if ($over > 0) {
+        $sess['events'] = array_slice($sess['events'], $over);
+    }
+}
+
+function host_name_of(array $sess): string
+{
+    return (string)($sess['hostName'] ?? '?');
+}
+
 function normalize_code(string $raw): string
 {
     $s = strtoupper(trim(str_replace(' ', '-', $raw)));
@@ -344,10 +375,11 @@ function release_stale_claims(array &$sess, int $timeoutMs): array
     }
     $released = [];
     if (isset($sess['materials']) && is_array($sess['materials'])) {
-        foreach ($sess['materials'] as &$mat) {
+        foreach ($sess['materials'] as $key => &$mat) {
             $holder = strtolower((string)($mat['claimedBy'] ?? ''));
             if ($holder !== '' && isset($stale[$holder])) {
                 clear_claim($mat);
+                push_event($sess, 'timeout', $stale[$holder], (string)$key);
                 if (!in_array($stale[$holder], $released, true)) {
                     $released[] = $stale[$holder];
                 }
@@ -384,6 +416,8 @@ const MAX_MATERIALS_PER_SESSION = 400;
 const MAX_STAGING_KEYS_PER_SESSION = 256;
 /** Kicks are moderation, not a permanent ban list — past this, oldest entries fall off. */
 const MAX_KICKED_TRACKED = 256;
+/** Events kept per session — the client's feed used to survive only as long as it watched. */
+const MAX_EVENTS_PER_SESSION = 50;
 /** Real names and item ids stay well under these; longer is padding aimed at the store. */
 const MAX_NAME_LEN = 48;
 const MAX_ITEM_ID_LEN = 128;
@@ -774,6 +808,7 @@ if ($method === 'POST' && $path === '/v1/sessions') {
         // require_verified_host. Handed over once, here, and never in another snapshot.
         'hostSecret' => bin2hex(random_bytes(18)),
     ];
+    push_event($sess, 'create', $hostName, '', count($materials));
     $sessions[$code] = $sess;
     save_sessions($sessionsFile, $sessions);
     respond_session($sess, true);
@@ -802,8 +837,20 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
                 static fn($k) => strcasecmp((string)$k, $uuid) !== 0
             ));
         }
+        // Only a genuinely new member is news: join doubles as "switch to", so a member
+        // moving between gathers re-joins constantly and would bury the feed.
+        $wasMember = false;
+        foreach (($sess['members'] ?? []) as $m) {
+            if (strcasecmp((string)($m['uuid'] ?? ''), $uuid) === 0) {
+                $wasMember = true;
+                break;
+            }
+        }
         if (!member_upsert($sess, $name, $uuid)) {
             respond(409, ['error' => 'session full (max ' . MAX_MEMBERS_PER_SESSION . ' members)']);
+        }
+        if (!$wasMember) {
+            push_event($sess, 'join', $name);
         }
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
@@ -826,6 +873,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if ($unclaim) {
             if ($cur !== '' && strcasecmp($cur, $uuid) === 0) {
                 clear_claim($mat);
+                push_event($sess, 'release', $name, $item);
             }
         } else {
             if (!empty($mat['excluded'])) {
@@ -842,6 +890,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
             // from this, so a member holding glass and stone is shown on the one they took
             // first — and every client agrees on which that was.
             $mat['claimedAt'] = now_ms();
+            push_event($sess, 'claim', $name, $item);
         }
         member_upsert($sess, $name, $uuid);
         touch_sess($sess);
@@ -946,6 +995,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
             }
         }
         unset($mat);
+        push_event($sess, 'leave', $actorName);
         $sess['members'] = array_values(array_filter(
             $sess['members'] ?? [],
             static fn($m) => strcasecmp((string)($m['uuid'] ?? ''), $uuid) !== 0
@@ -989,6 +1039,14 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if (count($kept) === count($members)) {
             respond(404, ['error' => 'no such member']);
         }
+        $goneName = '?';
+        foreach ($members as $m) {
+            if (strtolower((string)($m['uuid'] ?? '')) === $target) {
+                $goneName = (string)($m['name'] ?? '?');
+                break;
+            }
+        }
+        push_event($sess, 'kick', $goneName);
         $sess['members'] = $kept;
         if (is_array($sess['materials'] ?? null)) {
             foreach ($sess['materials'] as &$mat) {
@@ -1018,15 +1076,56 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'release_claims') {
-        // Clear every claim (host only) — the reset button for a stalled evening.
+        // Free reserved materials (host only). No item named clears every claim — the
+        // original behaviour, so older clients keep working. {"itemId"} frees one, which is
+        // what a host usually wants: somebody reserved the glass and went to bed.
+        // {"items":[...]} frees a handful. Mirrors _release_claims in clan_hub.py.
         require_verified_host($sess, 'only host', $body);
-        if (is_array($sess['materials'] ?? null)) {
+        $wanted = [];
+        if (isset($body['items']) && is_array($body['items'])) {
+            foreach ($body['items'] as $x) {
+                $k = clamp_str(trim((string)$x), MAX_ITEM_ID_LEN);
+                if ($k !== '') {
+                    $wanted[] = $k;
+                }
+            }
+        } else {
+            $one = clamp_str(trim((string)($body['itemId'] ?? '')), MAX_ITEM_ID_LEN);
+            if ($one !== '') {
+                $wanted[] = $one;
+            }
+        }
+        $mats = is_array($sess['materials'] ?? null) ? $sess['materials'] : [];
+        foreach ($wanted as $k) {
+            if (!isset($mats[$k])) {
+                respond(404, ['error' => 'unknown item ' . $k]);
+            }
+        }
+        $freed = 0;
+        if ($wanted !== []) {
+            foreach ($wanted as $k) {
+                if (!empty($sess['materials'][$k]['claimedBy'])) {
+                    $holder = (string)($sess['materials'][$k]['claimedName'] ?? '?');
+                    clear_claim($sess['materials'][$k]);
+                    push_event($sess, 'release', $holder, $k);
+                    $freed++;
+                }
+            }
+            if ($freed === 0) {
+                // The claim may have lapsed between the host reading the grid and clicking.
+                respond_session($sess);
+            }
+        } else {
             foreach ($sess['materials'] as &$mat) {
                 if (!empty($mat['claimedBy'])) {
                     clear_claim($mat);
+                    $freed++;
                 }
             }
             unset($mat);
+            if ($freed > 0) {
+                push_event($sess, 'release_all', host_name_of($sess), '', $freed);
+            }
         }
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
@@ -1074,6 +1173,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
                 continue;
             }
             $mat['excluded'] = $flag;
+            push_event($sess, $flag ? 'exclude' : 'include', host_name_of($sess), (string)$key);
             if ($flag) {
                 // Whoever was on it is off it. Leaving the claim would show a member
                 // carrying a material the gather no longer wants.

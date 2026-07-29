@@ -80,6 +80,13 @@ MAX_STAGING_KEYS_PER_SESSION = 256
 #: Kicks are moderation, not a permanent ban list — past this, oldest entries fall
 #: off rather than letting kick/rejoin cycles grow the session forever.
 MAX_KICKED_TRACKED = 256
+#: Events kept per session. The client used to derive its activity feed from the diffs
+#: between snapshots, which meant it only ever knew what happened while it was watching:
+#: relogging emptied the feed, switching gathers emptied it, and nothing that happened
+#: while a player was offline was ever visible. The hub sees every change, so it keeps a
+#: short history instead. 50 is a couple of evenings of claims for a busy clan and about
+#: 4 KB in a snapshot — and snapshots only go out when something actually changed.
+MAX_EVENTS_PER_SESSION = 50
 #: Real names and item ids ("minecraft:weathered_cut_copper_stairs") stay well under
 #: these; anything longer is padding aimed at the store size.
 MAX_NAME_LEN = 48
@@ -255,10 +262,13 @@ def _release_stale_claims(sess: dict[str, Any]) -> list[str]:
     if not stale:
         return []
     released: list[str] = []
-    for mat in (sess.get("materials") or {}).values():
+    for key, mat in (sess.get("materials") or {}).items():
         holder = str(mat.get("claimedBy") or "").lower()
         if holder and holder in stale:
             _clear_claim(mat)
+            # "Why is nobody on the glass any more" — because their client stopped
+            # answering. Without this the material simply went free with no explanation.
+            _event(sess, "timeout", stale[holder], key)
             if stale[holder] not in released:
                 released.append(stale[holder])
     # Keep the member listed but visibly stale; the roster shows who is away.
@@ -295,6 +305,39 @@ def _clear_claim(mat: dict[str, Any]) -> None:
     mat["claimedBy"] = None
     mat["claimedName"] = None
     mat["claimedAt"] = 0
+
+
+def _event(
+    sess: dict[str, Any], kind: str, who: str = "", item: str = "", n: int = 0
+) -> None:
+    """
+    Record one thing that happened, for the activity feed.
+
+    Structured, never a sentence: the client renders these through its own translation
+    keys, so the hub must not decide what language a player reads. Oldest entries fall off
+    past MAX_EVENTS_PER_SESSION rather than letting a long build grow the store forever.
+
+    Call under _lock, from a handler that also calls _touch — an event that does not bump
+    the revision would sit in the store unseen until the next real change.
+    """
+    events = sess.setdefault("events", [])
+    if not isinstance(events, list):
+        events = []
+        sess["events"] = events
+    events.append({
+        "at": _now(),
+        "kind": kind,
+        "who": who[:MAX_NAME_LEN],
+        "item": item[:MAX_ITEM_ID_LEN],
+        "n": int(n),
+    })
+    if len(events) > MAX_EVENTS_PER_SESSION:
+        del events[:-MAX_EVENTS_PER_SESSION]
+
+
+def _host_name(sess: dict[str, Any]) -> str:
+    """Display name of the gather's creator, for events they caused."""
+    return str(sess.get("hostName") or "?")
 
 
 def _touch(sess: dict[str, Any]) -> None:
@@ -779,6 +822,7 @@ class Handler(BaseHTTPRequestHandler):
                 # handed to the creator once, and never appears in another snapshot.
                 "hostSecret": secrets.token_urlsafe(24),
             }
+            _event(sess, "create", host_name, "", len(materials))
             _sessions[code] = sess
             # Written immediately, not coalesced: the host reads the code off their
             # screen and shares it — it must survive a crash in the same breath.
@@ -807,9 +851,18 @@ class Handler(BaseHTTPRequestHandler):
                 sess["kicked"] = [
                     k for k in kicked if str(k).lower() != uuid.lower()
                 ]
+            joined = not any(
+                str(m.get("uuid") or "").lower() == uuid.lower()
+                for m in (sess.get("members") or [])
+            )
             if not _member_upsert(sess, name, uuid):
                 self._send(409, {"error": "session full (max %d members)" % MAX_MEMBERS_PER_SESSION})
                 return
+            if joined:
+                # Only a genuinely new member is news. Join doubles as "switch to", so a
+                # member moving between two gathers re-joins constantly — logging that would
+                # bury the feed under their own comings and goings.
+                _event(sess, "join", name)
             _touch(sess)
             _mark_dirty()
             self._send_session(sess)
@@ -838,6 +891,7 @@ class Handler(BaseHTTPRequestHandler):
             if unclaim:
                 if cur and str(cur).lower() == uuid.lower():
                     _clear_claim(m)
+                    _event(sess, "release", name, item)
             else:
                 if m.get("excluded"):
                     # The host struck this material off the gather; claiming it would
@@ -856,6 +910,7 @@ class Handler(BaseHTTPRequestHandler):
                 # carrying what" from this: a member holding glass and stone is working
                 # the one they clicked first, and every client agrees on which that was.
                 m["claimedAt"] = _now()
+                _event(sess, "claim", name, item)
             _member_upsert(sess, name, uuid)
             _touch(sess)
             _mark_dirty()
@@ -908,6 +963,8 @@ class Handler(BaseHTTPRequestHandler):
                     max(int(m.get("delivered", 0)), amount),
                 )
                 if new_delivered != int(m.get("delivered", 0)):
+                    _event(sess, "deliver", name, item,
+                           new_delivered - int(m.get("delivered", 0)))
                     m["delivered"] = new_delivered
                     # Remember who actually raised the count — the client's activity
                     # feed used to guess the claim holder, which is often not the
@@ -969,6 +1026,7 @@ class Handler(BaseHTTPRequestHandler):
             for m in (sess.get("materials") or {}).values():
                 if str(m.get("claimedBy") or "").lower() == uuid.lower():
                     _clear_claim(m)
+            _event(sess, "leave", actor_name)
             members = sess.get("members") or []
             sess["members"] = [
                 m
@@ -1055,6 +1113,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "no such member"})
                 return
             sess["members"] = kept
+            gone = next(
+                (m for m in members if str(m.get("uuid") or "").lower() == target), None
+            )
+            _event(sess, "kick", str((gone or {}).get("name") or "?"))
             for m in (sess.get("materials") or {}).values():
                 if str(m.get("claimedBy") or "").lower() == target:
                     _clear_claim(m)
@@ -1068,14 +1130,57 @@ class Handler(BaseHTTPRequestHandler):
             self._send_session(sess)
 
     def _release_claims(self, code: str, body: dict[str, Any]) -> None:
-        """Clear every claim (host only) — the reset button for a stalled evening."""
+        """
+        Free reserved materials (host only).
+
+        Three shapes. No item named clears every claim — the reset button for a stalled
+        evening, and the original behaviour, so older clients keep working unchanged.
+        {"itemId": id} frees exactly one, which is what the host actually needs most of the
+        time: somebody reserved the glass and went to bed. {"items": [id, ...]} frees a
+        handful in one request.
+        """
+        wanted: list[str] = []
+        raw = body.get("items")
+        if isinstance(raw, list):
+            wanted = [str(x)[:MAX_ITEM_ID_LEN] for x in raw if str(x).strip()]
+        else:
+            one = str(body.get("itemId") or "").strip()[:MAX_ITEM_ID_LEN]
+            if one:
+                wanted = [one]
         with _lock:
             sess = self._host_session(code, body=body)
             if sess is None:
                 return
-            for m in (sess.get("materials") or {}).values():
-                if m.get("claimedBy"):
-                    _clear_claim(m)
+            mats = sess.get("materials") or {}
+            unknown = [k for k in wanted if k not in mats]
+            if unknown:
+                self._send(404, {"error": "unknown item " + unknown[0]})
+                return
+            host = _host_name(sess)
+            if wanted:
+                freed = 0
+                for key in wanted:
+                    m = mats[key]
+                    if m.get("claimedBy"):
+                        holder = str(m.get("claimedName") or "?")
+                        _clear_claim(m)
+                        # Named holder, not the host: the feed answers "who lost the glass",
+                        # and the host is already implied by the action.
+                        _event(sess, "release", holder, key)
+                        freed += 1
+                if freed == 0:
+                    # Nothing to free is not an error — the claim may have lapsed between
+                    # the host reading the grid and clicking it.
+                    self._send_session(sess)
+                    return
+            else:
+                freed = 0
+                for m in mats.values():
+                    if m.get("claimedBy"):
+                        _clear_claim(m)
+                        freed += 1
+                if freed:
+                    _event(sess, "release_all", host, "", freed)
             _touch(sess)
             _mark_dirty()
             self._send_session(sess)
@@ -1131,6 +1236,7 @@ class Handler(BaseHTTPRequestHandler):
                 if bool(mat.get("excluded")) == flag:
                     continue
                 mat["excluded"] = flag
+                _event(sess, "exclude" if flag else "include", _host_name(sess), key)
                 if flag:
                     # Whoever was on it is off it. Leaving the claim would show a member
                     # carrying a material the gather no longer wants.

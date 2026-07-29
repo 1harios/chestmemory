@@ -123,31 +123,58 @@ class GatherPolishTest {
 	@DisplayName("2. The feed belongs to one gather")
 	class FeedIsolation {
 		@Test
-		@DisplayName("The log knows whose events it holds")
-		void logOwnsACode() throws Exception {
+		@DisplayName("The feed is rendered from the hub's history, not from watched diffs")
+		void feedComesFromTheHub() throws Exception {
 			String feed = read(FEED);
 			assertTrue(feed.contains("private static String sessionCode"), "the feed tracks its gather");
-			String forSession = body(feed, "public static synchronized void forSession(");
+			String from = body(feed, "public static synchronized void fromSession(");
+			assertTrue(from.contains("entries.clear()"), "the hub's list IS the history");
 			assertTrue(
-				forSession.contains("if (key.equals(sessionCode)) {"),
-				"the poll calls this constantly — the same code must be a no-op"
+				from.contains("events.size() - 1; i >= 0"),
+				"the hub appends oldest first and the feed reads newest first"
 			);
-			assertTrue(forSession.contains("entries.clear()"), "a different code empties the feed");
+			assertFalse(
+				feed.contains("public static synchronized void add("),
+				"a second way in would let the client double-log what the hub already sent"
+			);
 			assertTrue(
 				body(feed, "public static synchronized void clear()").contains("sessionCode = \"\""),
-				"clearing must release the code, or a rejoin looks like the same gather"
+				"clearing must release the code, or the next snapshot looks like more of this one"
 			);
 		}
 
 		@Test
-		@DisplayName("Adopting a snapshot is what points the feed, so no caller can forget")
+		@DisplayName("Adopting a snapshot is what fills the feed, so no caller can forget")
 		void wiredAtTheChokePoint() throws Exception {
 			assertTrue(
 				body(read(MANAGER), "private static @Nullable ClanSession adoptSession(")
-					.contains("ClanEventLog.forSession(next.code)"),
+					.contains("ClanEventLog.fromSession(next.code, next.events)"),
 				"switching goes through join, which cleared nothing — that is why the house "
 					+ "build opened showing the farm's claims"
 			);
+			assertFalse(
+				read(MANAGER).contains("ClanEventLog.add("),
+				"the diff-derived feed is gone: it only knew what happened while watching"
+			);
+		}
+
+		@Test
+		@DisplayName("Every kind the hub can send has a line, and both hubs send the same set")
+		void everyKindIsSpoken() throws Exception {
+			String feed = read(FEED);
+			String hub = read(HUB);
+			String php = read(HUB_PHP);
+			for (String kind : new String[]{
+				"claim", "release", "deliver", "join", "leave", "kick",
+				"exclude", "include", "release_all", "timeout", "create",
+			}) {
+				assertTrue(
+					feed.contains("case \"" + kind + "\""),
+					"the client cannot say '" + kind + "' — the feed would silently skip it"
+				);
+				assertTrue(hub.contains("\"" + kind + "\""), "python hub never sends " + kind);
+				assertTrue(php.contains("'" + kind + "'"), "php hub never sends " + kind);
+			}
 		}
 	}
 

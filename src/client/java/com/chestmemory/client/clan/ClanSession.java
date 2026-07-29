@@ -36,6 +36,16 @@ public final class ClanSession {
 	/** itemId → progress */
 	public final Map<String, ClanMaterial> materials = new LinkedHashMap<>();
 	public final List<String> stagingKeys = new ArrayList<>();
+	/**
+	 * What has happened in this gather, oldest first, as recorded by the hub.
+	 * <p>
+	 * The client used to build its activity feed from the differences between snapshots,
+	 * which meant it only knew what happened while it was watching: relogging emptied the
+	 * feed, switching gathers emptied it, and anything that happened while the player was
+	 * offline was never visible at all. The hub sees every change, so it keeps the history
+	 * and the client just renders it.
+	 */
+	public final List<ClanEvent> events = new ArrayList<>();
 
 	public static final class ClanMember {
 		public String name = "";
@@ -51,6 +61,28 @@ public final class ClanSession {
 		public boolean isAway() {
 			return lastSeen > 0 && System.currentTimeMillis() - lastSeen > 180_000L;
 		}
+	}
+
+	/**
+	 * One recorded change, as the hub saw it.
+	 * <p>
+	 * Deliberately structured rather than a ready-made sentence: the hub must not decide
+	 * what language a player reads, so it sends the pieces and the client assembles the line
+	 * from its own translation keys.
+	 *
+	 * @param at   hub clock when it happened
+	 * @param kind claim, release, deliver, join, leave, kick, exclude, include,
+	 *             release_all, timeout, create
+	 * @param who  display name of whoever it concerns
+	 * @param item item id, when the event is about one
+	 * @param n    amount delivered, materials struck off, claims freed — kind decides
+	 */
+	public static final class ClanEvent {
+		public long at;
+		public String kind = "";
+		public String who = "";
+		public String item = "";
+		public int n;
 	}
 
 	public static final class ClanMaterial {

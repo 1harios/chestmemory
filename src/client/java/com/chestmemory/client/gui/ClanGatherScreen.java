@@ -2154,6 +2154,11 @@ public class ClanGatherScreen extends Screen {
 		if (host) {
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_exclude_hint")
 				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+			// Only worth saying when there is a reservation to free.
+			if (mine || taken) {
+				lines.add(Component.translatable("screen.chestmemory.clan.mat_free_hint")
+					.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+			}
 		}
 		return lines;
 	}
@@ -2773,6 +2778,13 @@ public class ClanGatherScreen extends Screen {
 			return false;
 		}
 		this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+		// Shift frees the reservation instead of striking the material off — the everyday
+		// host job, for when somebody reserved the glass and logged off. Releasing all claims
+		// to get one back is a blunt instrument, and it is still there in host settings.
+		if (event.hasShiftDown()) {
+			ClanSessionManager.releaseOneAsync(this.minecraft, clicked, this::rebuildWidgets);
+			return true;
+		}
 		ClanSessionManager.excludeAsync(
 			this.minecraft, clicked, !ClanSessionManager.isExcluded(clicked), this::rebuildWidgets
 		);

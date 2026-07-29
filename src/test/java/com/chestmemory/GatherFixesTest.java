@@ -144,11 +144,11 @@ class GatherFixesTest {
 				pyBody(hub, "def _clear_claim(").contains("mat[\"claimedAt\"] = 0"),
 				"a released material must not keep a timestamp that outlives its claim"
 			);
-			// Six calls: the stale sweep, unclaim, leave, kick, release_claims — and
-			// exclude, which releases the claim on a material it strikes off. The def line
-			// itself is not a call, hence the -1 twice.
+			// Seven calls: the stale sweep, unclaim, leave, kick, release-all — exclude, which
+			// releases the claim on a material it strikes off — and freeing a single claim. The
+			// def line itself is not a call, hence the -1 twice.
 			assertEquals(
-				6, hub.split("_clear_claim\\(", -1).length - 2,
+				7, hub.split("_clear_claim\\(", -1).length - 2,
 				"every release path shares the helper, or one of them forgets a field"
 			);
 			assertTrue(
@@ -668,8 +668,10 @@ class GatherFixesTest {
 				"the create response is the only chance to capture it"
 			);
 			// All five host actions must carry it.
+			// Six host actions carry it now: rename, kick, release-all, exclude, close, and
+			// releasing a single claim.
 			assertEquals(
-				5, manager.split("addHostSecret\\(body, code\\);", -1).length - 1,
+				6, manager.split("addHostSecret\\(body, code\\);", -1).length - 1,
 				"every host action needs the secret, or it works for some tools and not others"
 			);
 			assertEquals(

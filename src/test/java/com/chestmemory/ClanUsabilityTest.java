@@ -346,8 +346,9 @@ class ClanUsabilityTest {
 				}
 			}
 			// The count is the point: it forces this guard to be re-read whenever a request
-			// is added. Ninth is excludeAsync — the host striking a material off the gather.
-			assertEquals(9, checked, "expected to inspect every busy guard");
+			// is added. Ninth is excludeAsync — the host striking a material off the gather;
+			// tenth is releaseOneAsync, freeing one member's reservation.
+			assertEquals(10, checked, "expected to inspect every busy guard");
 		}
 
 		@Test

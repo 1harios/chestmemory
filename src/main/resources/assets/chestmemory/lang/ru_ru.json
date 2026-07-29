@@ -495,5 +495,13 @@
 	"screen.chestmemory.tooltip.in_boxes": "  · шалкерами: %s",
 	"screen.chestmemory.clan.step_away": "Выйти",
 	"screen.chestmemory.clan.step_away_hint": "Сбор продолжит работать без тебя",
-	"message.chestmemory.clan_stepped_away": "§dВышел из сбора — он продолжает работать"
+	"message.chestmemory.clan_stepped_away": "§dВышел из сбора — он продолжает работать",
+	"screen.chestmemory.clan.ev_timeout": "%s отключился — %s свободен",
+	"screen.chestmemory.clan.ev_release_all": "%s снял все брони (%s)",
+	"screen.chestmemory.clan.ev_kick": "%s удалён из сбора",
+	"screen.chestmemory.clan.ev_exclude": "%s убрал %s из сбора",
+	"screen.chestmemory.clan.ev_include": "%s вернул %s в сбор",
+	"screen.chestmemory.clan.ev_create": "%s создал сбор (%s видов)",
+	"screen.chestmemory.clan.mat_free_hint": "Shift+ПКМ — снять бронь",
+	"message.chestmemory.clan_freed": "§dКлан§r · бронь на %s снята"
 }

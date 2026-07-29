@@ -1037,6 +1037,73 @@ public final class ClanSessionManager {
 		});
 	}
 
+	/**
+	 * Free one material's claim (host only).
+	 * <p>
+	 * The everyday version of "release all": a member reserved the glass and went to bed, and
+	 * the rest of the clan should not have to lose every other reservation to get it back.
+	 * Same endpoint and same host check as the reset — the hub reads itemId and frees only it.
+	 */
+	public static void releaseOneAsync(Minecraft mc, String itemId, @Nullable Runnable onDone) {
+		if (session == null || itemId == null || itemId.isBlank()) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (!isHost(mc)) {
+			chat(mc, Component.translatable("message.chestmemory.clan_exclude_host_only"));
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
+		if (!busy.compareAndSet(false, true)) {
+			if (onDone != null) {
+				onDone.run();
+			}
+			return;
+		}
+		JsonObject body = new JsonObject();
+		body.addProperty("uuid", localUuid(mc));
+		body.addProperty("name", localName(mc));
+		body.addProperty("itemId", itemId);
+		String code = session.code;
+		IO.execute(() -> {
+			try {
+				addHostSecret(body, code);
+				var res = authedRequest(mc, client(), c -> c.releaseClaims(code, body));
+				mc.execute(() -> {
+					busy.set(false);
+					if (res.ok && res.value != null) {
+						adoptSession(res.value);
+						lastError = null;
+						chat(mc, Component.translatable(
+							"message.chestmemory.clan_freed",
+							ChestMemoryStorage.itemDisplayName(itemId)
+						));
+					} else {
+						failResult(mc, res, "release failed");
+					}
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			} catch (Exception e) {
+				mc.execute(() -> {
+					busy.set(false);
+					failRaw(e.getMessage(), mc);
+					if (onDone != null) {
+						onDone.run();
+					}
+				});
+			}
+		});
+	}
+
 	/** Toggle claim on item for local player. */
 	public static void claimToggleAsync(Minecraft mc, String itemId, @Nullable Runnable onDone) {
 		if (session == null || itemId == null) {
@@ -1164,15 +1231,6 @@ public final class ClanSessionManager {
 						int now = m == null ? 0 : Math.max(0, m.delivered);
 						if (now > before) {
 							int added = now - before;
-							ClanEventLog.add(
-								ClanEventLog.Kind.DELIVER,
-								Component.translatable(
-									"message.chestmemory.clan_feed_delivered",
-									localName(mc),
-									added,
-									ChestMemoryStorage.itemDisplayName(itemId)
-								)
-							);
 							boolean finished = m != null && m.delivered >= m.need && m.need > 0;
 							if (finished) {
 								chat(mc, Component.translatable(
@@ -1425,7 +1483,10 @@ public final class ClanSessionManager {
 		// resume after a relog. Pointing the feed at the new code from this one place is why
 		// switching no longer opens the house build showing the farm's claims: the fix cannot
 		// be forgotten by a caller, because callers do not do it.
-		ClanEventLog.forSession(next.code);
+		// The hub carries the history now, so the feed is rebuilt from the snapshot rather
+		// than appended to from diffs. That is what makes it survive switching gathers and
+		// relogging, and what lets a player see what happened while they were away.
+		ClanEventLog.fromSession(next.code, next.events);
 		session = next;
 		return next;
 	}
@@ -1682,10 +1743,6 @@ public final class ClanSessionManager {
 			// skips our own actions, which the acting client has already reported.
 			if (!newBy.isEmpty() && oldBy.isEmpty()) {
 				// New claim
-				ClanEventLog.add(
-					ClanEventLog.Kind.CLAIM,
-					Component.translatable("screen.chestmemory.clan.ev_claim", newName, itemName)
-				);
 				if (chatty) {
 					if (newIsMe) {
 						chat(mc, Component.translatable("message.chestmemory.clan_claimed_self", itemName));
@@ -1703,10 +1760,6 @@ public final class ClanSessionManager {
 						oldName = om.claimedName;
 					}
 				}
-				ClanEventLog.add(
-					ClanEventLog.Kind.RELEASE,
-					Component.translatable("screen.chestmemory.clan.ev_release", oldName, itemName)
-				);
 				if (chatty) {
 					if (oldIsMe) {
 						chat(mc, Component.translatable("message.chestmemory.clan_unclaimed_self", itemName));
@@ -1717,10 +1770,6 @@ public final class ClanSessionManager {
 				}
 			} else if (!newBy.isEmpty()) {
 				// Steal / transfer (shouldn't happen often)
-				ClanEventLog.add(
-					ClanEventLog.Kind.CLAIM,
-					Component.translatable("screen.chestmemory.clan.ev_claim", newName, itemName)
-				);
 				if (chatty) {
 					chat(mc, Component.translatable("message.chestmemory.clan_claimed_other", newName, itemName));
 					printed++;
@@ -1754,18 +1803,10 @@ public final class ClanSessionManager {
 		}
 		for (Map.Entry<String, String> e : after.entrySet()) {
 			if (!before.containsKey(e.getKey())) {
-				ClanEventLog.add(
-					ClanEventLog.Kind.JOIN,
-					Component.translatable("screen.chestmemory.clan.ev_join", e.getValue())
-				);
 			}
 		}
 		for (Map.Entry<String, String> e : before.entrySet()) {
 			if (!after.containsKey(e.getKey())) {
-				ClanEventLog.add(
-					ClanEventLog.Kind.LEAVE,
-					Component.translatable("screen.chestmemory.clan.ev_leave", e.getValue())
-				);
 			}
 		}
 	}
@@ -1798,12 +1839,6 @@ public final class ClanSessionManager {
 			String who = nm.lastDeliveredBy != null && !nm.lastDeliveredBy.isBlank()
 				? nm.lastDeliveredBy
 				: (nm.claimedName != null && !nm.claimedName.isBlank() ? nm.claimedName : null);
-			ClanEventLog.add(
-				ClanEventLog.Kind.DELIVER,
-				who != null
-					? Component.translatable("screen.chestmemory.clan.ev_deliver", who, now - was, itemName)
-					: Component.translatable("screen.chestmemory.clan.ev_deliver_anon", now - was, itemName)
-			);
 		}
 	}
 

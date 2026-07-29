@@ -495,5 +495,13 @@
 	"screen.chestmemory.tooltip.in_boxes": "  · in boxes: %s",
 	"screen.chestmemory.clan.step_away": "Leave",
 	"screen.chestmemory.clan.step_away_hint": "The gather keeps running without you",
-	"message.chestmemory.clan_stepped_away": "§dLeft the gather — it keeps running"
+	"message.chestmemory.clan_stepped_away": "§dLeft the gather — it keeps running",
+	"screen.chestmemory.clan.ev_timeout": "%s dropped out — %s is free",
+	"screen.chestmemory.clan.ev_release_all": "%s released all claims (%s)",
+	"screen.chestmemory.clan.ev_kick": "%s was removed",
+	"screen.chestmemory.clan.ev_exclude": "%s took %s off the gather",
+	"screen.chestmemory.clan.ev_include": "%s put %s back",
+	"screen.chestmemory.clan.ev_create": "%s started the gather (%s kinds)",
+	"screen.chestmemory.clan.mat_free_hint": "Shift+RMB — release the claim",
+	"message.chestmemory.clan_freed": "§dClan§r · claim on %s released"
 }
