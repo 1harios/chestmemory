@@ -189,9 +189,26 @@ public final class ClanHubClient {
 		return post("/v1/sessions/" + enc(code) + "/kick", body);
 	}
 
-	/** Clear every claim (host only) — the reset for a stalled evening. */
+	/**
+	 * Free reserved materials (host only).
+	 * <p>
+	 * An empty body clears every claim — the reset for a stalled evening. Add
+	 * {@code itemId} to free exactly one, which is the everyday case: somebody reserved the
+	 * glass and logged off.
+	 */
 	public Result<ClanSession> releaseClaims(String code, JsonObject body) {
 		return post("/v1/sessions/" + enc(code) + "/release_claims", body);
+	}
+
+	/**
+	 * Strike a material off the gather, or put it back (host only).
+	 * <p>
+	 * Body is {@code {"itemId": id, "excluded": bool}}, or {@code {"items": {id: bool}}}
+	 * for a bulk edit. The material keeps its delivered history either way — exclusion is
+	 * a mark, not a deletion.
+	 */
+	public Result<ClanSession> exclude(String code, JsonObject body) {
+		return post("/v1/sessions/" + enc(code) + "/exclude", body);
 	}
 
 	/** Ask for a nonce to sign via Mojang joinServer. Returns the nonce. */
@@ -365,8 +382,12 @@ public final class ClanHubClient {
 				JsonObject probe = GSON.fromJson(body, JsonObject.class);
 				if (probe != null && probe.has("unchanged")
 					&& probe.get("unchanged").getAsBoolean()) {
-					// since-poll: nothing moved on the hub. Not an error, not a snapshot.
-					return Result.err("unchanged", 304);
+					// since-poll: nothing moved on the hub. Not an error, not a snapshot —
+					// but it is still a heartbeat, and the stub carries the hub's clock plus
+					// every member's lastSeen. Dropping that payload is what marked players
+					// offline while they were standing in front of the chest: the away timer
+					// kept running against a lastSeen that no successful poll ever refreshed.
+					return Result.unchanged(heartbeat(probe));
 				}
 				ClanSession s = GSON.fromJson(body, ClanSession.class);
 				if (s == null || s.code == null || s.code.isBlank()) {
@@ -393,6 +414,34 @@ public final class ClanHubClient {
 		return Result.err(msg, code, retryAfterSeconds(resp));
 	}
 
+	/**
+	 * What a since-poll stub still tells us, even though it carries no snapshot.
+	 *
+	 * @param now     the hub's clock when it answered — the reference {@code lastSeen} is
+	 *                measured against, so it must come from the hub, never from here
+	 * @param lastSeen uuid (lower case) → that member's {@code lastSeen} in hub time
+	 */
+	public record Heartbeat(long now, Map<String, Long> lastSeen) {
+	}
+
+	/** Read the stub's clock and roster freshness. Absent fields simply yield nothing. */
+	private static Heartbeat heartbeat(JsonObject stub) {
+		long now = stub.has("now") && stub.get("now").isJsonPrimitive()
+			? stub.get("now").getAsLong()
+			: 0L;
+		Map<String, Long> seen = new java.util.HashMap<>();
+		if (stub.has("seen") && stub.get("seen").isJsonObject()) {
+			for (var e : stub.getAsJsonObject("seen").entrySet()) {
+				try {
+					seen.put(e.getKey().toLowerCase(Locale.ROOT), e.getValue().getAsLong());
+				} catch (Exception ignored) {
+					// A malformed row is one stale member row, not a failed poll.
+				}
+			}
+		}
+		return new Heartbeat(now, Map.copyOf(seen));
+	}
+
 	public static final class Result<T> {
 		public final boolean ok;
 		public final @Nullable T value;
@@ -401,29 +450,40 @@ public final class ClanHubClient {
 		public final int status;
 		/** Retry-After seconds when {@link #status} is 429, else 0. */
 		public final int retryAfterSeconds;
+		/** Set only on a since-poll stub ({@link #isUnchanged()}); null otherwise. */
+		public final @Nullable Heartbeat heartbeat;
 
-		private Result(boolean ok, @Nullable T value, @Nullable String error, int status, int retryAfterSeconds) {
+		private Result(
+			boolean ok, @Nullable T value, @Nullable String error, int status,
+			int retryAfterSeconds, @Nullable Heartbeat heartbeat
+		) {
 			this.ok = ok;
 			this.value = value;
 			this.error = error;
 			this.status = status;
 			this.retryAfterSeconds = retryAfterSeconds;
+			this.heartbeat = heartbeat;
 		}
 
 		public static <T> Result<T> ok(T v) {
-			return new Result<>(true, v, null, 200, 0);
+			return new Result<>(true, v, null, 200, 0, null);
 		}
 
 		public static <T> Result<T> err(String e) {
-			return new Result<>(false, null, e, 0, 0);
+			return new Result<>(false, null, e, 0, 0, null);
 		}
 
 		public static <T> Result<T> err(String e, int status) {
-			return new Result<>(false, null, e, status, 0);
+			return new Result<>(false, null, e, status, 0, null);
 		}
 
 		public static <T> Result<T> err(String e, int status, int retryAfterSeconds) {
-			return new Result<>(false, null, e, status, retryAfterSeconds);
+			return new Result<>(false, null, e, status, retryAfterSeconds, null);
+		}
+
+		/** since-poll stub: no snapshot, but a heartbeat worth applying. */
+		public static <T> Result<T> unchanged(@Nullable Heartbeat hb) {
+			return new Result<>(false, null, "unchanged", 304, 0, hb);
 		}
 
 		/** The hub told us to back off (rate limit). */

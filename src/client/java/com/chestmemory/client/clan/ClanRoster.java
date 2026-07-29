@@ -127,7 +127,12 @@ public final class ClanRoster {
 			return;
 		}
 		ensureLoaded();
-		Entry prev = known.remove(key);
+		// get, NOT remove: LinkedHashMap leaves an existing key where it is on re-put, but
+		// removing it first moves the entry to the end. That is what made the gather you had
+		// just switched to drop to the bottom of the list — and it moved again on the next
+		// poll, because polling refreshes progress through this same method. Rows the player
+		// is clicking must not reorder underneath the click.
+		Entry prev = known.get(key);
 		String name = label != null && !label.isBlank()
 			? label
 			: (prev != null ? prev.label() : "");
@@ -137,8 +142,9 @@ public final class ClanRoster {
 			? host
 			: (prev != null ? prev.host() : "");
 		known.put(key, new Entry(key, name, delivered, need, owner, System.currentTimeMillis()));
-		// Re-insert to the front by rebuilding: LinkedHashMap keeps insertion order, and the
-		// most recently touched gather is the one the player cares about.
+		// The list is in the order gathers were first met, so eviction takes the one met
+		// longest ago — the least likely to be wanted, and the only one whose removal cannot
+		// shuffle the rows above it.
 		while (known.size() > MAX_REMEMBERED) {
 			String oldest = known.keySet().iterator().next();
 			known.remove(oldest);
@@ -158,7 +164,13 @@ public final class ClanRoster {
 		}
 	}
 
-	/** Known gathers, most recently touched last (matches insertion order). */
+	/**
+	 * Known gathers in the order they were first met, oldest first.
+	 * <p>
+	 * Stable on purpose: switching gathers and polling both refresh entries, and an order
+	 * that tracked "most recently touched" moved the active row to the bottom every few
+	 * seconds while the player was reading it.
+	 */
 	public static List<Entry> all() {
 		ensureLoaded();
 		return List.copyOf(known.values());

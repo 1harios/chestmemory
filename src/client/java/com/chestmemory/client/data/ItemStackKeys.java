@@ -252,7 +252,13 @@ public final class ItemStackKeys {
 		}
 		String customName = customNameOf(key);
 		if (customName != null) {
-			stack.set(DataComponents.CUSTOM_NAME, Component.literal(customName));
+			// Parsed, not wrapped in a literal: the styling has to become real Style data for
+			// getStyledHoverName() to render a gradient. A literal carries only §-codes, which
+			// the font renderer flattens to the sixteen legacy colours.
+			stack.set(
+				DataComponents.CUSTOM_NAME,
+				com.chestmemory.client.util.LegacyText.toComponent(customName)
+			);
 		}
 
 		HolderLookup.RegistryLookup<Enchantment> lookup = enchantmentLookup();
@@ -339,8 +345,13 @@ public final class ItemStackKeys {
 		String custom = customNameOf(key);
 		// Renamed items are listed under their own name, which is how the player thinks
 		// of them; the base item name follows in parentheses so the type stays obvious.
+		//
+		// Downgraded: this string travels to chat lines, the CSV export, status text and the
+		// search index, none of which can render §#RRGGBB — the font renderer would print the
+		// marker itself. The real gradient is shown from the component built in toStack().
 		String base = custom != null
-			? custom + " (" + new ItemStack(stack.getItem()).getHoverName().getString() + ")"
+			? com.chestmemory.client.util.LegacyText.downgrade(custom)
+				+ " (" + new ItemStack(stack.getItem()).getHoverName().getString() + ")"
 			: stack.getHoverName().getString();
 		if (!hasEnchantData(key)) {
 			return base;

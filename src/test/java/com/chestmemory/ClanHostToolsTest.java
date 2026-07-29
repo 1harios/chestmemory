@@ -22,6 +22,13 @@ class ClanHostToolsTest {
 		return Files.readString(Path.of(path));
 	}
 
+	/** One method's source, sliced at its closing brace — same helper the sibling suites use. */
+	private static String body(String src, String signature) {
+		int at = src.indexOf(signature);
+		assertTrue(at > 0, "not found: " + signature);
+		return src.substring(at, src.indexOf("\n\t}", at));
+	}
+
 	private static final String CLAN_SCREEN =
 		"src/client/java/com/chestmemory/client/gui/ClanGatherScreen.java";
 	private static final String PANEL =
@@ -167,8 +174,9 @@ class ClanHostToolsTest {
 			assertTrue(toggle > 0, "staging toggle missing");
 			String body = src.substring(toggle, src.indexOf("\n\t}", toggle));
 			assertTrue(
-				body.contains("this.onClose()"),
-				"the chests to mark stand in the world — the screen must get out of the way"
+				body.contains("closeToWorld()"),
+				"the chests to mark stand in the world — the screen must get out of the way, "
+					+ "and all the way out: onClose would stop at the parent screen"
 			);
 			assertTrue(
 				src.contains("StagingPickMode.toggle()"),
@@ -296,15 +304,45 @@ class ClanHostToolsTest {
 		void panelKeyGoesToGather() throws Exception {
 			String client = read(CLIENT);
 			int decl = client.indexOf("while (openPanelKey.consumeClick())");
-			String body = client.substring(decl, decl + 900);
+			String body = client.substring(decl, decl + 1100);
 			assertTrue(
 				body.contains("BuildGatherSession.isActive()")
-					&& body.contains("new com.chestmemory.client.gui.ClanGatherScreen(new ChestMemoryScreen())"),
+					&& body.contains("new com.chestmemory.client.gui.ClanGatherScreen()"),
 				"reopening the panel and clicking «Сбор» every time was the complaint"
+			);
+			assertFalse(
+				body.contains("new com.chestmemory.client.gui.ClanGatherScreen(new ChestMemoryScreen())"),
+				"a synthetic parent here is what made ESC navigate to the item list "
+					+ "instead of closing — the key-opened gather has no screen behind it"
 			);
 			assertTrue(
 				body.contains("open instanceof com.chestmemory.client.gui.ClanGatherScreen"),
 				"the same key must close what it opened"
+			);
+		}
+
+		@Test
+		@DisplayName("ESC closes the gather; «Назад» is the one that navigates")
+		void escapeClosesInsteadOfNavigating() throws Exception {
+			String src = read(CLAN_SCREEN);
+			String close = body(src, "public void onClose()");
+			assertTrue(
+				close.contains("this.parent != null") && close.contains("closeToWorld()"),
+				"with no parent, ESC has to give the world back rather than open a screen"
+			);
+			assertTrue(
+				src.contains("private void goBack()")
+					&& body(src, "private void goBack()").contains("new ChestMemoryScreen()"),
+				"«Назад» keeps the chest panel reachable mid-gather, where the key "
+					+ "goes straight to the materials"
+			);
+			assertFalse(
+				src.contains("this::onClose"),
+				"the back rows must route through goBack, or ESC and Back are the same action again"
+			);
+			assertTrue(
+				body(src, "private void closeToWorld()").contains("ClientScreens.set(this.minecraft, null)"),
+				"closing to the world means no screen at all"
 			);
 		}
 
@@ -507,7 +545,7 @@ class ClanHostToolsTest {
 			String src = read(CLAN_SCREEN);
 			assertTrue(src.contains("private void addStockDetail("), "stock detail missing");
 			assertTrue(
-				src.contains("tooltip.gather_stacks") && src.contains("tooltip.gather_shulkers"),
+				src.contains("BulkTooltip.append(") && src.contains("tooltip.gather_shulkers"),
 				"stacks and shulkers must be one hover away"
 			);
 			assertTrue(
@@ -515,11 +553,18 @@ class ClanHostToolsTest {
 				"shulker counts come from the shared breakdown, chests included"
 			);
 			// 27 slots to a box: 1728 of a 64-stack item IS one shulker. The equivalence
-			// respects real stack sizes — 432 pearls, 27 tools.
+			// respects real stack sizes — 432 pearls, 27 tools. The arithmetic moved out of
+			// the screen into BulkAmount so it could be unit-tested against those cases
+			// instead of only asserted as a literal here; this checks the screen still asks.
 			assertTrue(
-				src.contains("int boxCap = per * 27;")
-					&& src.contains("tooltip.gather_boxes"),
+				read("src/client/java/com/chestmemory/client/gui/BulkTooltip.java")
+					.contains("tooltip.in_boxes"),
 				"big stock must be readable as shulker boxes"
+			);
+			assertTrue(
+				read("src/client/java/com/chestmemory/client/data/BulkAmount.java")
+					.contains("SHULKER_SLOTS = 27"),
+				"27 slots to a box is where the box equivalence comes from"
 			);
 		}
 

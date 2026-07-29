@@ -151,9 +151,13 @@ public class ChestMemoryClient implements ClientModInitializer {
 				// Mid-gather the key goes straight to the materials — reopening the panel
 				// and clicking «Сбор» every time was the complaint. «Назад» still lands on
 				// the chest panel, so nothing became unreachable.
+				//
+				// Opened with no parent, on purpose: ESC then gives the world back instead
+				// of navigating. Passing a freshly built item-list screen here is what made
+				// ESC dump the player into a full item list they never opened.
 				if (BuildGatherSession.isActive()
 					|| com.chestmemory.client.clan.ClanSessionManager.isInSession()) {
-					ClientScreens.set(client, new com.chestmemory.client.gui.ClanGatherScreen(new ChestMemoryScreen()));
+					ClientScreens.set(client, new com.chestmemory.client.gui.ClanGatherScreen());
 				} else {
 					ClientScreens.set(client, new ChestMemoryScreen());
 				}

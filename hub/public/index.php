@@ -49,8 +49,9 @@ if (!$requireAuth) {
         @touch($warnStamp);
         error_log(
             'chestmemory-hub: require_auth is OFF — player identity is UNVERIFIED and '
-            . 'members can be impersonated. Host-only actions still demand a verified '
-            . 'session. This mode is for one mod-upgrade window; set require_auth => true.'
+            . 'members can be impersonated. Host-only actions are unaffected: they still '
+            . 'refuse a bare uuid, and the creator proves itself with the gather'
+            . "'s hostSecret. Set a token if the hub faces the open internet."
         );
     }
 }
@@ -79,10 +80,34 @@ function respond(int $code, $obj): void
 
 /** Session snapshot + the hub's clock, so clients can judge staleness without
  *  trusting their own wall clock to agree with ours (same shape as clan_hub.py). */
-function respond_session(array $sess): void
+function respond_session(array $sess, bool $includeSecret = false): void
 {
+    // hostSecret is stripped unless this is the create response. Every member polls this
+    // same snapshot, so leaving it in would hand the host's proof to the whole clan —
+    // which is the one thing that makes the secret worth anything.
+    if (!$includeSecret) {
+        unset($sess['hostSecret']);
+    }
     $sess['now'] = now_ms();
     respond(200, $sess);
+}
+
+/**
+ * True when the request carries this gather's hostSecret.
+ *
+ * hash_equals, not ==: plain comparison returns on the first wrong byte, which lets a
+ * patient prober time their way through the secret. Absent on either side is a miss —
+ * a session stored before secrets existed must not be openable by sending none.
+ * Mirrors _host_secret_ok in clan_hub.py.
+ */
+function host_secret_ok(array $sess, array $body): bool
+{
+    $want = (string)($sess['hostSecret'] ?? '');
+    $got = (string)($body['hostSecret'] ?? '');
+    if ($want === '' || $got === '') {
+        return false;
+    }
+    return hash_equals($want, $got);
 }
 
 function client_addr(): string
@@ -149,6 +174,37 @@ function save_sessions(string $file, array $sessions): void
     rename($tmp, $file);
 }
 
+/**
+ * Record one thing that happened, for the activity feed.
+ *
+ * Structured, never a sentence: the client renders these through its own translation keys,
+ * so the hub must not decide what language a player reads. Oldest entries fall off past the
+ * cap. Mirrors _event in clan_hub.py.
+ */
+function push_event(
+    array &$sess, string $kind, string $who = '', string $item = '', int $n = 0
+): void {
+    if (!isset($sess['events']) || !is_array($sess['events'])) {
+        $sess['events'] = [];
+    }
+    $sess['events'][] = [
+        'at' => now_ms(),
+        'kind' => $kind,
+        'who' => clamp_str($who, MAX_NAME_LEN),
+        'item' => clamp_str($item, MAX_ITEM_ID_LEN),
+        'n' => $n,
+    ];
+    $over = count($sess['events']) - MAX_EVENTS_PER_SESSION;
+    if ($over > 0) {
+        $sess['events'] = array_slice($sess['events'], $over);
+    }
+}
+
+function host_name_of(array $sess): string
+{
+    return (string)($sess['hostName'] ?? '?');
+}
+
 function normalize_code(string $raw): string
 {
     $s = strtoupper(trim(str_replace(' ', '-', $raw)));
@@ -193,17 +249,21 @@ function purge(array &$sessions, int $ttlMs, string $dataDir): void
     @touch($stamp);
     $now = now_ms();
     foreach ($sessions as $c => $s) {
-        $last = (int)($s['updatedAt'] ?? 0);
-        $ttl = $ttlMs;
+        // Heartbeats keep a gather alive, for every gather and not only solo ones.
+        // updatedAt moves on real changes and never on a poll, so a build with five people
+        // online but no deliveries for a week used to be collected out from under them,
+        // while a one-member gather opened daily lived forever. Same evidence of life,
+        // same treatment. Mirrors _purge_old in clan_hub.py.
         $members = is_array($s['members'] ?? null) ? $s['members'] : [];
+        $last = (int)($s['updatedAt'] ?? 0);
+        foreach ($members as $m) {
+            $last = max($last, (int)($m['lastSeen'] ?? 0));
+        }
+        $ttl = $ttlMs;
         if (count($members) <= 1) {
-            // Solo sessions die on the short TTL — but heartbeats only refresh
-            // lastSeen, not updatedAt, so count them or an idle-but-online host
-            // would lose their gather a day after the last actual change.
+            // A gather nobody else joined is usually a test or create-spam: short lease,
+            // but it has to be genuinely abandoned to lose it.
             $ttl = min($ttl, SOLO_SESSION_TTL_SEC * 1000);
-            foreach ($members as $m) {
-                $last = max($last, (int)($m['lastSeen'] ?? 0));
-            }
         }
         if ($last < $now - $ttl) {
             unset($sessions[$c]);
@@ -279,6 +339,22 @@ function clean_staging_keys($keysIn): array
 }
 
 /**
+ * Release one material's claim, every field of it.
+ *
+ * A claim is three fields now, not two: claimedAt joined claimedBy/claimedName so the client
+ * can order a member's claims by when they were taken. Five paths release claims (stale
+ * sweep, unclaim, leave, kick, release_claims) and each has to drop all three, or a released
+ * material keeps a timestamp that outlives its claim. Mirrors _clear_claim in clan_hub.py —
+ * both write the same sessions.json, so they cannot disagree about the shape.
+ */
+function clear_claim(array &$mat): void
+{
+    $mat['claimedBy'] = null;
+    $mat['claimedName'] = null;
+    $mat['claimedAt'] = 0;
+}
+
+/**
  * Drop claims held by members whose client stopped talking to us. Without this an
  * alt-F4 left a material reserved for the whole session lifetime.
  *
@@ -299,11 +375,11 @@ function release_stale_claims(array &$sess, int $timeoutMs): array
     }
     $released = [];
     if (isset($sess['materials']) && is_array($sess['materials'])) {
-        foreach ($sess['materials'] as &$mat) {
+        foreach ($sess['materials'] as $key => &$mat) {
             $holder = strtolower((string)($mat['claimedBy'] ?? ''));
             if ($holder !== '' && isset($stale[$holder])) {
-                $mat['claimedBy'] = null;
-                $mat['claimedName'] = null;
+                clear_claim($mat);
+                push_event($sess, 'timeout', $stale[$holder], (string)$key);
                 if (!in_array($stale[$holder], $released, true)) {
                     $released[] = $stale[$holder];
                 }
@@ -340,6 +416,8 @@ const MAX_MATERIALS_PER_SESSION = 400;
 const MAX_STAGING_KEYS_PER_SESSION = 256;
 /** Kicks are moderation, not a permanent ban list — past this, oldest entries fall off. */
 const MAX_KICKED_TRACKED = 256;
+/** Events kept per session — the client's feed used to survive only as long as it watched. */
+const MAX_EVENTS_PER_SESSION = 50;
 /** Real names and item ids stay well under these; longer is padding aimed at the store. */
 const MAX_NAME_LEN = 48;
 const MAX_ITEM_ID_LEN = 128;
@@ -349,19 +427,27 @@ const PURGE_INTERVAL_SEC = 60;
 
 function read_body(): array
 {
+    // Memoized: php://input cannot be relied on for a second read, and the host-secret
+    // check in the auth gate needs the body before any route handler asks for it.
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
     $declared = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($declared > MAX_BODY_BYTES) {
         respond(413, ['error' => 'body too large (max ' . MAX_BODY_BYTES . ' bytes)']);
     }
     $raw = file_get_contents('php://input', false, null, 0, MAX_BODY_BYTES + 1);
     if ($raw === false || $raw === '') {
-        return [];
+        $cached = [];
+        return $cached;
     }
     if (strlen($raw) > MAX_BODY_BYTES) {
         respond(413, ['error' => 'body too large (max ' . MAX_BODY_BYTES . ' bytes)']);
     }
     $j = json_decode($raw, true);
-    return is_array($j) ? $j : [];
+    $cached = is_array($j) ? $j : [];
+    return $cached;
 }
 
 /** Path after host: /v1/... or /index.php/v1/... */
@@ -377,6 +463,35 @@ function api_path(): string
         return $m[1];
     }
     return $uri === '' ? '/' : $uri;
+}
+
+/**
+ * True when whoever is asking is already on this session's roster.
+ *
+ * Only ever used to pick a rate-limit bucket, never to authorize: the header hint counts
+ * here as much as a verified session, because a poll is a poll whoever sends it and
+ * claiming membership of a gather you are on buys nothing but the loose bucket.
+ */
+function clan_is_member_of(string $code, array $sessions): bool
+{
+    $who = clan_identity() ?? clan_hint_identity();
+    if ($who === null) {
+        return false;
+    }
+    $uuid = strtolower((string)($who['uuid'] ?? ''));
+    if ($uuid === '') {
+        return false;
+    }
+    $members = $sessions[$code]['members'] ?? null;
+    if (!is_array($members)) {
+        return false;
+    }
+    foreach ($members as $m) {
+        if (strtolower((string)($m['uuid'] ?? '')) === $uuid) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -447,8 +562,15 @@ function clan_actor(array $body): array
  *
  * @return array{uuid: string, name: string}
  */
-function require_verified_host(array $sess, string $deny = 'only host'): array
-{
+function require_verified_host(
+    array $sess, string $deny = 'only host', array $body = []
+): array {
+    // The hostSecret proves the creator without Mojang, which is the only way an
+    // offline-mode launcher can hold host tools. The uuid is still refused on its own:
+    // it is public in every snapshot, so honouring it let anyone replay it.
+    if (host_secret_ok($sess, $body)) {
+        return ['uuid' => (string)($sess['hostUuid'] ?? ''), 'name' => (string)($sess['hostName'] ?? '?')];
+    }
     $who = clan_identity();
     if ($who === null) {
         respond(403, ['error' => 'host actions require verified identity']);
@@ -471,8 +593,24 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
  */
 if ($path === '/v1/auth/challenge' || $path === '/v1/auth/verify') {
     rate_ok('auth');
-} elseif ($method === 'GET' && preg_match('#^/v1/sessions/[^/]+/?$#', $path) === 1) {
-    rate_ok('lookup');
+} elseif ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $rm) === 1) {
+    // Guessing codes happens here — but so does every member's poll, ~20 reads a minute
+    // against a bucket that allows ten, shared by a whole clan behind one address. A caller
+    // already on the roster is polling (loose bucket); anyone else is looking up a code they
+    // do not hold (tight). A guesser is by definition not a member, and an unknown code has
+    // no roster, so the guessing surface keeps exactly the limit it had.
+    // Mirrors _is_member_of in clan_hub.py.
+    //
+    // This costs a parse of sessions.json before the limiter, which the note above wanted
+    // to avoid. Python does not pay it — its store is resident in memory, so the same check
+    // is a dict lookup — but PHP is shared-nothing and has to read to know anything. The
+    // read is deliberately unlocked and only decides which counter to charge: a roster one
+    // request out of date can at worst bill one poll to the wrong bucket, and the
+    // authoritative read still happens under the lock below.
+    rate_ok(
+        clan_is_member_of(normalize_code($rm[1]), load_sessions($sessionsFile))
+            ? 'action' : 'lookup'
+    );
 } elseif ($method === 'POST' && str_starts_with($path, '/v1/sessions')) {
     rate_ok(preg_match('#/join/?$#', $path) === 1 ? 'lookup' : 'action');
 }
@@ -560,8 +698,33 @@ if ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $m)) {
 }
 
 // Mutating endpoints act on behalf of a player, so they need a verified one.
+//
+// One narrow exception: a host-only action carrying its own gather's hostSecret. Without
+// it the secret would be unusable whenever require_auth is on, forcing an operator with
+// offline-mode players to leave identities unverified — the worse setting — just to keep
+// host tools. Limited to the five host actions, so claim and deliver stay identity-gated.
+// Mirrors _host_secret_request in clan_hub.py.
+function host_secret_request(string $path, array $body, array $sessions): bool
+{
+    if (!str_starts_with($path, '/v1/sessions/')) {
+        return false;
+    }
+    $parts = array_values(array_filter(explode('/', substr($path, strlen('/v1/sessions/'))), 'strlen'));
+    if (count($parts) < 2) {
+        return false;
+    }
+    if (!in_array($parts[1], ['update', 'kick', 'release_claims', 'exclude', 'close'], true)) {
+        return false;
+    }
+    // The code comes from the path, never the body: holding one gather's secret must not
+    // open any other gather.
+    $sess = $sessions[normalize_code($parts[0])] ?? null;
+    return is_array($sess) && host_secret_ok($sess, $body);
+}
+
 if ($requireAuth && $method === 'POST' && str_starts_with($path, '/v1/sessions')) {
-    if (clan_identity() === null) {
+    if (clan_identity() === null
+        && !host_secret_request($path, read_body(), $sessions)) {
         respond(401, ['error' => 'auth required']);
     }
 }
@@ -597,6 +760,8 @@ if ($method === 'POST' && $path === '/v1/sessions') {
                 'delivered' => 0,
                 'claimedBy' => null,
                 'claimedName' => null,
+                'claimedAt' => 0,
+                'excluded' => false,
             ];
         }
     }
@@ -639,13 +804,17 @@ if ($method === 'POST' && $path === '/v1/sessions') {
         'members' => [['name' => $hostName, 'uuid' => $hostUuid, 'lastSeen' => $now]],
         'materials' => $materials,
         'stagingKeys' => $staging,
+        // Proof of being the creator that does not depend on Mojang — see
+        // require_verified_host. Handed over once, here, and never in another snapshot.
+        'hostSecret' => bin2hex(random_bytes(18)),
     ];
+    push_event($sess, 'create', $hostName, '', count($materials));
     $sessions[$code] = $sess;
     save_sessions($sessionsFile, $sessions);
-    respond_session($sess);
+    respond_session($sess, true);
 }
 
-if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close|update|kick|release_claims)/?$#', $path, $m)) {
+if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close|update|kick|release_claims|exclude)/?$#', $path, $m)) {
     $code = normalize_code($m[1]);
     $action = $m[2];
     $body = read_body();
@@ -668,8 +837,20 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
                 static fn($k) => strcasecmp((string)$k, $uuid) !== 0
             ));
         }
+        // Only a genuinely new member is news: join doubles as "switch to", so a member
+        // moving between gathers re-joins constantly and would bury the feed.
+        $wasMember = false;
+        foreach (($sess['members'] ?? []) as $m) {
+            if (strcasecmp((string)($m['uuid'] ?? ''), $uuid) === 0) {
+                $wasMember = true;
+                break;
+            }
+        }
         if (!member_upsert($sess, $name, $uuid)) {
             respond(409, ['error' => 'session full (max ' . MAX_MEMBERS_PER_SESSION . ' members)']);
+        }
+        if (!$wasMember) {
+            push_event($sess, 'join', $name);
         }
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
@@ -691,15 +872,25 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         $cur = (string)($mat['claimedBy'] ?? '');
         if ($unclaim) {
             if ($cur !== '' && strcasecmp($cur, $uuid) === 0) {
-                $mat['claimedBy'] = null;
-                $mat['claimedName'] = null;
+                clear_claim($mat);
+                push_event($sess, 'release', $name, $item);
             }
         } else {
+            if (!empty($mat['excluded'])) {
+                // The host struck this material off the gather; claiming it would put a
+                // member to work on something nobody is collecting.
+                respond(409, ['error' => 'item excluded from this gather']);
+            }
             if ($cur !== '' && strcasecmp($cur, $uuid) !== 0) {
                 respond(409, ['error' => 'already claimed by ' . ($mat['claimedName'] ?? $cur)]);
             }
             $mat['claimedBy'] = $uuid;
             $mat['claimedName'] = $name;
+            // When the claim was taken, in hub time. The client shows "who is carrying what"
+            // from this, so a member holding glass and stone is shown on the one they took
+            // first — and every client agrees on which that was.
+            $mat['claimedAt'] = now_ms();
+            push_event($sess, 'claim', $name, $item);
         }
         member_upsert($sess, $name, $uuid);
         touch_sess($sess);
@@ -800,11 +991,11 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         [$uuid, $actorName] = clan_actor($body);
         foreach ($sess['materials'] as &$mat) {
             if (strcasecmp((string)($mat['claimedBy'] ?? ''), $uuid) === 0) {
-                $mat['claimedBy'] = null;
-                $mat['claimedName'] = null;
+                clear_claim($mat);
             }
         }
         unset($mat);
+        push_event($sess, 'leave', $actorName);
         $sess['members'] = array_values(array_filter(
             $sess['members'] ?? [],
             static fn($m) => strcasecmp((string)($m['uuid'] ?? ''), $uuid) !== 0
@@ -820,7 +1011,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if ($raw === '') {
             respond(400, ['error' => 'name required']);
         }
-        require_verified_host($sess);
+        require_verified_host($sess, 'only host', $body);
         $name = clamp_str($raw, MAX_NAME_LEN);
         $sess['name'] = $name;
         $sess['schemaName'] = $name;
@@ -836,7 +1027,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if ($target === '') {
             respond(400, ['error' => 'target required']);
         }
-        require_verified_host($sess);
+        require_verified_host($sess, 'only host', $body);
         if ($target === strtolower((string)($sess['hostUuid'] ?? ''))) {
             respond(400, ['error' => 'host cannot kick self']);
         }
@@ -848,12 +1039,19 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if (count($kept) === count($members)) {
             respond(404, ['error' => 'no such member']);
         }
+        $goneName = '?';
+        foreach ($members as $m) {
+            if (strtolower((string)($m['uuid'] ?? '')) === $target) {
+                $goneName = (string)($m['name'] ?? '?');
+                break;
+            }
+        }
+        push_event($sess, 'kick', $goneName);
         $sess['members'] = $kept;
         if (is_array($sess['materials'] ?? null)) {
             foreach ($sess['materials'] as &$mat) {
                 if (strtolower((string)($mat['claimedBy'] ?? '')) === $target) {
-                    $mat['claimedBy'] = null;
-                    $mat['claimedName'] = null;
+                    clear_claim($mat);
                 }
             }
             unset($mat);
@@ -878,19 +1076,116 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
     }
 
     if ($action === 'release_claims') {
-        // Clear every claim (host only) — the reset button for a stalled evening.
-        require_verified_host($sess);
-        if (is_array($sess['materials'] ?? null)) {
+        // Free reserved materials (host only). No item named clears every claim — the
+        // original behaviour, so older clients keep working. {"itemId"} frees one, which is
+        // what a host usually wants: somebody reserved the glass and went to bed.
+        // {"items":[...]} frees a handful. Mirrors _release_claims in clan_hub.py.
+        require_verified_host($sess, 'only host', $body);
+        $wanted = [];
+        if (isset($body['items']) && is_array($body['items'])) {
+            foreach ($body['items'] as $x) {
+                $k = clamp_str(trim((string)$x), MAX_ITEM_ID_LEN);
+                if ($k !== '') {
+                    $wanted[] = $k;
+                }
+            }
+        } else {
+            $one = clamp_str(trim((string)($body['itemId'] ?? '')), MAX_ITEM_ID_LEN);
+            if ($one !== '') {
+                $wanted[] = $one;
+            }
+        }
+        $mats = is_array($sess['materials'] ?? null) ? $sess['materials'] : [];
+        foreach ($wanted as $k) {
+            if (!isset($mats[$k])) {
+                respond(404, ['error' => 'unknown item ' . $k]);
+            }
+        }
+        $freed = 0;
+        if ($wanted !== []) {
+            foreach ($wanted as $k) {
+                if (!empty($sess['materials'][$k]['claimedBy'])) {
+                    $holder = (string)($sess['materials'][$k]['claimedName'] ?? '?');
+                    clear_claim($sess['materials'][$k]);
+                    push_event($sess, 'release', $holder, $k);
+                    $freed++;
+                }
+            }
+            if ($freed === 0) {
+                // The claim may have lapsed between the host reading the grid and clicking.
+                respond_session($sess);
+            }
+        } else {
             foreach ($sess['materials'] as &$mat) {
                 if (!empty($mat['claimedBy'])) {
-                    $mat['claimedBy'] = null;
-                    $mat['claimedName'] = null;
+                    clear_claim($mat);
+                    $freed++;
                 }
             }
             unset($mat);
+            if ($freed > 0) {
+                push_event($sess, 'release_all', host_name_of($sess), '', $freed);
+            }
         }
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
+        respond_session($sess);
+    }
+
+    if ($action === 'exclude') {
+        // Strike materials off the gather, or put them back (host only).
+        //
+        // The host opened the schematic, so the host is the one who knows the shell is
+        // already built and nobody should be hauling 40k stone for it. Excluded materials
+        // stay in the session — their delivered history is real and must not be rewritten —
+        // they are just marked, and every client greys them out and stops counting them
+        // toward progress. Mirrors _exclude in clan_hub.py.
+        require_verified_host($sess, 'only the gather host can exclude items', $body);
+        $updates = [];
+        if (isset($body['items']) && is_array($body['items'])) {
+            foreach ($body['items'] as $k => $v) {
+                $key = clamp_str(trim((string)$k), MAX_ITEM_ID_LEN);
+                if ($key !== '') {
+                    $updates[$key] = (bool)$v;
+                }
+            }
+        } else {
+            $item = clamp_str(trim((string)($body['itemId'] ?? '')), MAX_ITEM_ID_LEN);
+            if ($item === '') {
+                respond(400, ['error' => 'itemId required']);
+            }
+            // Absent "excluded" means exclude: a bare {"itemId"} reads as "drop this one".
+            $updates[$item] = array_key_exists('excluded', $body) ? (bool)$body['excluded'] : true;
+        }
+        if ($updates === []) {
+            respond(400, ['error' => 'no items']);
+        }
+        foreach (array_keys($updates) as $key) {
+            if (!isset($sess['materials'][$key])) {
+                respond(404, ['error' => 'unknown item ' . $key]);
+            }
+        }
+        $changed = false;
+        foreach ($updates as $key => $flag) {
+            $mat = &$sess['materials'][$key];
+            if ((bool)($mat['excluded'] ?? false) === $flag) {
+                unset($mat);
+                continue;
+            }
+            $mat['excluded'] = $flag;
+            push_event($sess, $flag ? 'exclude' : 'include', host_name_of($sess), (string)$key);
+            if ($flag) {
+                // Whoever was on it is off it. Leaving the claim would show a member
+                // carrying a material the gather no longer wants.
+                clear_claim($mat);
+            }
+            $changed = true;
+            unset($mat);
+        }
+        if ($changed) {
+            touch_sess($sess);
+            save_sessions($sessionsFile, $sessions);
+        }
         respond_session($sess);
     }
 
@@ -899,7 +1194,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         // delete below, letting anyone drop any session by simply omitting the field —
         // and later, a spoofed one could impersonate the host. Only a Mojang-verified
         // host closes now, same rule as clan_hub.py.
-        require_verified_host($sess, 'only host can close');
+        require_verified_host($sess, 'only host can close', $body);
         unset($sessions[$code]);
         save_sessions($sessionsFile, $sessions);
         respond(200, ['ok' => true, 'code' => $code]);

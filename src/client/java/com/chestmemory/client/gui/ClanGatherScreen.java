@@ -101,7 +101,15 @@ public class ClanGatherScreen extends Screen {
 	private final java.util.Map<String, net.minecraft.world.item.ItemStack> iconCache =
 		new java.util.HashMap<>();
 
-	private final Screen parent;
+	/**
+	 * Where closing returns to, or null when this screen was opened on its own.
+	 * <p>
+	 * Null is the standalone marker, not a missing value: the panel key opens the gather
+	 * directly when one is running, and from there ESC has to put the player back in the
+	 * world. It used to hand in a freshly built item-list screen as a parent, so ESC
+	 * "closed" the gather straight into a screen the player never opened.
+	 */
+	private final @org.jspecify.annotations.Nullable Screen parent;
 	private EditBox hubBox;
 	private EditBox codeBox;
 	private String status = "";
@@ -372,9 +380,16 @@ public class ClanGatherScreen extends Screen {
 		refreshHeaderText();
 	}
 
+	/** Opened from another screen: closing goes back to it. */
 	public ClanGatherScreen(Screen parent) {
 		super(Component.translatable("screen.chestmemory.clan.title"));
 		this.parent = parent;
+	}
+
+	/** Opened on its own (the panel key while a gather runs): closing returns to the game. */
+	public ClanGatherScreen() {
+		super(Component.translatable("screen.chestmemory.clan.title"));
+		this.parent = null;
 	}
 
 	@Override
@@ -583,7 +598,7 @@ public class ClanGatherScreen extends Screen {
 			this.addRenderableWidget(new SettingRowButton(
 				left + half + gap, this.panelTop + this.panelH - 26, half, rowH,
 				Component.translatable("screen.chestmemory.clan.back"),
-				this::onClose
+				this::goBack
 			));
 			return;
 		}
@@ -662,7 +677,7 @@ public class ClanGatherScreen extends Screen {
 			this.addRenderableWidget(new SettingRowButton(
 				left, infoRow2, w, rowH,
 				Component.translatable("screen.chestmemory.clan.back"),
-				this::onClose
+				this::goBack
 			));
 			return;
 		}
@@ -672,7 +687,7 @@ public class ClanGatherScreen extends Screen {
 			this.addRenderableWidget(new SettingRowButton(
 				left, this.panelTop + this.panelH - 26, w, rowH,
 				Component.translatable("screen.chestmemory.clan.back"),
-				this::onClose
+				this::goBack
 			));
 			return;
 		}
@@ -695,10 +710,25 @@ public class ClanGatherScreen extends Screen {
 			// facts ride a vanilla tooltip — the grid gets everything above this line.
 			this.gridBottom = row2 - 16;
 			if (host) {
+				// The creator gets an exit too. It steps away — the gather keeps running for
+				// the clan — because ending it for everyone is a different decision and lives
+				// in the host settings behind a confirmation. Having only «Назад» here meant
+				// the one person who set the gather up could not stop following it.
 				this.addRenderableWidget(new SettingRowButton(
-					left, row2, w, rowH,
+					left, row2, half, rowH,
+					Component.translatable("screen.chestmemory.clan.step_away"),
+					() -> {
+						if (this.minecraft == null) {
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.stepAwayAsync(this.minecraft, this::rebuildWidgets);
+					}
+				));
+				this.addRenderableWidget(new SettingRowButton(
+					left + half + gap, row2, half, rowH,
 					Component.translatable("screen.chestmemory.clan.back"),
-					this::onClose
+					this::goBack
 				));
 			} else {
 				this.addRenderableWidget(new SettingRowButton(
@@ -715,7 +745,7 @@ public class ClanGatherScreen extends Screen {
 				this.addRenderableWidget(new SettingRowButton(
 					left + half + gap, row2, half, rowH,
 					Component.translatable("screen.chestmemory.clan.back"),
-					this::onClose
+					this::goBack
 				));
 			}
 			return;
@@ -769,7 +799,7 @@ public class ClanGatherScreen extends Screen {
 			this.addRenderableWidget(new SettingRowButton(
 				left, row2, w, rowH,
 				Component.translatable("screen.chestmemory.clan.back"),
-				this::onClose
+				this::goBack
 			));
 			return;
 		}
@@ -789,7 +819,7 @@ public class ClanGatherScreen extends Screen {
 		this.addRenderableWidget(new SettingRowButton(
 			left + half + gap, row2, half, rowH,
 			Component.translatable("screen.chestmemory.clan.back"),
-			this::onClose
+			this::goBack
 		));
 	}
 
@@ -906,7 +936,7 @@ public class ClanGatherScreen extends Screen {
 		this.addRenderableWidget(new SettingRowButton(
 			left + half + gap, row2, half, rowH,
 			Component.translatable("screen.chestmemory.clan.back"),
-			this::onClose
+			this::goBack
 		));
 	}
 
@@ -1055,7 +1085,7 @@ public class ClanGatherScreen extends Screen {
 				ChestMemoryStorage.itemDisplayName(itemId)
 			));
 		}
-		this.onClose();
+		closeToWorld();
 	}
 
 	/** «Склад: N» — toggle the pick-warehouse mode shared with the scanner. */
@@ -1078,7 +1108,7 @@ public class ClanGatherScreen extends Screen {
 		boolean nowActive = com.chestmemory.client.data.StagingPickMode.toggle();
 		if (nowActive) {
 			this.status = "";
-			this.onClose();
+			closeToWorld();
 			return;
 		}
 		this.status = Component.translatable(
@@ -1114,6 +1144,12 @@ public class ClanGatherScreen extends Screen {
 		}
 		ClanSession s = ClanSessionManager.session();
 		if (s == null) {
+			return;
+		}
+		// Before the remaining check: an excluded material reports 0 remaining, which would
+		// otherwise announce it as finished. It is not finished, it is struck off.
+		if (s.isExcluded(itemId)) {
+			this.status = Component.translatable("screen.chestmemory.clan.mat_excluded").getString();
 			return;
 		}
 		if (s.remaining(itemId) <= 0) {
@@ -1249,6 +1285,9 @@ public class ClanGatherScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		if (hostExcludeClick(event)) {
+			return true;
+		}
 		// The painted hit-tests below receive every mouse button, unlike real widgets
 		// (which filter through isValidClickButton) — so a right-click on a roster row
 		// armed a kick and a right-click on a cell claimed it. Anything but the left
@@ -1407,12 +1446,60 @@ public class ClanGatherScreen extends Screen {
 		}
 	}
 
+	/**
+	 * ESC and every internal "close" land here.
+	 * <p>
+	 * With no parent this closes to the game. That is the whole point of the null parent:
+	 * opened from the panel key, ESC has to give the player the world back. Handing in a
+	 * throwaway item-list screen as the parent meant ESC threw them into a full item list
+	 * they never asked for — and the same applies to the highlight and warehouse-pick
+	 * actions below, which close the screen expecting to end up outside, not one level in.
+	 */
 	@Override
 	public void onClose() {
 		saveHubQuiet();
-		if (this.minecraft != null) {
-			ClientScreens.set(this.minecraft, this.parent);
+		if (this.minecraft == null) {
+			return;
 		}
+		if (this.parent != null) {
+			ClientScreens.set(this.minecraft, this.parent);
+			return;
+		}
+		closeToWorld();
+	}
+
+	/**
+	 * Close all the way out to the world, no matter what opened this screen.
+	 * <p>
+	 * For the actions whose whole point is that the player ends up outside: the chests to
+	 * mark stand in the world, and a highlight nobody can see because a GUI is in front of
+	 * it is not a highlight. Going to the parent here would put the item list between the
+	 * player and the thing they just asked to look at.
+	 */
+	private void closeToWorld() {
+		saveHubQuiet();
+		if (this.minecraft != null) {
+			ClientScreens.set(this.minecraft, null);
+		}
+	}
+
+	/**
+	 * The «Назад» row: one level out, not all the way to the game.
+	 * <p>
+	 * Deliberately not {@link #onClose()}. The two used to be the same call, which is why
+	 * ESC behaved like a navigation button; splitting them lets ESC mean "give me the world
+	 * back" while Back keeps meaning "the screen behind this one". Opened from the panel key
+	 * there is no screen behind it, so Back opens the chest panel — mid-gather the key goes
+	 * straight to the materials, and this row is what keeps the item list reachable.
+	 */
+	private void goBack() {
+		saveHubQuiet();
+		if (this.minecraft == null) {
+			return;
+		}
+		ClientScreens.set(
+			this.minecraft, this.parent != null ? this.parent : new ChestMemoryScreen()
+		);
 	}
 
 	@Override
@@ -1658,6 +1745,16 @@ public class ClanGatherScreen extends Screen {
 			List<MatCell> cells = new java.util.ArrayList<>(rows.size());
 			for (var e : rows) {
 				ClanSession.ClanMaterial m = e.getValue();
+				// Struck off the gather: blacked out, no count, no claim rim, and it keeps
+				// its slot rather than vanishing — the host has to be able to see what was
+				// excluded in order to put it back, and members need to see that the entry
+				// was decided on rather than forgotten.
+				if (m.excluded) {
+					cells.add(new MatCell(
+						e.getKey(), 0, ChestGuiStyle.STOCK_EXCLUDED, 0xFF606060, "✕", 0xFF808080, 0
+					));
+					continue;
+				}
 				int remaining = s.remaining(e.getKey());
 				boolean done = remaining <= 0;
 				boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
@@ -1672,10 +1769,13 @@ public class ClanGatherScreen extends Screen {
 					: stock >= remaining ? ChestGuiStyle.STOCK_READY
 					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
 					: ChestGuiStyle.STOCK_NONE;
-				int countColour = done ? 0xFFC8C8C8
-					: stock >= remaining ? 0xFF7FE08A
-					: stock > 0 ? 0xFFFFE066
-					: 0xFFFF9090;
+				// Zero, not a colour: drawSlotCount then uses the player's own count colour
+				// (near-white by default) — the same one the chest panel's numbers follow.
+				// The state is not lost, it is the slot tint above and the claim ring below,
+				// which is where state belongs. Colouring the number too made the grid read
+				// as three competing signals, and a red "640" looks like an error rather
+				// than "nothing in the chests for this yet".
+				int countColour = 0;
 				int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;
 				String badge = done ? "✓" : null;
 				int badgeColour = done ? 0xFF7FE08A : 0;
@@ -1817,10 +1917,8 @@ public class ClanGatherScreen extends Screen {
 					: stock >= missing ? ChestGuiStyle.STOCK_READY
 					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
 					: ChestGuiStyle.STOCK_NONE;
-				int countColour = done ? 0xFFC8C8C8
-					: stock >= missing ? 0xFF7FE08A
-					: stock > 0 ? 0xFFFFE066
-					: 0xFFFF9090;
+				// Zero: the player's configured count colour, as in the clan grid above.
+				int countColour = 0;
 				int border = isFocus ? 0xFFFFD56A : 0;
 				cells.add(new MatCell(
 					r.itemId(), done ? 0 : missing, tint, countColour,
@@ -1907,8 +2005,17 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
-	/** 0 ready · 1 partial · 2 none · 3 done — the scan order of the clan grid. */
+	/**
+	 * 0 ready · 1 partial · 2 none · 3 done · 4 excluded — the scan order of the clan grid.
+	 * <p>
+	 * Excluded sinks below done: both are "no work here", but a finished material is an
+	 * achievement worth seeing and a struck-off one is only worth finding when the host wants
+	 * it back.
+	 */
 	private int clanBand(ClanSession s, String itemId) {
+		if (s.isExcluded(itemId)) {
+			return 4;
+		}
 		int remaining = s.remaining(itemId);
 		if (remaining <= 0) {
 			return 3;
@@ -1978,15 +2085,32 @@ public class ClanGatherScreen extends Screen {
 		String me
 	) {
 		List<Component> lines = tooltipHead(itemId);
-		int remaining = s.remaining(itemId);
+		int need = Math.max(0, m.need);
+		int delivered = Math.max(0, m.delivered);
+		// remaining() reports 0 for an excluded material — correct for progress, wrong for
+		// a tooltip that still has to say how much the schematic wanted.
+		int remaining = Math.max(0, need - delivered);
 		lines.add(Component.translatable(
-			"screen.chestmemory.tooltip.gather_delivered",
-			Math.max(0, m.delivered), Math.max(0, m.need)
+			"screen.chestmemory.tooltip.gather_delivered", delivered, need
 		).withStyle(net.minecraft.ChatFormatting.GRAY));
-		if (remaining > 0) {
+		// The share of this one material, so a big entry that is nearly done reads
+		// differently from a small one that has not been started.
+		if (need > 0) {
+			lines.add(Component.translatable(
+				"screen.chestmemory.tooltip.gather_percent",
+				Math.min(100, (int) (100L * delivered / need))
+			).withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		}
+		if (m.excluded) {
+			lines.add(Component.translatable("screen.chestmemory.clan.mat_excluded")
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		} else if (remaining > 0) {
 			lines.add(Component.translatable(
 				"screen.chestmemory.tooltip.gather_left", remaining
 			).withStyle(net.minecraft.ChatFormatting.GOLD));
+			// The same number restated in stacks and in boxes, directly under it: "how
+			// many shulkers do I bring" is what a bare five-digit remainder cannot answer.
+			BulkTooltip.append(lines, remaining, stackSizeOf(itemId));
 		} else {
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_done")
 				.withStyle(net.minecraft.ChatFormatting.GREEN));
@@ -1998,6 +2122,17 @@ public class ClanGatherScreen extends Screen {
 		boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 		boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
 		boolean ready = remaining > 0 && chestStock(itemId) >= remaining;
+		boolean host = this.minecraft != null && ClanSessionManager.isHost(this.minecraft);
+		if (m.excluded) {
+			// No claim hints on a material nobody is meant to collect — say why it is grey,
+			// and, for the one person who can undo it, how.
+			lines.add(Component.translatable(
+				host
+					? "screen.chestmemory.clan.mat_excluded_host_hint"
+					: "screen.chestmemory.clan.mat_excluded_hint"
+			).withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+			return lines;
+		}
 		if (mine) {
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_yours_hint")
 				.withStyle(net.minecraft.ChatFormatting.GOLD));
@@ -2016,6 +2151,15 @@ public class ClanGatherScreen extends Screen {
 		}
 		lines.add(Component.translatable("screen.chestmemory.tooltip.gather_shift")
 			.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+		if (host) {
+			lines.add(Component.translatable("screen.chestmemory.clan.mat_exclude_hint")
+				.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+			// Only worth saying when there is a reservation to free.
+			if (mine || taken) {
+				lines.add(Component.translatable("screen.chestmemory.clan.mat_free_hint")
+					.withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+			}
+		}
 		return lines;
 	}
 
@@ -2068,25 +2212,11 @@ public class ClanGatherScreen extends Screen {
 	}
 
 	/**
-	 * Stock detail: full stacks, the shulker-box equivalent (27 stacks to a box — 1728
-	 * of a 64-stack item IS one shulker), and how much already sits inside shulkers.
+	 * What the chests hold, restated in stacks and boxes, plus how much of it already sits
+	 * inside shulkers or in the ender chest.
 	 */
 	private void addStockDetail(List<Component> lines, String itemId, int stock) {
-		int per = Math.max(1, icon(itemId).getMaxStackSize());
-		if (stock >= per) {
-			int stacks = stock / per;
-			int rem = stock % per;
-			lines.add((rem > 0
-				? Component.translatable("screen.chestmemory.tooltip.gather_stacks", stacks, rem)
-				: Component.translatable("screen.chestmemory.tooltip.gather_stacks_even", stacks))
-				.withStyle(net.minecraft.ChatFormatting.GRAY));
-		}
-		int boxCap = per * 27;
-		if (stock >= boxCap) {
-			lines.add(Component.translatable(
-				"screen.chestmemory.tooltip.gather_boxes", formatBoxes(stock, boxCap)
-			).withStyle(net.minecraft.ChatFormatting.GRAY));
-		}
+		BulkTooltip.append(lines, stock, stackSizeOf(itemId));
 		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(
 			ChestMemoryStorage.get().liveContainersSnapshot(), itemId
 		);
@@ -2107,14 +2237,13 @@ public class ClanGatherScreen extends Screen {
 		}
 	}
 
-	/** «1», «1.5», «12» — shulker boxes, one decimal while it still matters. */
-	private static String formatBoxes(int stock, int boxCap) {
-		double v = stock / (double) boxCap;
-		if (v >= 10) {
-			return String.valueOf(Math.round(v));
-		}
-		String s = String.format(java.util.Locale.ROOT, "%.1f", v);
-		return s.endsWith(".0") ? s.substring(0, s.length() - 2) : s;
+	/**
+	 * This item's real maximum stack size — 64 for stone, 16 for pearls, 1 for a tool.
+	 * Never assumed: a shulker computed against a hardcoded 64 is out by a factor of four
+	 * for pearls. The formatting itself lives in {@link BulkTooltip}, shared with the panel.
+	 */
+	private int stackSizeOf(String itemId) {
+		return Math.max(1, icon(itemId).getMaxStackSize());
 	}
 
 	/** A found-by-search memory item: where it lies and that a click only glows chests. */
@@ -2530,7 +2659,20 @@ public class ClanGatherScreen extends Screen {
 		}
 
 		int hoverIdx = materialAt(this.hoverX, this.hoverY);
-		for (int r = this.materialScroll.firstVisible(); r < this.materialScroll.lastVisible(); r++) {
+		// Empty slots first, across the whole visible tray — not just where materials happen
+		// to reach. The grid used to stop painting at the last material, so a gather with
+		// eleven entries and room for forty left a ragged half-row and a bare hole under it,
+		// which read as a broken panel rather than an empty one. Vanilla containers show the
+		// slot whether or not anything is in it; so does this now.
+		int firstRow = this.materialScroll.firstVisible();
+		int rowsShown = this.materialScroll.visibleRows();
+		for (int r = firstRow; r < firstRow + rowsShown; r++) {
+			int emptyY = this.materialScroll.rowY(r);
+			for (int c = 0; c < perRow; c++) {
+				ChestGuiStyle.drawSlot(graphics, gridLeft + c * CELL, emptyY);
+			}
+		}
+		for (int r = firstRow; r < this.materialScroll.lastVisible(); r++) {
 			int y = this.materialScroll.rowY(r);
 			for (int c = 0; c < perRow; c++) {
 				int i = r * perRow + c;
@@ -2539,7 +2681,6 @@ public class ClanGatherScreen extends Screen {
 				}
 				MatCell cell = cells.get(i);
 				int x = gridLeft + c * CELL;
-				ChestGuiStyle.drawSlot(graphics, x, y);
 				graphics.item(icon(cell.itemId()), x + 1, y + 1);
 				// Claim/target ring: state about PEOPLE sits on the rim, state about STOCK
 				// tints the face — the two never fight over the same pixels.
@@ -2609,6 +2750,47 @@ public class ClanGatherScreen extends Screen {
 		this.rebuildWidgets();
 	}
 
+	/**
+	 * Right-click a material, host only: strike it off the gather, or put it back.
+	 * <p>
+	 * The host opened the schematic and knows the shell is already standing, so the host is
+	 * the one who gets to say nobody hauls stone for it. The same gesture reverses it, which
+	 * is why this needs no two-click arming the way kick does — and why it can be a plain
+	 * right-click rather than a mode the host has to enter and leave.
+	 *
+	 * @return true when the click was consumed
+	 */
+	private boolean hostExcludeClick(MouseButtonEvent event) {
+		if (event.button() != 1 || this.tab != TAB_GATHER || this.minecraft == null) {
+			return false;
+		}
+		if (gatherMode() != GatherMode.CLAN || !ClanSessionManager.isHost(this.minecraft)) {
+			return false;
+		}
+		int idx = materialAt(event.x(), event.y());
+		if (idx < 0 || idx >= this.materialIds.size()) {
+			return false;
+		}
+		String clicked = this.materialIds.get(idx);
+		// Memory search results are shown for reference and are not part of the gather, so
+		// there is nothing to strike off.
+		if (this.externalIds.contains(clicked) || !ClanSessionManager.isInActiveGather(clicked)) {
+			return false;
+		}
+		this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+		// Shift frees the reservation instead of striking the material off — the everyday
+		// host job, for when somebody reserved the glass and logged off. Releasing all claims
+		// to get one back is a blunt instrument, and it is still there in host settings.
+		if (event.hasShiftDown()) {
+			ClanSessionManager.releaseOneAsync(this.minecraft, clicked, this::rebuildWidgets);
+			return true;
+		}
+		ClanSessionManager.excludeAsync(
+			this.minecraft, clicked, !ClanSessionManager.isExcluded(clicked), this::rebuildWidgets
+		);
+		return true;
+	}
+
 	/** Index of the material slot under the pointer, or -1. */
 	private int materialAt(double mx, double my) {
 		if (this.tab != TAB_GATHER || this.materialGridPerRow <= 0) {
@@ -2656,15 +2838,27 @@ public class ClanGatherScreen extends Screen {
 		// inside — for an answer that cannot change until the hub replaces the session.
 		if (s != this.memberClaimsSession) {
 			java.util.Map<String, MemberClaim> claims = new java.util.HashMap<>();
+			java.util.Map<String, Long> takenAt = new java.util.HashMap<>();
 			for (var e : s.materials.entrySet()) {
 				ClanSession.ClanMaterial mat = e.getValue();
-				if (mat.claimedBy == null || mat.claimedBy.isBlank()) {
+				if (mat.excluded || mat.claimedBy == null || mat.claimedBy.isBlank()) {
 					continue;
 				}
-				// putIfAbsent: the inline loop broke on the first claimed material, so a
-				// member with several claims keeps showing the earliest in map order.
-				claims.putIfAbsent(
-					mat.claimedBy.toLowerCase(java.util.Locale.ROOT),
+				String who = mat.claimedBy.toLowerCase(java.util.Locale.ROOT);
+				// Earliest claim wins. A member who took glass and then stone is working the
+				// glass, and the hub's claimedAt is what says so — this used to keep whichever
+				// of the two came first in the materials map, which is the hub's storage order
+				// and means nothing to anyone. That is why the panel could name the stone while
+				// the collector's own HUD named the glass. Claims from before the hub recorded
+				// timestamps all read 0 and keep their old map-order behaviour.
+				long at = Math.max(0, mat.claimedAt);
+				Long best = takenAt.get(who);
+				if (best != null && best <= at) {
+					continue;
+				}
+				takenAt.put(who, at);
+				claims.put(
+					who,
 					new MemberClaim(
 						e.getKey(),
 						ChestMemoryStorage.itemDisplayName(e.getKey()),
@@ -2672,6 +2866,23 @@ public class ClanGatherScreen extends Screen {
 						Math.max(0, mat.need)
 					)
 				);
+			}
+			// Our own row defers to the click order recorded locally, which is the same list
+			// the gather queue and the HUD walk. Even with timestamps agreeing, this keeps the
+			// panel from ever contradicting what the player is watching themselves collect.
+			if (this.minecraft != null) {
+				String me = ClanSessionManager.localUuid(this.minecraft)
+					.toLowerCase(java.util.Locale.ROOT);
+				String mine = ClanSessionManager.firstClaimOf(this.minecraft, me);
+				ClanSession.ClanMaterial mineMat = mine == null ? null : s.material(mine);
+				if (mineMat != null) {
+					claims.put(me, new MemberClaim(
+						mine,
+						ChestMemoryStorage.itemDisplayName(mine),
+						Math.max(0, mineMat.delivered),
+						Math.max(0, mineMat.need)
+					));
+				}
 			}
 			this.memberClaims = claims;
 			this.memberClaimsSession = s;
