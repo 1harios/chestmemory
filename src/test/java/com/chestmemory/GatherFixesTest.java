@@ -374,8 +374,35 @@ class GatherFixesTest {
 			assertEquals(0, BulkAmount.of(-500, 64).count(), "a negative count reads as none");
 			assertEquals(1, BulkAmount.of(10, 0).perStack(), "a zero stack size is clamped to 1");
 			BulkAmount unstackable = BulkAmount.of(10, -3);
-			assertEquals(10, unstackable.stacks(), "at one per stack, ten items are ten stacks");
-			assertEquals(0, unstackable.items(), "and nothing is left loose");
+			assertEquals(0, unstackable.stacks(), "one per stack is no stack tier at all");
+			assertEquals(10, unstackable.items(), "they are ten items, and that is all");
+		}
+
+		@Test
+		@DisplayName("Tools and boats are never counted in stacks — 7 pickaxes are 7 pickaxes")
+		void unstackableItemsHaveNoStacks() {
+			// Reported from play: hovering seven pickaxes said "7 стаков кирок". Dividing by a
+			// stack size of one is arithmetically fine and reads as nonsense, and the same went
+			// for boats, tools and shulker boxes.
+			BulkAmount picks = BulkAmount.of(7, 1);
+			assertFalse(picks.stackable(), "a pickaxe does not stack");
+			assertFalse(picks.hasStack(), "so no stacks line may be offered at all");
+			assertEquals(0, picks.totalStacks());
+			assertEquals(7, picks.looseAfterStacks(), "the whole amount stays loose items");
+
+			// Boxes still mean something for them: 27 slots is 27 pickaxes.
+			assertEquals(27, BulkAmount.boxCapacity(1));
+			BulkAmount many = BulkAmount.of(100, 1);
+			assertTrue(many.hasBox(), "a hundred pickaxes really is three boxes and change");
+			assertEquals(3, many.boxes());
+			assertEquals(0, many.stacks(), "the leftover is items, never stacks of one");
+			assertEquals(19, many.items());
+
+			// A stackable item is untouched by the fix.
+			BulkAmount stone = BulkAmount.of(100, 64);
+			assertTrue(stone.stackable());
+			assertEquals(1, stone.totalStacks());
+			assertEquals(36, stone.looseAfterStacks());
 		}
 
 		@Test

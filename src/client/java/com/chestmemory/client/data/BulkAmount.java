@@ -30,7 +30,18 @@ public record BulkAmount(int count, int perStack, int boxes, int stacks, int ite
 		int boxCap = boxCapacity(per);
 		int boxes = n / boxCap;
 		int rest = n - boxes * boxCap;
-		return new BulkAmount(n, per, boxes, rest / per, rest % per);
+		// An item that does not stack has no stack tier at all. Dividing by one is
+		// arithmetically fine and reads as nonsense: seven pickaxes were reported as
+		// "7 стаков кирок", and the same went for boats, tools and shulker boxes. Their
+		// remainder is loose items, and boxes still mean something — 27 slots is 27 pickaxes.
+		int stacks = per > 1 ? rest / per : 0;
+		int items = per > 1 ? rest % per : rest;
+		return new BulkAmount(n, per, boxes, stacks, items);
+	}
+
+	/** True when this item stacks at all — a tool, a boat or a shulker box does not. */
+	public boolean stackable() {
+		return perStack > 1;
 	}
 
 	/** How many items fill one shulker box of this item. */
@@ -40,12 +51,12 @@ public record BulkAmount(int count, int perStack, int boxes, int stacks, int ite
 
 	/** Whole stacks in the total, ignoring the box split — "27 ст." rather than "1 ШБ". */
 	public int totalStacks() {
-		return count / perStack;
+		return stackable() ? count / perStack : 0;
 	}
 
 	/** Items left over once {@link #totalStacks()} are taken out. */
 	public int looseAfterStacks() {
-		return count % perStack;
+		return stackable() ? count % perStack : count;
 	}
 
 	/** True once there is at least one full box — below that, boxes are not worth saying. */
@@ -53,8 +64,11 @@ public record BulkAmount(int count, int perStack, int boxes, int stacks, int ite
 		return boxes > 0;
 	}
 
-	/** True once there is at least one full stack. */
+	/**
+	 * True once there is at least one full stack — never for an item that does not stack,
+	 * where a "stack" would just be one of the thing.
+	 */
 	public boolean hasStack() {
-		return totalStacks() > 0;
+		return stackable() && totalStacks() > 0;
 	}
 }

@@ -4,6 +4,7 @@ import com.chestmemory.ChestMemoryMod;
 import com.chestmemory.client.data.ChestMemoryStorage;
 import com.chestmemory.client.data.ContainerRecord;
 import com.chestmemory.client.data.ItemStackKeys;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -32,6 +33,15 @@ public final class MemoryContainerComponentProvider implements IBlockComponentPr
 	public static final Identifier UID = ChestMemoryMod.id("memory_contents");
 
 	private static final int MAX_ITEMS_SHOWN = 18;
+	/**
+	 * Cap while Shift is held — the whole list, in practice.
+	 * <p>
+	 * Not unbounded: an ender chest's record aggregates everything the player owns there, and
+	 * a tooltip taller than the screen shows nothing useful at all. Ten rows covers a double
+	 * chest's 54 distinct types with room to spare, and anything past it still says how much
+	 * was left out.
+	 */
+	private static final int MAX_ITEMS_SHIFT = 90;
 	private static final int ITEMS_PER_ROW = 9;
 
 	private MemoryContainerComponentProvider() {
@@ -79,8 +89,16 @@ public final class MemoryContainerComponentProvider implements IBlockComponentPr
 			tooltip.add(Component.translatable("jade.chestmemory.staging"));
 		}
 
-		if (record == null || record.items().isEmpty()) {
+		if (record == null) {
 			tooltip.add(Component.translatable("jade.chestmemory.unknown"));
+			return;
+		}
+		if (record.items().isEmpty()) {
+			// Scanned and genuinely empty, which is not the same as never opened — the
+			// scanner does record an empty container once the server has synced the menu.
+			// Reporting "not scanned" over a chest the player emptied themselves reads as
+			// the mod having lost track of it.
+			tooltip.add(Component.translatable("jade.chestmemory.empty"));
 			return;
 		}
 
@@ -94,12 +112,18 @@ public final class MemoryContainerComponentProvider implements IBlockComponentPr
 		List<Map.Entry<String, Integer>> sorted = new ArrayList<>(record.items().entrySet());
 		sorted.sort(Comparator.<Map.Entry<String, Integer>>comparingInt(Map.Entry::getValue).reversed());
 
+		// Shift opens the list up. Eighteen icons is the right size for a glance while
+		// walking past a wall of chests, but it is useless when the question is "is the
+		// redstone in THIS one" — and the answer was one line saying "…and 14 more".
+		boolean expanded = isShiftDown(client);
+		int limit = expanded ? MAX_ITEMS_SHIFT : MAX_ITEMS_SHOWN;
+
 		List<Element> row = new ArrayList<>();
 		int shown = 0;
 		int total = sorted.size();
 
 		for (Map.Entry<String, Integer> entry : sorted) {
-			if (shown >= MAX_ITEMS_SHOWN) {
+			if (shown >= limit) {
 				break;
 			}
 
@@ -120,8 +144,31 @@ public final class MemoryContainerComponentProvider implements IBlockComponentPr
 		}
 
 		if (total > shown) {
-			tooltip.add(Component.translatable("jade.chestmemory.more", total - shown));
+			// The hint rides on the line that proves it is needed, and only while the list is
+			// actually truncated by the short cap — once Shift is held, repeating it would be
+			// telling the player to press the key they are already holding.
+			tooltip.add(Component.translatable(
+				expanded ? "jade.chestmemory.more" : "jade.chestmemory.more_shift",
+				total - shown
+			));
 		}
+	}
+
+	/**
+	 * Either shift key, read straight from the window.
+	 * <p>
+	 * A Jade overlay draws while the player is walking around with no screen open, so there
+	 * is no key event to consult and {@code Screen}'s modifier helpers do not exist in this
+	 * version. Both keys count: a player who reaches for the right one should not conclude the
+	 * feature is broken.
+	 */
+	private static boolean isShiftDown(Minecraft client) {
+		com.mojang.blaze3d.platform.Window window = client.getWindow();
+		if (window == null) {
+			return false;
+		}
+		return InputConstants.isKeyDown(window, InputConstants.KEY_LSHIFT)
+			|| InputConstants.isKeyDown(window, InputConstants.KEY_RSHIFT);
 	}
 
 	private static String formatCount(int count) {

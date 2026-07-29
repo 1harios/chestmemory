@@ -396,12 +396,10 @@
 	"message.chestmemory.none_nearby": "Nothing nearby — raise range or use Whole profile / other dimension",
 	"message.chestmemory.highlight_cleared": "Highlights cleared",
 	"message.chestmemory.browse_info": "%s ×%s in %s cont. · %s",
-	"jade.chestmemory.header": "Memory: ×%s · %s types · %s",
-	"jade.chestmemory.header_short": "Memory · ×%s · %s",
-	"jade.chestmemory.unknown": "Memory: not scanned yet",
-	"jade.chestmemory.staging": "§dBuild warehouse§r (not a gather source)",
-	"jade.chestmemory.double_chest": "double chest",
-	"jade.chestmemory.more": "...and %s more",
+	"jade.chestmemory.header_short": "Memory ×%s · %s kinds",
+	"jade.chestmemory.unknown": "Not scanned",
+	"jade.chestmemory.staging": "§dBuild warehouse",
+	"jade.chestmemory.more": "…%s more",
 	"screen.chestmemory.settings.tab.highlight": "Highlight",
 	"screen.chestmemory.settings.tab.colors": "Colors",
 	"screen.chestmemory.settings.tab.gather": "Gather",
@@ -503,5 +501,7 @@
 	"screen.chestmemory.clan.ev_include": "%s put %s back",
 	"screen.chestmemory.clan.ev_create": "%s started the gather (%s kinds)",
 	"screen.chestmemory.clan.mat_free_hint": "Shift+RMB — release the claim",
-	"message.chestmemory.clan_freed": "§dClan§r · claim on %s released"
+	"message.chestmemory.clan_freed": "§dClan§r · claim on %s released",
+	"jade.chestmemory.empty": "Empty",
+	"jade.chestmemory.more_shift": "…%s more · Shift for all"
 }

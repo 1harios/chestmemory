@@ -396,12 +396,10 @@
 	"message.chestmemory.none_nearby": "Рядом нет — увеличьте радиус или «Весь профиль» / другое измерение",
 	"message.chestmemory.highlight_cleared": "Подсветка снята",
 	"message.chestmemory.browse_info": "%s ×%s в %s конт. · %s",
-	"jade.chestmemory.header": "Память: ×%s · %s видов · %s",
-	"jade.chestmemory.header_short": "Память · ×%s · %s",
-	"jade.chestmemory.unknown": "Память: ещё не сканировали",
-	"jade.chestmemory.staging": "§dСклад стройки§r (не источник сбора)",
-	"jade.chestmemory.double_chest": "двойной сундук",
-	"jade.chestmemory.more": "...ещё %s",
+	"jade.chestmemory.header_short": "Память ×%s · %s видов",
+	"jade.chestmemory.unknown": "Не сканировали",
+	"jade.chestmemory.staging": "§dСклад стройки",
+	"jade.chestmemory.more": "…ещё %s",
 	"screen.chestmemory.settings.tab.highlight": "Подсветка",
 	"screen.chestmemory.settings.tab.colors": "Цвета",
 	"screen.chestmemory.settings.tab.gather": "Сбор",
@@ -503,5 +501,7 @@
 	"screen.chestmemory.clan.ev_include": "%s вернул %s в сбор",
 	"screen.chestmemory.clan.ev_create": "%s создал сбор (%s видов)",
 	"screen.chestmemory.clan.mat_free_hint": "Shift+ПКМ — снять бронь",
-	"message.chestmemory.clan_freed": "§dКлан§r · бронь на %s снята"
+	"message.chestmemory.clan_freed": "§dКлан§r · бронь на %s снята",
+	"jade.chestmemory.empty": "Пусто",
+	"jade.chestmemory.more_shift": "…ещё %s · Shift — весь список"
 }
