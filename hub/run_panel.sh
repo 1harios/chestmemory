@@ -12,6 +12,12 @@ mkdir -p "$DATA_DIR"
 
 if [ -f "$DIR/.clan_token" ]; then
   export CLAN_TOKEN="$(tr -d '\r\n' <"$DIR/.clan_token")"
+  # Keep the curl config (-K) fresh for manual health checks: putting the token on
+  # a curl command line shows it to every account on the host via ps.
+  (
+    umask 077
+    printf 'header = "X-Clan-Token: %s"\n' "$CLAN_TOKEN" >"$DIR/.curl_auth"
+  )
 fi
 # Bind all interfaces so the public reverse-proxy (site → 127.x:18787) reaches it,
 # matching the previously working instance. ISPmanager isolates the account, so this

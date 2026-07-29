@@ -17,6 +17,14 @@ export CLAN_TOKEN="$(tr -d '\r\n' <.clan_token)"
 export SESSION_TTL_SEC="${SESSION_TTL_SEC:-$((7*24*3600))}"
 export ENABLE_TUNNEL="${ENABLE_TUNNEL:-1}"
 
+# Token in a curl config file (-K), never on the command line: argv is world-readable
+# in /proc on a shared host, so `-H "X-Clan-Token: …"` showed it to every `ps`.
+CURL_AUTH="$HUB_DIR/.curl_auth"
+(
+  umask 077
+  printf 'header = "X-Clan-Token: %s"\n' "$CLAN_TOKEN" >"$CURL_AUTH"
+)
+
 chmod +x watchdog.sh 2>/dev/null || true
 # stop old watchdog if any (lock will prevent double)
 if [ -f watchdog.pid ] && kill -0 "$(cat watchdog.pid)" 2>/dev/null; then
@@ -27,12 +35,13 @@ else
   echo "watchdog started pid=$(cat watchdog.pid)"
 fi
 sleep 2
-echo "TOKEN=$(cat .clan_token)"
+# Never echo the token: this output lands in watchdog.log / the panel console.
+echo "TOKEN: in .clan_token (cat it yourself; deliberately not printed)"
 if [ -f lt.url ]; then echo "URL=$(cat lt.url)"; fi
 if [ -f data/sessions.json ]; then
   echo "sessions file: data/sessions.json ($(wc -c <data/sessions.json) bytes)"
 fi
-curl -sS -m 5 -H "X-Clan-Token: $CLAN_TOKEN" "http://127.1.6.129:${PORT}/v1/health" 2>/dev/null \
-  || curl -sS -m 5 -H "X-Clan-Token: $CLAN_TOKEN" "http://127.0.0.1:${PORT}/v1/health" 2>/dev/null \
+curl -sS -m 5 -K "$CURL_AUTH" "http://127.1.6.129:${PORT}/v1/health" 2>/dev/null \
+  || curl -sS -m 5 -K "$CURL_AUTH" "http://127.0.0.1:${PORT}/v1/health" 2>/dev/null \
   || echo "health: waiting…"
 echo

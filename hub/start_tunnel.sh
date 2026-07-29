@@ -30,9 +30,16 @@ cat lt.log
 URL=$(grep -Eo 'https://[a-zA-Z0-9.-]+\.loca\.lt' lt.log | head -1)
 echo "PUBLIC_URL=$URL"
 echo "$URL" > lt.url
+# Token via curl config file (-K), never echoed (this output is log material) and
+# never on argv (world-readable via ps on the shared host).
 TOKEN=$(cat .clan_token)
-echo "TOKEN=$TOKEN"
+CURL_AUTH="$PWD/.curl_auth"
+(
+  umask 077
+  printf 'header = "X-Clan-Token: %s"\n' "$TOKEN" >"$CURL_AUTH"
+)
+echo "TOKEN: in .clan_token (deliberately not printed)"
 if [ -n "$URL" ]; then
-  curl -sS -H "X-Clan-Token: $TOKEN" -H "Bypass-Tunnel-Reminder: 1" "$URL/v1/health" || true
+  curl -sS -K "$CURL_AUTH" -H "Bypass-Tunnel-Reminder: 1" "$URL/v1/health" || true
   echo
 fi

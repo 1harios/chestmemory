@@ -1,3 +1,19 @@
+# The -f rule below serves any existing file as-is, so everything sensitive must be
+# denied by name first. Normally sessions.json/config.php live OUTSIDE the docroot —
+# this is for the deploy where someone points the docroot one level too high or
+# drops a backup into public/: config.php is the token, auth.json is live session
+# tokens (full impersonation of every logged-in player), sessions.json is every
+# clan's warehouse coordinates.
+<FilesMatch "(?i)(\.json|\.tmp|\.lock|\.stamp)$|^(config\.php|\.clan_token|\.curl_auth)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
 RewriteEngine On
 
 # Let's Encrypt / ACME — must NOT go through index.php

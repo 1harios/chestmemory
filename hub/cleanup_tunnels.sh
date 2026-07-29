@@ -19,12 +19,19 @@ ps -u h001628 -o pid,rss,args --no-headers 2>/dev/null | grep -E 'python|node|lt
 
 TOKEN=$(tr -d '\r\n' < .clan_token)
 echo "TOKEN_LEN=${#TOKEN}"
+# Token via curl config file (-K), not argv — argv is world-readable via ps on the
+# shared host this runs on.
+CURL_AUTH="$PWD/.curl_auth"
+(
+  umask 077
+  printf 'header = "X-Clan-Token: %s"\n' "$TOKEN" >"$CURL_AUTH"
+)
 
 echo "=== health 127.0.0.1 ==="
-curl -sS -m 5 -H "X-Clan-Token: ${TOKEN}" "http://127.0.0.1:18787/v1/health" || echo FAIL
+curl -sS -m 5 -K "$CURL_AUTH" "http://127.0.0.1:18787/v1/health" || echo FAIL
 echo
 echo "=== health 127.1.6.129 ==="
-curl -sS -m 5 -H "X-Clan-Token: ${TOKEN}" "http://127.1.6.129:18787/v1/health" || echo FAIL
+curl -sS -m 5 -K "$CURL_AUTH" "http://127.1.6.129:18787/v1/health" || echo FAIL
 echo
 echo "=== hub.log tail ==="
 tail -8 hub.log 2>/dev/null || true
