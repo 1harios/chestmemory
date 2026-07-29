@@ -299,8 +299,69 @@ public final class ChestGuiStyle {
 		}
 	}
 
+	/**
+	 * Footer sentence under a panel — with a rescue for short windows.
+	 * <p>
+	 * At vanilla's smallest scaled height (~240px, e.g. 1280×720 at GUI scale 3) the panel
+	 * already reaches the bottom edge, so a line drawn 6px below it landed off-screen —
+	 * and that line is where a screen answers its clicks ("copied", "working…", errors),
+	 * so every confirmation vanished exactly on the setups with the least room. When the
+	 * preferred spot does not fit, the line moves just inside the panel's bottom edge, on
+	 * its own dark backdrop so it stays readable over whatever content it covers.
+	 *
+	 * @param belowPanelY preferred baseline, typically {@code panelTop + panelH + 6}
+	 * @param colour text colour for the normal below-the-panel spot; the in-panel
+	 *               fallback always uses light text on its backdrop
+	 */
+	public static void drawStatusLine(
+		GuiGraphicsExtractor graphics,
+		Font font,
+		String line,
+		int centerX,
+		int belowPanelY,
+		int panelW,
+		int screenHeight,
+		int colour
+	) {
+		boolean fits = belowPanelY + font.lineHeight <= screenHeight;
+		// 18px back up from the usual 6px-below placement puts the line 12px above the
+		// panel's bottom edge — the same fallback spot the chest panel settled on.
+		int y = fits ? belowPanelY : belowPanelY - 18;
+		int maxWidth = fits ? panelW : panelW - 24;
+		String text = ellipsize(font, line, maxWidth);
+		if (!fits) {
+			// Inside the panel the text needs its own backdrop to stay readable.
+			int halfW = font.width(text) / 2 + 3;
+			graphics.fill(centerX - halfW, y - 2, centerX + halfW, y + font.lineHeight, 0xC0000000);
+		}
+		drawCentered(graphics, font, text, centerX, y, fits ? colour : TEXT_LIGHT);
+	}
+
 	/** Slot pitch of the main screen's item grid. Everything item-shaped uses this. */
 	public static final int GRID_SLOT = 18;
+	/**
+	 * Gap between slots, part of the shared pitch. The gather grid used to pack its cells
+	 * edge to edge (18px pitch) while the chest panel spaced them (19px), so on one screen
+	 * only, the slot sprite borders collapsed into each other.
+	 */
+	public static final int GRID_GAP = 1;
+
+	// ── Item state palette — one traffic light for both grids ──────────────
+	// Each grid used to carry these as its own literals, and they had drifted: partial
+	// stock was orange on the chest panel but yellow on the gather grid, so the same item
+	// in the same state read as two different situations depending on the open screen.
+	/** Chest stock covers the whole remainder — GO. */
+	public static final int STOCK_READY = 0x4430E060;
+	/** Some stock, not enough. */
+	public static final int STOCK_PARTIAL = 0x44FFE040;
+	/** Nothing in any chest. */
+	public static final int STOCK_NONE = 0x44E03030;
+	/** Finished: retires dark instead of glowing like GO. */
+	public static final int STOCK_DONE = 0x99101010;
+	/** Claimer's-initial badge over a slot: gold when the claim is yours… */
+	public static final int CLAIM_MINE = 0xFFFFEE88;
+	/** …light magenta when a teammate holds it. */
+	public static final int CLAIM_OTHER = 0xFFFFAAFF;
 
 	/**
 	 * Recessed tray behind a grid of item slots: dark border, light gray face — items on

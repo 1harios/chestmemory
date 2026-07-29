@@ -26,10 +26,10 @@ import java.util.function.Consumer;
  * Compact inventory-style grid: fixed 18×18 slots (vanilla size), no stretched cells.
  */
 public class ItemGridWidget extends AbstractWidget {
-	/** Vanilla slot sprite size. */
+	/** Vanilla slot sprite size — kept literal so it visibly matches ChestGuiStyle.GRID_SLOT. */
 	public static final int SLOT = 18;
-	/** Gap between slots. */
-	public static final int GAP = 1;
+	/** Gap between slots, shared with the gather grid so the two lay out identically. */
+	public static final int GAP = ChestGuiStyle.GRID_GAP;
 	/** Pitch = slot + gap. */
 	public static final int PITCH = SLOT + GAP;
 
@@ -57,12 +57,13 @@ public class ItemGridWidget extends AbstractWidget {
 		this.items = items != null ? items : List.of();
 		this.scrollRow = 0;
 		this.hoveredIndex = -1;
+		// Only cleared, never pre-filled: resolveStack() fills the cache lazily for the
+		// slots that actually render. Eagerly resolving the whole list here rebuilt
+		// thousands of ItemStacks (registry + enchant parsing each) on every refresh —
+		// which, with the search debounce, meant per keystroke on a big memory.
 		this.iconCache.clear();
 		this.tooltipItemId = null;
 		this.tooltipLines = List.of();
-		for (ItemSummary s : this.items) {
-			this.iconCache.computeIfAbsent(s.itemId(), com.chestmemory.client.data.ItemStackKeys::toStack);
-		}
 	}
 
 	/**
@@ -169,17 +170,19 @@ public class ItemGridWidget extends AbstractWidget {
 			ItemStack icon = resolveStack(summary.itemId());
 			graphics.item(icon, slotX + 1, slotY + 1);
 
-			// Build mode: tint by gather state
-			// red = none in chests, orange = partial, green = enough in chests, blue-gray = done (inv OK)
+			// Build mode: tint by gather state, from the shared traffic-light palette.
+			// This grid used to keep its own literals (orange partial, blue done) while the
+			// gather grid used yellow/dark for the same states — the same item read as two
+			// different situations depending on which screen was open.
 			if (summary.isBuildNeed()) {
 				if (summary.neededForBuild() <= 0) {
-					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, 0x443088C0);
+					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, ChestGuiStyle.STOCK_DONE);
 				} else if (summary.totalCount() <= 0) {
-					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, 0x55FF4040);
+					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, ChestGuiStyle.STOCK_NONE);
 				} else if (summary.stillShort() > 0) {
-					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, 0x55FFAA20);
+					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, ChestGuiStyle.STOCK_PARTIAL);
 				} else {
-					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, 0x4430E060);
+					graphics.fill(slotX + 1, slotY + 1, slotX + 17, slotY + 17, ChestGuiStyle.STOCK_READY);
 				}
 			}
 
@@ -218,7 +221,7 @@ public class ItemGridWidget extends AbstractWidget {
 			if (mine || other) {
 				String badge = com.chestmemory.client.clan.ClanSessionManager.claimBadge(summary.itemId());
 				if (badge != null) {
-					int bc = mine ? 0xFFFFEE88 : 0xFFFFAAFF;
+					int bc = mine ? ChestGuiStyle.CLAIM_MINE : ChestGuiStyle.CLAIM_OTHER;
 					graphics.text(font, badge, slotX + 2, slotY + 1, 0xE0000000, false);
 					graphics.text(font, badge, slotX + 1, slotY, bc, false);
 				}

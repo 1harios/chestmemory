@@ -604,6 +604,13 @@ public class ChestMemorySettingsScreen extends Screen {
 				return true;
 			}
 		}
+		// Past the keybind capture (which WANTS the other buttons), only the left button
+		// may work the painted tab strip and scrollbar: this handler receives every
+		// button, so a right-click on «Цвета» switched tabs like a left click. Widgets
+		// judge the button themselves via isValidClickButton.
+		if (event.button() != 0) {
+			return super.mouseClicked(event, doubleClick);
+		}
 		int tab = tabIndexAt(event.x(), event.y());
 		if (tab >= 0) {
 			switchTab(Tab.values()[tab]);

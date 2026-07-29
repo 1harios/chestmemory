@@ -28,9 +28,11 @@ public class ToggleSwitchRow extends AbstractWidget {
 
 	private final BooleanSupplier state;
 	private final Runnable onToggle;
-	/** 0..1 animated knob position (approaches the state each frame). */
+	/** 0..1 animated knob position (eased toward the state over real time). */
 	private float knob;
 	private boolean knobInitialized;
+	/** When the knob last stepped, so the easing is frame-rate independent. */
+	private long knobNanos;
 
 	public ToggleSwitchRow(int x, int y, int width, int height, Component label, BooleanSupplier state, Runnable onToggle) {
 		super(x, y, width, height, label);
@@ -75,8 +77,16 @@ public class ToggleSwitchRow extends AbstractWidget {
 		if (!knobInitialized) {
 			knob = target;
 			knobInitialized = true;
+			this.knobNanos = System.nanoTime();
 		} else {
-			knob += (target - knob) * 0.35F;
+			// A fixed 0.35-per-frame step tied the slide to the frame rate: at 240fps the
+			// knob finished ~4× sooner than at 60, so the same switch snapped on one
+			// machine and glided on another. Scale the step to elapsed time instead,
+			// keeping the feel it was tuned to at 60fps.
+			long now = System.nanoTime();
+			float dt = Math.min(0.1F, (now - this.knobNanos) / 1_000_000_000F);
+			this.knobNanos = now;
+			knob += (target - knob) * (1F - (float) Math.pow(0.65F, dt * 60F));
 			if (Math.abs(target - knob) < 0.02F) {
 				knob = target;
 			}

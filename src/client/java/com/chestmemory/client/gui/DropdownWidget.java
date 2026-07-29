@@ -1,7 +1,6 @@
 package com.chestmemory.client.gui;
 
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarratedElementType;
@@ -161,16 +160,6 @@ public class DropdownWidget<T> extends AbstractWidget {
 		return value;
 	}
 
-	private String ellipsize(String text, int maxTextW, Font font) {
-		if (font.width(text) <= maxTextW) {
-			return text;
-		}
-		while (text.length() > 3 && font.width(text + "…") > maxTextW) {
-			text = text.substring(0, text.length() - 1);
-		}
-		return text + "…";
-	}
-
 	/** Closed bar only — open list is drawn in {@link #renderOverlay}. */
 	@Override
 	protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
@@ -194,7 +183,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 
 		var font = this.minecraft.font;
 		int maxTextW = this.width - 18;
-		String text = ellipsize(closedLabel(), maxTextW, font);
+		String text = ChestGuiStyle.ellipsize(font, closedLabel(), maxTextW);
 		graphics.text(font, text, x0 + 5, y0 + (this.height - 8) / 2, 0xFF3F3F3F, false);
 		String arrow = open ? "▲" : "▼";
 		graphics.text(font, arrow, x0 + this.width - 12, y0 + (this.height - 8) / 2, 0xFF3F3F3F, false);
@@ -251,7 +240,7 @@ public class DropdownWidget<T> extends AbstractWidget {
 			if (i > 0) {
 				graphics.fill(x0 + 2, ry, x1 - 2, ry + 1, 0x33000000);
 			}
-			String optText = ellipsize(labeler.apply(opt).getString(), maxTextW, font);
+			String optText = ChestGuiStyle.ellipsize(font, labeler.apply(opt).getString(), maxTextW);
 			graphics.text(font, optText, x0 + 5, ry + (rowH - 8) / 2, 0xFF202020, false);
 		}
 

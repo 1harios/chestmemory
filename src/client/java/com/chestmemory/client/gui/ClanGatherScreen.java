@@ -103,7 +103,6 @@ public class ClanGatherScreen extends Screen {
 
 	private final Screen parent;
 	private EditBox hubBox;
-	private EditBox tokenBox;
 	private EditBox codeBox;
 	private String status = "";
 	/** Two-step guard for "say in chat": the code is readable by everyone on the server. */
@@ -118,6 +117,17 @@ public class ClanGatherScreen extends Screen {
 	private boolean closeArmed;
 	/** Member armed for a kick (host clicked their row once), or null. */
 	private @org.jspecify.annotations.Nullable String kickArmUuid;
+	/**
+	 * Tick countdowns for the armed confirms above — 5 seconds, like the chest panel's
+	 * Clear. Armed used to mean armed forever: a host who clicked «Сказать код» once,
+	 * browsed other tabs and came back minutes later broadcast the session code to the
+	 * whole server with what looked like a first click.
+	 */
+	private static final int ARM_TIMEOUT_TICKS = 100;
+	private int sayCodeArmTicks;
+	private int releaseArmTicks;
+	private int closeArmTicks;
+	private int kickArmTicks;
 	/** Search over the gather grid; kept across rebuilds like the code draft. */
 	private String gatherQuery = "";
 	private @org.jspecify.annotations.Nullable EditBox gatherSearchBox;
@@ -134,21 +144,24 @@ public class ClanGatherScreen extends Screen {
 	private int tabsY = -1;
 	private int tabsLeft;
 	private int tabsWidth;
-	/** Gather-list geometry, filled while rendering so clicks can be mapped to a code. */
 	/** Live chest stock per item, briefly cached — the grid asks per cell per frame. */
 	private final java.util.Map<String, Integer> stockCache = new java.util.HashMap<>();
 	private long stockCacheAt;
 	/** Y where the material grid must stop, set by init() next to the controls below it. */
 	private int gridBottom = -1;
-	private int listRowsTop = -1;
 	/**
 	 * Y where the gather list has to stop, set by init() next to the controls it must clear.
 	 * Hard-coding the offset in the drawing code is what let the empty-list caption land on
 	 * top of the buttons.
 	 */
 	private int listBottom = -1;
-	private int listRowH = 22;
-	private java.util.List<String> listCodes = java.util.List.of();
+	/**
+	 * Y of the kick hint under the host-settings rows, recorded by initHostSettings().
+	 * It used to be re-derived in the drawing code as a chain of hard-coded offsets that
+	 * had to mirror the row layout by hand — adding one settings row put the hint on top
+	 * of a toggle.
+	 */
+	private int hostSettingsHintY;
 	private int panelLeft;
 	private int panelTop;
 	private int panelW;
@@ -180,6 +193,30 @@ public class ClanGatherScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
+		// Armed confirms disarm themselves, mirroring the chest panel's Clear countdown —
+		// see ARM_TIMEOUT_TICKS for the stale-arm broadcast this prevents.
+		boolean disarmed = false;
+		if (this.sayCodeArmed && --this.sayCodeArmTicks <= 0) {
+			this.sayCodeArmed = false;
+			disarmed = true;
+		}
+		if (this.releaseArmed && --this.releaseArmTicks <= 0) {
+			this.releaseArmed = false;
+			disarmed = true;
+		}
+		if (this.closeArmed && --this.closeArmTicks <= 0) {
+			this.closeArmed = false;
+			disarmed = true;
+		}
+		if (this.kickArmUuid != null && --this.kickArmTicks <= 0) {
+			this.kickArmUuid = null;
+			disarmed = true;
+		}
+		if (disarmed) {
+			// The standing hint («нажмите ещё раз…») described the armed state; it must
+			// not outlive it and keep promising a second click that now arms again.
+			this.status = "";
+		}
 		String switching = ClanSessionManager.switchingTo();
 		boolean busy = ClanSessionManager.isBusy();
 		ClanSession s = ClanSessionManager.session();
@@ -204,7 +241,10 @@ public class ClanGatherScreen extends Screen {
 			|| hasCode != this.builtForHasCode
 			|| hub != this.builtForHub
 			|| soloActive != this.builtForSoloActive
-			|| mode != this.builtForMode) {
+			|| mode != this.builtForMode
+			// A dropped arm changes button labels («…точно?» back to the plain caption),
+			// and those are baked at build time.
+			|| disarmed) {
 			// A rebuild recreates the EditBox, and typing the first character triggers one —
 			// so without this the box loses focus after a single keystroke and the player has
 			// to click it again for every letter of the code.
@@ -245,6 +285,12 @@ public class ClanGatherScreen extends Screen {
 		this.builtForCode = built != null ? built.code : null;
 		this.builtForSoloActive = com.chestmemory.client.litematica.BuildGatherSession.isActive();
 		this.builtForMode = gatherMode();
+		// Every per-tab EditBox field is dropped up front. A rebuild that did not rebuild
+		// a box left the field aimed at the detached widget, still marked focused — so
+		// after a tab switch, tick()'s focus restore handed real focus back to that
+		// orphan, and keystrokes edited an invisible box (silently changing codeDraft).
+		this.codeBox = null;
+		this.renameBox = null;
 		this.gatherSearchBox = null;
 		this.searchOnGatherTab = false;
 		this.panelW = ChestGuiStyle.panelWidth(this.width);
@@ -259,9 +305,8 @@ public class ClanGatherScreen extends Screen {
 		int gap = 4;
 
 		// When the build ships the clan's hub, members only ever type a session code —
-		// no URL, no token. The manual fields appear only for a build without one.
+		// no URL, no token. The manual field appears only for a build without one.
 		this.hubBox = null;
-		this.tokenBox = null;
 		if (ClanDefaults.hasBakedHub()) {
 			// A corner lamp instead of a full-width strip: the strip spent a whole row on
 			// one word. The word lives in the tooltip now, the colour is read live every
@@ -300,8 +345,10 @@ public class ClanGatherScreen extends Screen {
 				left, y, w, rowH,
 				Component.translatable("screen.chestmemory.clan.save_hub"),
 				() -> {
+					// Only the URL: this callback outlived the token box (see above) and
+					// kept dereferencing it, so «Сохранить хаб» crashed every build
+					// without a baked hub.
 					ModSettings.get().setClanHubUrl(this.hubBox.getValue());
-					ModSettings.get().setClanToken(this.tokenBox.getValue());
 					this.status = Component.translatable("screen.chestmemory.clan.hub_saved").getString();
 				}
 			));
@@ -465,6 +512,7 @@ public class ClanGatherScreen extends Screen {
 						// session, so require a second click instead of firing on the first.
 						if (!this.sayCodeArmed) {
 							this.sayCodeArmed = true;
+							this.sayCodeArmTicks = ARM_TIMEOUT_TICKS;
 							this.status = Component.translatable("screen.chestmemory.clan.say_code_hint").getString();
 							this.rebuildWidgets();
 							return;
@@ -532,7 +580,6 @@ public class ClanGatherScreen extends Screen {
 				return;
 			}
 			this.hostSettings = false;
-			this.renameBox = null;
 			addGatherSearch(left, y, w);
 			// One row of controls: warehouse and code tools moved to Инфо, and the hover
 			// facts ride a vanilla tooltip — the grid gets everything above this line.
@@ -565,7 +612,6 @@ public class ClanGatherScreen extends Screen {
 		}
 
 		if (mode == GatherMode.SOLO) {
-			this.renameBox = null;
 			addGatherSearch(left, y, w);
 			// Start/next/stop stay: they ARE the gathering. The warehouse row moved to Инфо.
 			this.gridBottom = row1 - 26;
@@ -620,7 +666,6 @@ public class ClanGatherScreen extends Screen {
 
 		// EMPTY: nothing to collect from — the body explains the two ways to get a gather,
 		// the buttons take you there.
-		this.renameBox = null;
 		this.gridBottom = -1;
 		this.addRenderableWidget(new SettingRowButton(
 			left, row2, half, rowH,
@@ -684,6 +729,7 @@ public class ClanGatherScreen extends Screen {
 				// Someone's evening of mining hangs off these claims — ask twice.
 				if (!this.releaseArmed) {
 					this.releaseArmed = true;
+					this.releaseArmTicks = ARM_TIMEOUT_TICKS;
 					this.rebuildWidgets();
 					return;
 				}
@@ -705,6 +751,7 @@ public class ClanGatherScreen extends Screen {
 				}
 				if (!this.closeArmed) {
 					this.closeArmed = true;
+					this.closeArmTicks = ARM_TIMEOUT_TICKS;
 					this.status = Component.translatable("screen.chestmemory.clan.delete_hint").getString();
 					this.rebuildWidgets();
 					return;
@@ -731,6 +778,9 @@ public class ClanGatherScreen extends Screen {
 			() -> ModSettings.get().gatherAutoAdvance(),
 			() -> ModSettings.get().setGatherAutoAdvance(!ModSettings.get().gatherAutoAdvance())
 		));
+		// The kick hint is painted by drawHostSettings; recording the row cursor here is
+		// what keeps the two in lockstep when a settings row is added or reordered.
+		this.hostSettingsHintY = y + rowH + 8;
 
 		this.addRenderableWidget(new SettingRowButton(
 			left, row2, half, rowH,
@@ -1019,6 +1069,13 @@ public class ClanGatherScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		// The painted hit-tests below receive every mouse button, unlike real widgets
+		// (which filter through isValidClickButton) — so a right-click on a roster row
+		// armed a kick and a right-click on a cell claimed it. Anything but the left
+		// button goes straight to the widgets.
+		if (event.button() != 0) {
+			return super.mouseClicked(event, doubleClick);
+		}
 		// Tabs are painted, not widgets, so they are hit-tested here — before the default
 		// handling, which would otherwise swallow the click on the panel background.
 		if (this.tab == TAB_MEMBERS && this.minecraft != null
@@ -1041,6 +1098,7 @@ public class ClanGatherScreen extends Screen {
 						);
 					} else {
 						this.kickArmUuid = target.uuid;
+						this.kickArmTicks = ARM_TIMEOUT_TICKS;
 						this.status = Component.translatable(
 							"screen.chestmemory.clan.kick_confirm",
 							target.name == null || target.name.isBlank() ? "?" : target.name
@@ -1095,6 +1153,9 @@ public class ClanGatherScreen extends Screen {
 				this.kickArmUuid = null;
 				this.releaseArmed = false;
 				this.closeArmed = false;
+				// This reset used to skip sayCodeArmed, so the arm survived a trip through
+				// the other tabs and the return click posted the code to public chat.
+				this.sayCodeArmed = false;
 				this.rebuildWidgets();
 			}
 			return true;
@@ -1113,8 +1174,8 @@ public class ClanGatherScreen extends Screen {
 			return null;
 		}
 		// Delegated to the scroll state, which knows the offset. Doing the arithmetic here
-		// broke the moment the list could scroll: listCodes holds only the visible rows, so a
-		// scrolled list mapped every click to the wrong gather.
+		// broke the moment the list could scroll: a per-frame list of the visible rows only,
+		// indexed from zero, mapped every click on a scrolled list to the wrong gather.
 		int idx = this.gatherScroll.rowAt(mx, my, 20);
 		if (idx < 0) {
 			return null;
@@ -1142,9 +1203,6 @@ public class ClanGatherScreen extends Screen {
 	private void saveHubQuiet() {
 		if (this.hubBox != null) {
 			ModSettings.get().setClanHubUrl(this.hubBox.getValue());
-		}
-		if (this.tokenBox != null) {
-			ModSettings.get().setClanToken(this.tokenBox.getValue());
 		}
 	}
 
@@ -1260,13 +1318,17 @@ public class ClanGatherScreen extends Screen {
 		if (!line.isEmpty()) {
 			// Below the panel, like the chest screen's footer. Inside it the sentence fought
 			// the buttons for the same rows; out here it has the whole width and cannot
-			// collide with anything.
-			ChestGuiStyle.drawCentered(
+			// collide with anything. The shared helper pulls it back inside the panel on
+			// windows too short for a footer — at the minimum scaled height the panel ends
+			// at the screen edge, and this line is the only feedback most actions give.
+			ChestGuiStyle.drawStatusLine(
 				graphics,
 				this.font,
-				ChestGuiStyle.ellipsize(this.font, line, this.panelW),
+				line,
 				centerX,
 				this.panelTop + this.panelH + 6,
+				this.panelW,
+				this.height,
 				ChestGuiStyle.TEXT_MUTED
 			);
 		}
@@ -1278,8 +1340,12 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
-	/** Slot pitch, shared with the main screen's item grid so the two look alike. */
-	private static final int CELL = ChestGuiStyle.GRID_SLOT;
+	/**
+	 * Slot pitch, shared with the main screen's item grid so the two look alike. The gap
+	 * belongs in the pitch: this grid used to pack bare 18px cells edge to edge, so its
+	 * slot sprite borders collapsed into each other while the chest panel's stayed apart.
+	 */
+	private static final int CELL = ChestGuiStyle.GRID_SLOT + ChestGuiStyle.GRID_GAP;
 
 	/** One cell of the material grid — the id, the number to show, and how to paint it. */
 	private record MatCell(
@@ -1361,12 +1427,14 @@ public class ClanGatherScreen extends Screen {
 			boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
 			// Traffic-light stock states — green means GO: the chests can close this item
 			// right now. Yellow is partial, red is nothing anywhere, and a finished item
-			// dims out with a green check instead of glowing. Claims ride the rim.
+			// dims out with a green check instead of glowing. Claims ride the rim. The
+			// colours are the shared palette: this grid and the chest panel had drifted
+			// apart (yellow here, orange there) for the very same state.
 			int stock = done ? 0 : chestStock(e.getKey());
-			int tint = done ? 0x99101010
-				: stock >= remaining ? 0x4430E060
-				: stock > 0 ? 0x44FFE040
-				: 0x44E03030;
+			int tint = done ? ChestGuiStyle.STOCK_DONE
+				: stock >= remaining ? ChestGuiStyle.STOCK_READY
+				: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
+				: ChestGuiStyle.STOCK_NONE;
 			int countColour = done ? 0xFFC8C8C8
 				: stock >= remaining ? 0xFF7FE08A
 				: stock > 0 ? 0xFFFFE066
@@ -1379,7 +1447,7 @@ public class ClanGatherScreen extends Screen {
 				// is on what without opening the roster.
 				badge = m.claimedName == null || m.claimedName.isBlank()
 					? "?" : m.claimedName.substring(0, 1).toUpperCase(java.util.Locale.ROOT);
-				badgeColour = mine ? 0xFFFFEE88 : 0xFFFFAAFF;
+				badgeColour = mine ? ChestGuiStyle.CLAIM_MINE : ChestGuiStyle.CLAIM_OTHER;
 			}
 			cells.add(new MatCell(
 				e.getKey(), done ? 0 : remaining, tint, countColour, badge, badgeColour, border
@@ -1475,10 +1543,10 @@ public class ClanGatherScreen extends Screen {
 			// Traffic light, same as the clan grid: green GO, yellow partial, red none,
 			// done dims out with a check. The gold ring marks the current target.
 			int stock = r.totalCount();
-			int tint = done ? 0x99101010
-				: stock >= missing ? 0x4430E060
-				: stock > 0 ? 0x44FFE040
-				: 0x44E03030;
+			int tint = done ? ChestGuiStyle.STOCK_DONE
+				: stock >= missing ? ChestGuiStyle.STOCK_READY
+				: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
+				: ChestGuiStyle.STOCK_NONE;
 			int countColour = done ? 0xFFC8C8C8
 				: stock >= missing ? 0xFF7FE08A
 				: stock > 0 ? 0xFFFFE066
@@ -2052,8 +2120,9 @@ public class ClanGatherScreen extends Screen {
 			Component.translatable("screen.chestmemory.clan.settings_chip").getString(),
 			ChestGuiStyle.TEXT_GOLD, schema
 		);
-		// The rows are widgets; what needs text is the one action that is NOT here.
-		int hintY = this.tabsY + 20 + 18 + 18 + 6 + 18 + 4 + 18 + 6 + 18 + 4 + 18 + 8;
+		// The rows are widgets; what needs text is the one action that is NOT here. The y
+		// comes from initHostSettings' own row cursor — a hand-summed offset chain here
+		// drifted the moment a settings row was added, landing the hint on a toggle.
 		ChestGuiStyle.drawCentered(
 			graphics, this.font,
 			ChestGuiStyle.ellipsize(
@@ -2061,7 +2130,7 @@ public class ClanGatherScreen extends Screen {
 				Component.translatable("screen.chestmemory.clan.settings_kick_hint").getString(),
 				contentW
 			),
-			centerX, hintY, ChestGuiStyle.TEXT_MUTED
+			centerX, this.hostSettingsHintY, ChestGuiStyle.TEXT_MUTED
 		);
 	}
 
@@ -2105,8 +2174,9 @@ public class ClanGatherScreen extends Screen {
 	}
 
 	/**
-	 * The material grid: 18px slots on the shared tray, scaled counts, a tint for state —
-	 * built from the same pieces as the chest panel, so the two read as one mod.
+	 * The material grid: 18px slots at the chest panel's 19px pitch, on the shared tray,
+	 * scaled counts, a tint for state — the same pieces AND the same layout as the chest
+	 * panel, so the two read as one mod.
 	 * Records geometry for click mapping and returns the hovered cell index, or -1.
 	 */
 	private int drawMaterialGrid(
@@ -2119,7 +2189,12 @@ public class ClanGatherScreen extends Screen {
 		int bottom = this.gridBottom > 0 ? this.gridBottom : this.panelTop + this.panelH - 50;
 		// The tray has a 2px border, and the scrollbar lives inside it.
 		int inner = contentW - 4;
-		int perRow = Math.max(1, (inner - 4) / CELL);
+		// Columns must fit the width clicks can actually reach: the scroll region is
+		// inner - 2 wide and its rowAt refuses the 6px scrollbar strip at the right edge,
+		// so a column drawn past that line would render but never respond. n slots span
+		// n·CELL minus the trailing gap, hence the gap comes back before dividing.
+		int usable = inner - 2 - 6;
+		int perRow = Math.max(1, (usable + ChestGuiStyle.GRID_GAP) / CELL);
 
 		this.materialIds = new java.util.ArrayList<>(cells.size());
 		for (MatCell c : cells) {
@@ -2229,12 +2304,20 @@ public class ClanGatherScreen extends Screen {
 		if (this.tab != TAB_GATHER || this.materialGridPerRow <= 0) {
 			return -1;
 		}
-		int row = this.materialScroll.rowAt(mx, my, CELL);
+		// The pitch leaves one gap pixel per row that belongs to no slot; rowAt treats the
+		// body as inclusive, so the slot's last pixel is GRID_SLOT - 1.
+		int row = this.materialScroll.rowAt(mx, my, ChestGuiStyle.GRID_SLOT - 1);
 		if (row < 0) {
 			return -1;
 		}
-		int col = (int) ((mx - this.materialGridLeft) / CELL);
+		int localX = (int) (mx - this.materialGridLeft);
+		int col = localX / CELL;
 		if (col < 0 || col >= this.materialGridPerRow) {
+			return -1;
+		}
+		// Same for the column: a click on the 1px seam between two slots must hit neither,
+		// not silently claim the cell to its left.
+		if (localX % CELL >= ChestGuiStyle.GRID_SLOT) {
 			return -1;
 		}
 		int idx = row * this.materialGridPerRow + col;
@@ -2413,11 +2496,8 @@ public class ClanGatherScreen extends Screen {
 
 		List<com.chestmemory.client.clan.ClanRoster.Entry> entries =
 			com.chestmemory.client.clan.ClanRoster.all();
-		this.listRowsTop = y;
-		this.listRowH = rowH + 2;
 		this.gatherScroll.layout(left, y, contentW, bottom, rowH + 2, entries.size());
 		int rowW = this.gatherScroll.rowWidth();
-		this.listCodes = new java.util.ArrayList<>();
 
 		if (entries.isEmpty()) {
 			// Centred in the space the list would have used, so it reads as an empty area
@@ -2488,7 +2568,6 @@ public class ClanGatherScreen extends Screen {
 					e.delivered() / (float) e.need()
 				);
 			}
-			this.listCodes.add(e.code());
 		}
 		this.gatherScroll.drawScrollbar(graphics);
 	}
