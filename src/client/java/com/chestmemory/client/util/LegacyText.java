@@ -16,20 +16,19 @@ import java.util.Optional;
  * "Меч босса". Legacy codes survive inside strings and the font renderer still honours
  * them everywhere (tooltips, chat, lists), which makes them the right interchange format.
  * <p>
- * RGB colours are mapped to the nearest of the 16 legacy colours — close enough for
- * display, and the raw name still comes from the real item when it is looked at directly.
+ * True RGB survives as {@code §#RRGGBB}, an extension of the legacy syntax. It exists
+ * because servers colour names with per-character gradients, and snapping every character to
+ * one of sixteen colours flattened them — adjacent characters landed on the same code, so
+ * the gradient came out as a solid block. Two decoders read it back: {@link #toComponent}
+ * wherever a {@link Component} can be rendered, which is where the gradient actually shows,
+ * and {@link #downgrade} for the many call sites that still pass a plain string around,
+ * since the vanilla font renderer understands the sixteen codes and nothing else.
+ * <p>
+ * A colour that IS one of the sixteen exactly still encodes as the plain old code, so the
+ * storage keys of ordinary renamed items are unchanged by this.
  */
 public final class LegacyText {
 	private static final char PREFIX = '§';
-
-	/** The classic 16 colours, index = legacy code value (0–15). */
-	private static final int[] LEGACY_RGB = {
-		0x000000, 0x0000AA, 0x00AA00, 0x00AAAA, 0xAA0000, 0xAA00AA, 0xFFAA00, 0xAAAAAA,
-		0x555555, 0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
-	};
-	private static final char[] LEGACY_CODE = {
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
-	};
 
 	private LegacyText() {
 	}
@@ -70,10 +69,7 @@ public final class LegacyText {
 			return "";
 		}
 		StringBuilder b = new StringBuilder(6);
-		char colour = nearestColourCode(style.getColor());
-		if (colour != 0) {
-			b.append(PREFIX).append(colour);
-		}
+		b.append(colourCode(style.getColor()));
 		if (style.isObfuscated()) {
 			b.append(PREFIX).append('k');
 		}
@@ -92,28 +88,115 @@ public final class LegacyText {
 		return b.toString();
 	}
 
-	/** Nearest legacy colour code for an RGB text colour, or 0 when there is none. */
-	private static char nearestColourCode(@Nullable TextColor color) {
-		if (color == null) {
-			return 0;
-		}
-		int rgb = color.getValue() & 0xFFFFFF;
-		int best = 0;
-		long bestDist = Long.MAX_VALUE;
-		for (int i = 0; i < LEGACY_RGB.length; i++) {
-			long dist = colourDistance(rgb, LEGACY_RGB[i]);
-			if (dist < bestDist) {
-				bestDist = dist;
-				best = i;
-			}
-		}
-		return LEGACY_CODE[best];
+	/**
+	 * Colour part of a style: the plain legacy code when the colour is exactly one of the
+	 * sixteen, otherwise {@code §#RRGGBB}.
+	 * <p>
+	 * Preferring the old code for exact matches is what keeps storage keys stable — a
+	 * "§6Меч босса" scanned before this change and after it must still be the same item.
+	 */
+	private static String colourCode(@Nullable TextColor color) {
+		return color == null ? "" : LegacyColors.code(color.getValue());
 	}
 
-	private static long colourDistance(int a, int b) {
-		long dr = ((a >> 16) & 0xFF) - ((b >> 16) & 0xFF);
-		long dg = ((a >> 8) & 0xFF) - ((b >> 8) & 0xFF);
-		long db = (a & 0xFF) - (b & 0xFF);
-		return dr * dr + dg * dg + db * db;
+	/**
+	 * Parse a legacy string — including {@code §#RRGGBB} — back into a styled component.
+	 * <p>
+	 * This is the only decoder that can show a gradient: a string can carry the colours but
+	 * only a component can be handed to the renderer with real RGB. A colour code resets the
+	 * modifiers before it, matching legacy behaviour, so "§lbold §cred" leaves red unbolded
+	 * exactly as it would in chat.
+	 */
+	public static Component toComponent(@Nullable String legacy) {
+		if (legacy == null || legacy.isEmpty()) {
+			return Component.empty();
+		}
+		if (legacy.indexOf(PREFIX) < 0) {
+			return Component.literal(legacy);
+		}
+		net.minecraft.network.chat.MutableComponent out = Component.empty();
+		StringBuilder run = new StringBuilder();
+		Style style = Style.EMPTY;
+		int i = 0;
+		while (i < legacy.length()) {
+			char c = legacy.charAt(i);
+			if (c != PREFIX || i + 1 >= legacy.length()) {
+				run.append(c);
+				i++;
+				continue;
+			}
+			char code = legacy.charAt(i + 1);
+			Style next = null;
+			int skip = 2;
+			int marker = LegacyColors.markerAt(legacy, i);
+			if (marker >= 0) {
+				// A colour clears the modifiers, as a legacy colour code does.
+				next = Style.EMPTY.withColor(TextColor.fromRgb(marker));
+				skip = LegacyColors.MARKER_LEN;
+			} else if (code == '#') {
+				// A literal "§#" somebody typed into an anvil, or a truncated marker.
+				run.append(c);
+				i++;
+				continue;
+			} else {
+				next = styleFor(code, style);
+				if (next == null) {
+					// Unknown code: keep it as text rather than swallowing part of the name.
+					run.append(c);
+					i++;
+					continue;
+				}
+			}
+			if (run.length() > 0) {
+				out.append(Component.literal(run.toString()).withStyle(style));
+				run.setLength(0);
+			}
+			style = next;
+			i += skip;
+		}
+		if (run.length() > 0) {
+			out.append(Component.literal(run.toString()).withStyle(style));
+		}
+		return out;
+	}
+
+	/** Style after applying one legacy code to the current one, or null when unrecognised. */
+	private static @Nullable Style styleFor(char code, Style current) {
+		Style colour = colourStyle(code);
+		if (colour != null) {
+			return colour;
+		}
+		return switch (Character.toLowerCase(code)) {
+			case 'k' -> current.withObfuscated(true);
+			case 'l' -> current.withBold(true);
+			case 'm' -> current.withStrikethrough(true);
+			case 'n' -> current.withUnderlined(true);
+			case 'o' -> current.withItalic(true);
+			case 'r' -> Style.EMPTY;
+			default -> null;
+		};
+	}
+
+	/**
+	 * Rewrite {@code §#RRGGBB} as the nearest of the sixteen legacy codes.
+	 * <p>
+	 * For the call sites that pass names around as plain strings — chat lines, the CSV
+	 * export, status text, search. The font renderer would print the RGB marker literally,
+	 * so those places get the approximation they had before; only the places that can render
+	 * a component get the real gradient.
+	 */
+	public static String downgrade(@Nullable String legacy) {
+		return LegacyColors.downgrade(legacy);
+	}
+
+	/** The name with all styling removed, marker form included — for search and CSV. */
+	public static String strip(@Nullable String legacy) {
+		return LegacyColors.strip(legacy);
+	}
+
+	/** Style after applying one legacy colour code, or null when it is not a colour. */
+	private static @Nullable Style colourStyle(char code) {
+		int rgb = LegacyColors.rgbOfCode(code);
+		return rgb < 0 ? null : Style.EMPTY.withColor(TextColor.fromRgb(rgb));
 	}
 }

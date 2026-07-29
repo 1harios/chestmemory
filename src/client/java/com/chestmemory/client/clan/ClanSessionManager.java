@@ -570,7 +570,43 @@ public final class ClanSessionManager {
 		});
 	}
 
+	/**
+	 * How a player stops following a gather.
+	 * <p>
+	 * Three outcomes, not two, because the creator has two reasonable intentions and they
+	 * used to be the same button: for a host, "leave" closed the gather for the whole clan,
+	 * so there was no way to simply stop collecting for an evening.
+	 */
+	private enum Exit {
+		/** A member walks out: the hub drops them from the roster and the code leaves the list. */
+		LEAVE,
+		/**
+		 * The creator steps away. The gather keeps running for everyone, stays in this
+		 * player's list, and its host secret is kept — so coming back is one click and the
+		 * host tools still work.
+		 */
+		STEP_AWAY,
+		/** The creator ends it for everyone. */
+		CLOSE
+	}
+
+	/** Leave the gather — as its creator this closes it for everyone. */
 	public static void leaveAsync(Minecraft mc, @Nullable Runnable onDone) {
+		exitAsync(mc, isHost(mc) ? Exit.CLOSE : Exit.LEAVE, onDone);
+	}
+
+	/**
+	 * Stop following the gather without ending it, even as its creator.
+	 * <p>
+	 * The hub's {@code /leave} takes anyone, host included: it removes the member row and
+	 * leaves {@code hostUuid} in place, so the gather goes on and its creator is still its
+	 * creator when they return.
+	 */
+	public static void stepAwayAsync(Minecraft mc, @Nullable Runnable onDone) {
+		exitAsync(mc, Exit.STEP_AWAY, onDone);
+	}
+
+	private static void exitAsync(Minecraft mc, Exit how, @Nullable Runnable onDone) {
 		if (session == null) {
 			if (onDone != null) {
 				onDone.run();
@@ -578,7 +614,7 @@ public final class ClanSessionManager {
 			return;
 		}
 		String code = session.code;
-		boolean host = isHost(mc);
+		boolean host = how == Exit.CLOSE;
 		if (!busy.compareAndSet(false, true)) {
 			if (onDone != null) {
 				onDone.run();
@@ -610,9 +646,14 @@ public final class ClanSessionManager {
 			mc.execute(() -> {
 				busy.set(false);
 				// Leaving drops this gather from the list; the others stay so the player can
-				// switch back to them.
-				ClanRoster.forget(code);
-				ClanHostSecrets.forget(code);
+				// switch back to them. Stepping away is the exception — the gather is still
+				// running and the whole point is to be able to return to it, so it keeps its
+				// row and its host secret. Dropping the secret there would cost the creator
+				// their host tools for good on an offline launcher.
+				if (how != Exit.STEP_AWAY) {
+					ClanRoster.forget(code);
+					ClanHostSecrets.forget(code);
+				}
 				if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
 					ModSettings.get().setClanActiveCode("");
 				}
@@ -627,7 +668,11 @@ public final class ClanSessionManager {
 				com.chestmemory.client.data.StagingPickMode.stopQuiet();
 				ChestMemoryStorage.get().clearStaging();
 				chat(mc, Component.translatable(
-					host && !closeRefused ? "message.chestmemory.clan_closed" : "message.chestmemory.clan_left"
+					host && !closeRefused
+						? "message.chestmemory.clan_closed"
+						: (how == Exit.STEP_AWAY
+							? "message.chestmemory.clan_stepped_away"
+							: "message.chestmemory.clan_left")
 				));
 				if (host && closeRefused) {
 					// The hub kept the session alive: closing needs a Mojang-verified
@@ -1376,6 +1421,11 @@ public final class ClanSessionManager {
 		if (next.receivedAt == 0) {
 			next.receivedAt = System.currentTimeMillis();
 		}
+		// Every change of followed gather passes through here — create, join, switch, poll,
+		// resume after a relog. Pointing the feed at the new code from this one place is why
+		// switching no longer opens the house build showing the farm's claims: the fix cannot
+		// be forgotten by a caller, because callers do not do it.
+		ClanEventLog.forSession(next.code);
 		session = next;
 		return next;
 	}

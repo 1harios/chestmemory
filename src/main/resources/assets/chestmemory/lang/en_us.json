@@ -492,5 +492,8 @@
 	"message.chestmemory.clan_exclude_host_only": "§dClan§r · only the gather's creator removes items",
 	"message.chestmemory.clan_claim_excluded": "%s is off the gather — nothing to claim",
 	"screen.chestmemory.tooltip.in_stacks": "  · in stacks: %s",
-	"screen.chestmemory.tooltip.in_boxes": "  · in boxes: %s"
+	"screen.chestmemory.tooltip.in_boxes": "  · in boxes: %s",
+	"screen.chestmemory.clan.step_away": "Leave",
+	"screen.chestmemory.clan.step_away_hint": "The gather keeps running without you",
+	"message.chestmemory.clan_stepped_away": "§dLeft the gather — it keeps running"
 }

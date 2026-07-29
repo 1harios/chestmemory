@@ -16,8 +16,8 @@ import java.util.List;
  * keeps the last {@link #CAPACITY} events so the screen can show them.
  * <p>
  * Client-side and per-session: the hub sends state, not history, and the log is rebuilt
- * from the diffs the client already computes when polling. Cleared when the session ends
- * so a new gather never shows the previous one's activity.
+ * from the diffs the client already computes when polling. The feed describes exactly one
+ * gather and knows which one — see {@link #forSession}.
  */
 public final class ClanEventLog {
 	/**
@@ -29,7 +29,40 @@ public final class ClanEventLog {
 	/** Newest first, so rendering reads the head and stops at the visible row count. */
 	private static final Deque<Entry> entries = new ArrayDeque<>();
 
+	/**
+	 * Which gather these events belong to, upper case, or empty when the feed is idle.
+	 * <p>
+	 * The feed used to be cleared only by the paths that END a session — leaving, being
+	 * kicked, a gather that vanished. Switching between two gathers goes through join
+	 * instead, which cleared nothing, so the house build's feed opened showing the farm's
+	 * claims. Owning the code closes that at the source: every path that changes the
+	 * followed gather resets the feed, including paths not written yet.
+	 */
+	private static String sessionCode = "";
+
 	private ClanEventLog() {
+	}
+
+	/**
+	 * Point the feed at a gather, discarding another gather's events.
+	 * <p>
+	 * The same code twice is deliberately a no-op: this is called from the poll, and
+	 * clearing on every snapshot would wipe the feed three times a second. Coming back to a
+	 * gather later starts its feed empty rather than resurrecting stale rows — those events
+	 * were true minutes ago, and the hub keeps no history to rebuild them from.
+	 */
+	public static synchronized void forSession(String code) {
+		String key = code == null ? "" : code.trim().toUpperCase(java.util.Locale.ROOT);
+		if (key.equals(sessionCode)) {
+			return;
+		}
+		sessionCode = key;
+		entries.clear();
+	}
+
+	/** The gather this feed describes, or empty when idle. */
+	public static synchronized String sessionCode() {
+		return sessionCode;
 	}
 
 	/** What happened. The kind drives the colour and glyph, so the feed is scannable. */
@@ -77,7 +110,15 @@ public final class ClanEventLog {
 		return entries.isEmpty();
 	}
 
+	/**
+	 * Drop everything and forget which gather this was — the session ended.
+	 * <p>
+	 * Releasing the code matters: leaving a gather and rejoining it has to start a clean
+	 * feed, and a retained code would make {@link #forSession} treat the rejoin as "same
+	 * gather, nothing to do".
+	 */
 	public static synchronized void clear() {
 		entries.clear();
+		sessionCode = "";
 	}
 }

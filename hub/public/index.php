@@ -218,17 +218,21 @@ function purge(array &$sessions, int $ttlMs, string $dataDir): void
     @touch($stamp);
     $now = now_ms();
     foreach ($sessions as $c => $s) {
-        $last = (int)($s['updatedAt'] ?? 0);
-        $ttl = $ttlMs;
+        // Heartbeats keep a gather alive, for every gather and not only solo ones.
+        // updatedAt moves on real changes and never on a poll, so a build with five people
+        // online but no deliveries for a week used to be collected out from under them,
+        // while a one-member gather opened daily lived forever. Same evidence of life,
+        // same treatment. Mirrors _purge_old in clan_hub.py.
         $members = is_array($s['members'] ?? null) ? $s['members'] : [];
+        $last = (int)($s['updatedAt'] ?? 0);
+        foreach ($members as $m) {
+            $last = max($last, (int)($m['lastSeen'] ?? 0));
+        }
+        $ttl = $ttlMs;
         if (count($members) <= 1) {
-            // Solo sessions die on the short TTL — but heartbeats only refresh
-            // lastSeen, not updatedAt, so count them or an idle-but-online host
-            // would lose their gather a day after the last actual change.
+            // A gather nobody else joined is usually a test or create-spam: short lease,
+            // but it has to be genuinely abandoned to lose it.
             $ttl = min($ttl, SOLO_SESSION_TTL_SEC * 1000);
-            foreach ($members as $m) {
-                $last = max($last, (int)($m['lastSeen'] ?? 0));
-            }
         }
         if ($last < $now - $ttl) {
             unset($sessions[$c]);

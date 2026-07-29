@@ -710,8 +710,23 @@ public class ClanGatherScreen extends Screen {
 			// facts ride a vanilla tooltip — the grid gets everything above this line.
 			this.gridBottom = row2 - 16;
 			if (host) {
+				// The creator gets an exit too. It steps away — the gather keeps running for
+				// the clan — because ending it for everyone is a different decision and lives
+				// in the host settings behind a confirmation. Having only «Назад» here meant
+				// the one person who set the gather up could not stop following it.
 				this.addRenderableWidget(new SettingRowButton(
-					left, row2, w, rowH,
+					left, row2, half, rowH,
+					Component.translatable("screen.chestmemory.clan.step_away"),
+					() -> {
+						if (this.minecraft == null) {
+							return;
+						}
+						this.status = Component.translatable("screen.chestmemory.clan.working").getString();
+						ClanSessionManager.stepAwayAsync(this.minecraft, this::rebuildWidgets);
+					}
+				));
+				this.addRenderableWidget(new SettingRowButton(
+					left + half + gap, row2, half, rowH,
 					Component.translatable("screen.chestmemory.clan.back"),
 					this::goBack
 				));

@@ -492,5 +492,8 @@
 	"message.chestmemory.clan_exclude_host_only": "§dКлан§r · только создатель сбора убирает предметы",
 	"message.chestmemory.clan_claim_excluded": "%s убрано из сбора — бронировать нечего",
 	"screen.chestmemory.tooltip.in_stacks": "  · стаками: %s",
-	"screen.chestmemory.tooltip.in_boxes": "  · шалкерами: %s"
+	"screen.chestmemory.tooltip.in_boxes": "  · шалкерами: %s",
+	"screen.chestmemory.clan.step_away": "Выйти",
+	"screen.chestmemory.clan.step_away_hint": "Сбор продолжит работать без тебя",
+	"message.chestmemory.clan_stepped_away": "§dВышел из сбора — он продолжает работать"
 }

@@ -212,16 +212,22 @@ def _purge_old(force: bool = False) -> None:
     now = _now()
     dead: list[str] = []
     for c, s in _sessions.items():
-        last = int(s.get("updatedAt", 0) or 0)
-        ttl = SESSION_TTL_SEC
         members = s.get("members") or []
+        # Heartbeats keep a gather alive, and they do it for every gather — not only solo
+        # ones, as before. updatedAt moves on real changes, never on a poll, so a build
+        # where five people are online but nobody has delivered anything for a week was
+        # collected out from under them; meanwhile a one-member gather opened once a day
+        # lived forever, because heartbeats already counted there. That asymmetry was an
+        # oversight, not a rule: "somebody is still playing this" is the same evidence of
+        # life whether one person or ten are in the roster.
+        last = int(s.get("updatedAt", 0) or 0)
+        for m in members:
+            last = max(last, int(m.get("lastSeen", 0) or 0))
+        ttl = SESSION_TTL_SEC
         if len(members) <= 1:
-            # Solo sessions die on the short TTL — but heartbeats only refresh
-            # lastSeen, not updatedAt, so count them or an idle-but-online host
-            # would lose their gather a day after the last actual change.
+            # A gather nobody else ever joined is usually a test or create-spam, so it
+            # still gets the short lease — it just has to be genuinely abandoned to lose it.
             ttl = min(ttl, SOLO_SESSION_TTL_SEC)
-            for m in members:
-                last = max(last, int(m.get("lastSeen", 0) or 0))
         if last < now - ttl * 1000:
             dead.append(c)
     if not dead:
