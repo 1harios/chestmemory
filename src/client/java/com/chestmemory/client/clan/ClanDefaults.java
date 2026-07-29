@@ -80,6 +80,13 @@ public final class ClanDefaults {
 			}
 			if (!url.isEmpty()) {
 				ChestMemoryMod.LOGGER.info("Clan hub baked into build: {}", url);
+				if (!ClanHubClient.isAllowedHubUrl(url)) {
+					// The client refuses plaintext hubs at request time; say so at load
+					// so the builder finds out from the log, not from every member.
+					ChestMemoryMod.LOGGER.warn(
+						"Baked clan hub URL is not https:// and will be refused: {}", url
+					);
+				}
 			}
 		} catch (Exception e) {
 			// A malformed or absent file just means "no baked hub" — never fatal.

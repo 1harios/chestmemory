@@ -21,20 +21,48 @@ import org.jspecify.annotations.Nullable;
  * </ol>
  * The session token then travels in {@code X-Clan-Session} on every request.
  * <p>
- * All methods block on network I/O and must be called from the clan IO executor, never
- * from the client thread.
+ * All methods block on network I/O and must be called from a clan executor (either
+ * lane), never from the client thread. The handshake itself is serialized on a lock:
+ * with two executors, concurrent handshakes would race their nonces at Mojang —
+ * {@code joinServer} keeps only the latest one, so each verify could invalidate the
+ * other.
  */
 public final class ClanAuth {
+	/** Why the last handshake failed — lets callers tell "cannot verify" from "hub is down". */
+	public enum FailureReason {
+		/** No failure recorded (never ran, or the last attempt succeeded). */
+		NONE,
+		/** No Minecraft user at all — nothing to verify. */
+		NO_USER,
+		/** The hub never answered the challenge/verify request (network / down). */
+		HUB_UNREACHABLE,
+		/** The hub answered but refused the handshake. */
+		HUB_REJECTED,
+		/**
+		 * Mojang refused {@code joinServer} — offline/cracked launcher, expired access
+		 * token, or a Mojang outage. This is the "cannot ever verify right now" case.
+		 */
+		MOJANG_REJECTED
+	}
+
 	/** Session token for the configured hub, or null when not authenticated yet. */
 	private static volatile @Nullable String sessionToken;
 	/** Hub the token belongs to — switching hubs must invalidate it. */
 	private static volatile @Nullable String tokenHubUrl;
+	private static volatile FailureReason lastFailure = FailureReason.NONE;
+	/** Serializes handshakes; see the class comment. Never held on the client thread. */
+	private static final Object HANDSHAKE_LOCK = new Object();
 
 	private ClanAuth() {
 	}
 
 	public static @Nullable String sessionToken(String hubUrl) {
 		return hubUrl.equals(tokenHubUrl) ? sessionToken : null;
+	}
+
+	/** Why the last handshake failed. Meaningful after {@code authenticate} returned false. */
+	public static FailureReason lastFailureReason() {
+		return lastFailure;
 	}
 
 	public static void clear() {
@@ -48,22 +76,33 @@ public final class ClanAuth {
 	 * @return true when a session token is available afterwards
 	 */
 	public static boolean ensureAuthenticated(ClanHubClient client, Minecraft mc) {
-		String hubUrl = client.baseUrl();
-		if (sessionToken(hubUrl) != null) {
-			return true;
+		synchronized (HANDSHAKE_LOCK) {
+			if (sessionToken(client.baseUrl()) != null) {
+				return true;
+			}
+			return doAuthenticate(client, mc);
 		}
-		return authenticate(client, mc);
 	}
 
 	/** Force a fresh handshake (used when the hub reports the token expired). */
 	public static boolean authenticate(ClanHubClient client, Minecraft mc) {
+		synchronized (HANDSHAKE_LOCK) {
+			return doAuthenticate(client, mc);
+		}
+	}
+
+	private static boolean doAuthenticate(ClanHubClient client, Minecraft mc) {
 		User user = mc.getUser();
 		if (user == null) {
+			lastFailure = FailureReason.NO_USER;
 			return false;
 		}
 
 		ClanHubClient.Result<String> challenge = client.authChallenge();
 		if (!challenge.ok || challenge.value == null) {
+			lastFailure = challenge.status == 0
+				? FailureReason.HUB_UNREACHABLE
+				: FailureReason.HUB_REJECTED;
 			ChestMemoryMod.LOGGER.warn("Clan auth: no challenge from hub ({})", challenge.error);
 			return false;
 		}
@@ -74,8 +113,10 @@ public final class ClanAuth {
 			// The hub then verifies that claim independently via hasJoined.
 			mc.services().sessionService().joinServer(user.getProfileId(), user.getAccessToken(), nonce);
 		} catch (Exception e) {
-			// Offline/cracked launchers and Mojang outages land here. The hub can still be
-			// used with require_auth off, so this is a warning rather than an error.
+			// Offline/cracked launchers and Mojang outages land here. Plain member actions
+			// can still work on a hub with verification off, so this is a warning rather
+			// than an error — but host actions will be refused by the hub regardless.
+			lastFailure = FailureReason.MOJANG_REJECTED;
 			ChestMemoryMod.LOGGER.warn("Clan auth: joinServer failed ({})", e.toString());
 			return false;
 		}
@@ -85,12 +126,16 @@ public final class ClanAuth {
 		body.addProperty("nonce", nonce);
 		ClanHubClient.Result<String> verify = client.authVerify(body);
 		if (!verify.ok || verify.value == null) {
+			lastFailure = verify.status == 0
+				? FailureReason.HUB_UNREACHABLE
+				: FailureReason.HUB_REJECTED;
 			ChestMemoryMod.LOGGER.warn("Clan auth: hub rejected verification ({})", verify.error);
 			return false;
 		}
 
 		sessionToken = verify.value;
 		tokenHubUrl = client.baseUrl();
+		lastFailure = FailureReason.NONE;
 		ChestMemoryMod.LOGGER.info("Clan auth: verified as {}", user.getName());
 		return true;
 	}

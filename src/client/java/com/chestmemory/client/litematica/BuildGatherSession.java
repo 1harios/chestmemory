@@ -1,13 +1,11 @@
 package com.chestmemory.client.litematica;
 
 import com.chestmemory.client.data.ChestMemoryStorage;
-import com.chestmemory.client.data.ContainerFilter;
 import com.chestmemory.client.data.ContainerRecord;
 import com.chestmemory.client.data.DimensionChoice;
 import com.chestmemory.client.data.ItemSummary;
 import com.chestmemory.client.data.ListScope;
 import com.chestmemory.client.data.ModSettings;
-import com.chestmemory.client.data.SortMode;
 import com.chestmemory.client.highlight.ChestHighlighter;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -326,6 +324,49 @@ public final class BuildGatherSession {
 			total += r.countOf(itemId);
 		}
 		return total;
+	}
+
+	/** Chest-only stock for one item: how many, and across how many containers. */
+	private record ChestStock(int count, int containers) {
+	}
+
+	/**
+	 * Chest stock under an explicit panel filter, excluding virtual records exactly as
+	 * {@link #filteredSources} does — so a panel row and the gather that follows it can
+	 * never disagree about what is in chests.
+	 * <p>
+	 * Takes the filter as parameters rather than reading the session's own filter state,
+	 * because the panel passes the values it is drawing with and those need not be the
+	 * settings the gather was started under.
+	 */
+	private static ChestStock chestStockFor(
+		String itemId,
+		DimensionChoice dimFilter,
+		@Nullable String playerDim,
+		@Nullable Vec3 playerPos,
+		ListScope scope,
+		double rangeBlocks
+	) {
+		int total = 0;
+		int containers = 0;
+		for (ContainerRecord r
+			: ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId, dimFilter, playerDim)) {
+			if (r.isVirtual()) {
+				continue;
+			}
+			if (scope == ListScope.NEARBY && playerPos != null && playerDim != null) {
+				double d = ChestMemoryStorage.distanceTo(r, playerPos, playerDim);
+				if (d < 0 || d > rangeBlocks) {
+					continue;
+				}
+			}
+			int held = r.countOf(itemId);
+			if (held > 0) {
+				total += held;
+				containers++;
+			}
+		}
+		return new ChestStock(total, containers);
 	}
 
 	public static int countInChestsLive(String itemId, DimensionChoice dimFilter, @Nullable String playerDim) {
@@ -1076,20 +1117,6 @@ public final class BuildGatherSession {
 		String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
 		List<ItemSummary> out = new ArrayList<>();
 
-		// Pre-aggregate stock with filters (same as main Ё list)
-		Map<String, ItemSummary> stockById = new HashMap<>();
-		for (ItemSummary s : ChestMemoryStorage.get().listItems(
-			"",
-			ContainerFilter.ALL,
-			dimFilter,
-			stockScope,
-			dim,
-			pos,
-			rangeBlocks,
-			SortMode.COUNT
-		)) {
-			stockById.put(s.itemId(), s);
-		}
 
 		for (LitematicaCompat.MaterialNeed need : needs) {
 			if (!q.isEmpty()) {
@@ -1099,12 +1126,17 @@ public final class BuildGatherSession {
 				}
 			}
 
-			ItemSummary stock = stockById.get(need.itemId());
-			int inChests = stock != null ? stock.totalCount() : 0;
-			int containers = stock != null ? stock.containerCount() : 0;
-			double dist = stock != null && stock.hasDistance()
-				? stock.nearestDistance()
-				: nearestLiveDist(need.itemId(), pos, dim, dimFilter);
+			// Chest stock as the gather sees it. This used to come from a whole-profile
+			// listItems(ContainerFilter.ALL) aggregation, which counts the ender chest and
+			// carried shulkers — while every gather path excludes both (see filteredSources).
+			// An item whose only stock was the ender chest drew a green READY row reading
+			// "in chests: N" while rankPhase called it craft-only and announced that there was
+			// nothing in chests. Same for the distance: distanceTo answers 0 for the ender
+			// chest on purpose, so the row claimed the material was underfoot.
+			ChestStock chestStock = chestStockFor(need.itemId(), dimFilter, dim, pos, stockScope, rangeBlocks);
+			int inChests = chestStock.count();
+			int containers = chestStock.containers();
+			double dist = nearestLiveDist(need.itemId(), pos, dim, dimFilter);
 			int inPlayer = countInPlayer(client.player, need.itemId());
 			// Still need after inv + staging warehouse
 			int missing = remainingNeed(need.itemId(), client.player);

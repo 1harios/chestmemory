@@ -22,8 +22,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Client-side clan gather session: create / join by code / claim / deliver / poll.
  */
 public final class ClanSessionManager {
+	/**
+	 * Interactive lane: everything a click waits on (create, join, claim, leave, host
+	 * tools). Single-threaded on purpose — two actions from this player can never
+	 * reorder in flight.
+	 */
 	private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {
 		Thread t = new Thread(r, "chestmemory-clan-io");
+		t.setDaemon(true);
+		return t;
+	});
+
+	/**
+	 * Background lane: the periodic poll, warehouse pushes and the health probe.
+	 * <p>
+	 * When everything shared one thread, a click serialized behind whatever poll was
+	 * already in flight — a slow-but-alive hub (requests time out at 10–12s) made every
+	 * button feel dead for seconds. With two lanes a poll can never delay a click.
+	 * Ordering stays safe: interactive actions still serialize on {@link #IO} plus the
+	 * {@link #busy} gate, and a background response that lost the race is dropped by
+	 * the revision check in {@link #adoptSession} and the {@link #isFollowing} guard,
+	 * so a stale poll cannot overwrite fresher interactive state.
+	 */
+	private static final ExecutorService SYNC = Executors.newSingleThreadExecutor(r -> {
+		Thread t = new Thread(r, "chestmemory-clan-sync");
 		t.setDaemon(true);
 		return t;
 	});
@@ -61,6 +83,49 @@ public final class ClanSessionManager {
 	/** True while any hub request is in flight, so the UI can disable what must not be clicked. */
 	public static boolean isBusy() {
 		return busy.get();
+	}
+
+	/**
+	 * Epoch millis until which the hub asked us to stay quiet (429 + Retry-After).
+	 * <p>
+	 * The poll fires every ~3s; without honouring the header a rate-limited client just
+	 * kept hammering and looked broken. While this is in the future the background
+	 * traffic pauses and interactive clicks are refused with a "slow down" message
+	 * instead of a raw failure.
+	 */
+	private static volatile long rateLimitedUntilMillis;
+
+	/** Extend the backoff from a 429 response. Header capped so a bad hub cannot mute us for good. */
+	private static void noteRateLimit(ClanHubClient.Result<?> res) {
+		int sec = res.retryAfterSeconds > 0 ? Math.min(res.retryAfterSeconds, 120) : 5;
+		long until = System.currentTimeMillis() + sec * 1000L;
+		if (until > rateLimitedUntilMillis) {
+			rateLimitedUntilMillis = until;
+		}
+	}
+
+	/** Seconds left of a hub-imposed backoff, or 0 when requests may flow. */
+	public static int rateLimitRemainingSeconds() {
+		long left = rateLimitedUntilMillis - System.currentTimeMillis();
+		return left <= 0 ? 0 : (int) ((left + 999) / 1000);
+	}
+
+	/**
+	 * Refuse an interactive action while the hub's backoff runs, saying so once.
+	 * Only clicks get the message — the background poll backs off silently, or the
+	 * chat would repeat it every three seconds.
+	 */
+	private static boolean refuseWhileRateLimited(Minecraft mc, @Nullable Runnable onDone) {
+		int left = rateLimitRemainingSeconds();
+		if (left <= 0) {
+			return false;
+		}
+		lastError = "rate limited";
+		chat(mc, Component.translatable("message.chestmemory.clan_err_slow_down", left));
+		if (onDone != null) {
+			onDone.run();
+		}
+		return true;
 	}
 
 	/** Result of the last hub reachability check. */
@@ -126,12 +191,18 @@ public final class ClanSessionManager {
 			return;
 		}
 		lastHealthMillis = now;
-		IO.execute(() -> {
+		SYNC.execute(() -> {
 			var res = client().health();
 			mc.execute(() -> {
 				healthBusy.set(false);
-				hubState = res.ok ? HubState.ONLINE : HubState.OFFLINE;
-				hubError = res.ok ? null : res.error;
+				// A 429 is the hub speaking, not the hub missing: keep the lamp green
+				// and note the backoff instead of reporting an outage.
+				boolean limited = res.isRateLimited();
+				if (limited) {
+					noteRateLimit(res);
+				}
+				hubState = res.ok || limited ? HubState.ONLINE : HubState.OFFLINE;
+				hubError = res.ok || limited ? null : res.error;
 				if (onDone != null) {
 					onDone.run();
 				}
@@ -173,20 +244,81 @@ public final class ClanSessionManager {
 	}
 
 	/**
+	 * The hub refused because it does not know who we are — as opposed to knowing us
+	 * and denying the action ("only host"). Two spellings: 401 {@code auth required}
+	 * while the hub enforces verification for everything, and the unconditional
+	 * 403 {@code host actions require verified identity} for host tools.
+	 */
+	private static boolean isIdentityRefusal(ClanHubClient.Result<?> res) {
+		if (res.status == 401 && res.error != null && res.error.contains("auth")) {
+			return true;
+		}
+		return res.status == 403 && res.error != null && res.error.contains("verified identity");
+	}
+
+	/**
+	 * Run a session mutation with a proven identity, retrying once after a fresh
+	 * handshake if the hub turns us away.
+	 * <p>
+	 * A hub restart invalidates every session token, and the poll (a GET) never sees a
+	 * 401 to heal it — so the first click after a restart used to fail with a raw
+	 * "auth required" and only a later create/join fixed things. One forced re-auth and
+	 * a single retry makes that hiccup invisible; a client that cannot verify at all
+	 * (offline launcher) fails the handshake fast and the caller reports the refusal
+	 * for what it is. Runs blocking network I/O — executor lanes only.
+	 */
+	private static ClanHubClient.Result<ClanSession> authedRequest(
+		Minecraft mc,
+		ClanHubClient c,
+		java.util.function.Function<ClanHubClient, ClanHubClient.Result<ClanSession>> call
+	) {
+		ClanAuth.ensureAuthenticated(c, mc);
+		ClanHubClient.Result<ClanSession> res = call.apply(c);
+		if (isIdentityRefusal(res)) {
+			ClanAuth.clear();
+			if (ClanAuth.authenticate(c, mc)) {
+				res = call.apply(c);
+			}
+		}
+		return res;
+	}
+
+	/**
 	 * Stable last-resort identity. A fresh random UUID per call meant a client without a
 	 * player/user (title screen edge cases) changed identity between requests — its own
 	 * claims read as someone else's and the host check never matched.
 	 */
 	private static final String FALLBACK_UUID = UUID.randomUUID().toString();
 
+	/**
+	 * The uuid string, cached against the UUID it was built from.
+	 * <p>
+	 * {@code UUID.toString()} allocates every call, and the grid asks
+	 * {@code isClaimedByMe}/{@code isClaimedByOther} per visible slot per frame — in a
+	 * clan session that was ~200 fresh strings a frame for an identity that never
+	 * changes mid-session. Keyed on the UUID value itself, so logging into another
+	 * account (different UUID) recomputes and a dimension change (same UUID, new
+	 * player instance) keeps the hit.
+	 */
+	private record CachedUuid(UUID id, String text) {
+	}
+
+	private static volatile @Nullable CachedUuid cachedUuid;
+
 	public static String localUuid(Minecraft mc) {
-		if (mc.player != null && mc.player.getUUID() != null) {
-			return mc.player.getUUID().toString();
+		UUID id = mc.player != null ? mc.player.getUUID() : null;
+		if (id == null && mc.getUser() != null) {
+			id = mc.getUser().getProfileId();
 		}
-		if (mc.getUser() != null && mc.getUser().getProfileId() != null) {
-			return mc.getUser().getProfileId().toString();
+		if (id == null) {
+			return FALLBACK_UUID;
 		}
-		return FALLBACK_UUID;
+		CachedUuid c = cachedUuid;
+		if (c == null || !c.id.equals(id)) {
+			c = new CachedUuid(id, id.toString());
+			cachedUuid = c;
+		}
+		return c.text;
 	}
 
 	public static String localName(Minecraft mc) {
@@ -206,6 +338,9 @@ public final class ClanSessionManager {
 			if (onDone != null) {
 				onDone.run();
 			}
+			return;
+		}
+		if (refuseWhileRateLimited(mc, onDone)) {
 			return;
 		}
 		if (!LitematicaAccess.hasActiveMaterialList()) {
@@ -248,10 +383,8 @@ public final class ClanSessionManager {
 
 		IO.execute(() -> {
 			try {
-				ClanHubClient c = client();
-				// Prove who we are before acting; the hub may require it.
-				ClanAuth.ensureAuthenticated(c, mc);
-				var res = c.create(body);
+				// Prove who we are before acting; the hub requires it by default.
+				var res = authedRequest(mc, client(), c -> c.create(body));
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -269,7 +402,7 @@ public final class ClanSessionManager {
 						// Also paste-friendly line
 						chat(mc, Component.translatable("message.chestmemory.clan_code_line", session.code));
 					} else {
-						failRaw(res.error != null ? res.error : "create failed", mc);
+						failResult(mc, res, "create failed");
 					}
 					if (onDone != null) {
 						onDone.run();
@@ -303,6 +436,9 @@ public final class ClanSessionManager {
 			}
 			return;
 		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
 		if (!busy.compareAndSet(false, true)) {
 			// Another request is in flight. Returning without calling onDone left the screen
 			// stuck on "working…" for good, because nothing ever refreshed it again.
@@ -316,9 +452,7 @@ public final class ClanSessionManager {
 		body.addProperty("uuid", localUuid(mc));
 		IO.execute(() -> {
 			try {
-				ClanHubClient c = client();
-				ClanAuth.ensureAuthenticated(c, mc);
-				var res = c.join(code, body);
+				var res = authedRequest(mc, client(), c -> c.join(code, body));
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -354,7 +488,7 @@ public final class ClanSessionManager {
 							));
 						}
 					} else {
-						failRaw(res.error != null ? res.error : "join failed", mc);
+						failResult(mc, res, "join failed");
 					}
 					if (onDone != null) {
 						onDone.run();
@@ -451,15 +585,23 @@ public final class ClanSessionManager {
 		body.addProperty("uuid", localUuid(mc));
 		body.addProperty("name", localName(mc));
 		IO.execute(() -> {
+			boolean refused = false;
 			try {
+				ClanHubClient c = client();
 				if (host) {
-					client().close(code, body);
+					// Closing is a host action: the hub demands a verified identity for it
+					// unconditionally, so keep the answer — a refusal must not be reported
+					// as "closed" when the session is in fact still running for everyone.
+					var res = authedRequest(mc, c, cl -> cl.close(code, body));
+					refused = !res.ok && isIdentityRefusal(res);
 				} else {
-					client().leave(code, body);
+					ClanAuth.ensureAuthenticated(c, mc);
+					c.leave(code, body);
 				}
 			} catch (Exception e) {
 				ChestMemoryMod.LOGGER.debug("Clan leave: {}", e.toString());
 			}
+			boolean closeRefused = refused;
 			mc.execute(() -> {
 				busy.set(false);
 				// Leaving drops this gather from the list; the others stay so the player can
@@ -479,8 +621,13 @@ public final class ClanSessionManager {
 				com.chestmemory.client.data.StagingPickMode.stopQuiet();
 				ChestMemoryStorage.get().clearStaging();
 				chat(mc, Component.translatable(
-					host ? "message.chestmemory.clan_closed" : "message.chestmemory.clan_left"
+					host && !closeRefused ? "message.chestmemory.clan_closed" : "message.chestmemory.clan_left"
 				));
+				if (host && closeRefused) {
+					// The hub kept the session alive: closing needs a Mojang-verified
+					// sign-in this client could not produce. Locally we still left.
+					fail("need_verified", mc);
+				}
 				if (onDone != null) {
 					onDone.run();
 				}
@@ -541,6 +688,9 @@ public final class ClanSessionManager {
 			}
 			return;
 		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
 		if (!busy.compareAndSet(false, true)) {
 			if (onDone != null) {
 				onDone.run();
@@ -553,7 +703,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
-				var res = client().update(code, body);
+				var res = authedRequest(mc, client(), c -> c.update(code, body));
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -567,7 +717,7 @@ public final class ClanSessionManager {
 							"message.chestmemory.clan_renamed", res.value.schemaName
 						));
 					} else {
-						failRaw(res.error != null ? res.error : "rename failed", mc);
+						failResult(mc, res, "rename failed");
 					}
 					if (onDone != null) {
 						onDone.run();
@@ -593,6 +743,9 @@ public final class ClanSessionManager {
 			}
 			return;
 		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
 		if (!busy.compareAndSet(false, true)) {
 			if (onDone != null) {
 				onDone.run();
@@ -606,7 +759,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
-				var res = client().kick(code, body);
+				var res = authedRequest(mc, client(), c -> c.kick(code, body));
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -617,7 +770,7 @@ public final class ClanSessionManager {
 							targetName == null || targetName.isBlank() ? "?" : targetName
 						));
 					} else {
-						failRaw(res.error != null ? res.error : "kick failed", mc);
+						failResult(mc, res, "kick failed");
 					}
 					if (onDone != null) {
 						onDone.run();
@@ -643,6 +796,9 @@ public final class ClanSessionManager {
 			}
 			return;
 		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
 		if (!busy.compareAndSet(false, true)) {
 			if (onDone != null) {
 				onDone.run();
@@ -655,7 +811,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
-				var res = client().releaseClaims(code, body);
+				var res = authedRequest(mc, client(), c -> c.releaseClaims(code, body));
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -663,7 +819,7 @@ public final class ClanSessionManager {
 						lastError = null;
 						chat(mc, Component.translatable("message.chestmemory.clan_claims_released"));
 					} else {
-						failRaw(res.error != null ? res.error : "release failed", mc);
+						failResult(mc, res, "release failed");
 					}
 					if (onDone != null) {
 						onDone.run();
@@ -698,6 +854,9 @@ public final class ClanSessionManager {
 			}
 			return;
 		}
+		if (refuseWhileRateLimited(mc, onDone)) {
+			return;
+		}
 		ClanSession.ClanMaterial m = session.material(itemId);
 		boolean unclaim = m != null && localUuid(mc).equalsIgnoreCase(m.claimedBy);
 		if (!busy.compareAndSet(false, true)) {
@@ -714,7 +873,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
-				var res = client().claim(code, body);
+				var res = authedRequest(mc, client(), c -> c.claim(code, body));
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
@@ -735,7 +894,7 @@ public final class ClanSessionManager {
 						// Also announce other claim deltas from full snapshot (if any)
 						announceClaimDiffs(mc, prev, session, true);
 					} else {
-						failRaw(res.error != null ? res.error : "claim failed", mc);
+						failResult(mc, res, "claim failed");
 					}
 					if (onDone != null) {
 						onDone.run();
@@ -758,6 +917,11 @@ public final class ClanSessionManager {
 		if (session == null || itemId == null || amount <= 0) {
 			return;
 		}
+		if (rateLimitRemainingSeconds() > 0) {
+			// Totals are absolute and re-pushed every ~10s: skipping during a hub
+			// backoff loses nothing, the next push heals the count.
+			return;
+		}
 		JsonObject body = new JsonObject();
 		body.addProperty("itemId", itemId);
 		body.addProperty("amount", amount);
@@ -765,11 +929,19 @@ public final class ClanSessionManager {
 		body.addProperty("name", localName(mc));
 		String code = session.code;
 		int before = clanDelivered(itemId);
-		IO.execute(() -> {
+		SYNC.execute(() -> {
 			try {
-				var res = client().deliver(code, body);
+				var res = authedRequest(mc, client(), c -> c.deliver(code, body));
+				if (res.isRateLimited()) {
+					noteRateLimit(res);
+				}
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
+						if (!isFollowing(code)) {
+							// Switched or left while in flight — a snapshot of another
+							// gather must not be adopted.
+							return;
+						}
 						adoptSession(res.value);
 						lastError = null;
 						// Deliveries were the one thing the feed never mentioned: it logged
@@ -832,6 +1004,10 @@ public final class ClanSessionManager {
 		if (cur == null) {
 			return;
 		}
+		if (rateLimitRemainingSeconds() > 0) {
+			// Background sync respects the hub's 429 backoff; the next tick retries.
+			return;
+		}
 		// One request for the whole warehouse. The per-item loop used to fire an HTTP POST
 		// for every material with progress — a 30-material gather pushed 30 requests every
 		// ten seconds into the hub's rate-limit bucket.
@@ -855,11 +1031,17 @@ public final class ClanSessionManager {
 		body.addProperty("name", localName(mc));
 		body.add("amounts", amounts);
 		String code = cur.code;
-		IO.execute(() -> {
+		SYNC.execute(() -> {
 			try {
-				var res = client().deliverBatch(code, body);
+				var res = authedRequest(mc, client(), c -> c.deliverBatch(code, body));
+				if (res.isRateLimited()) {
+					noteRateLimit(res);
+				}
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
+						if (!isFollowing(code)) {
+							return;
+						}
 						ClanSession adopted = adoptSession(res.value);
 						lastError = null;
 						recordDeliveryDiffs(prev, adopted);
@@ -879,6 +1061,11 @@ public final class ClanSessionManager {
 		if (session == null || !client().isConfigured()) {
 			return;
 		}
+		if (rateLimitRemainingSeconds() > 0) {
+			// Silent skip, same as a failed push today: the marks stay local and the
+			// next explicit push or replace syncs them once the hub talks again.
+			return;
+		}
 		String code = session.code;
 		JsonObject body = new JsonObject();
 		body.addProperty("uuid", localUuid(mc));
@@ -889,13 +1076,21 @@ public final class ClanSessionManager {
 			arr.add(k);
 		}
 		body.add("stagingKeys", arr);
-		IO.execute(() -> {
+		SYNC.execute(() -> {
 			try {
-				var res = client().staging(code, body);
+				var res = authedRequest(mc, client(), c -> c.staging(code, body));
+				if (res.isRateLimited()) {
+					noteRateLimit(res);
+				}
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
-						session = res.value;
-						applyClanStagingKeys(res.value);
+						if (!isFollowing(code)) {
+							return;
+						}
+						// adoptSession, not a bare assignment: with the poll on its own
+						// lane a fresher snapshot may already be in — the revision check
+						// keeps whichever is newer.
+						applyClanStagingKeys(adoptSession(res.value));
 					});
 				}
 			} catch (Exception e) {
@@ -926,10 +1121,13 @@ public final class ClanSessionManager {
 	/**
 	 * Adopt a session snapshot from the hub, unless it is older than what we already have.
 	 * <p>
-	 * Poll, claim, deliver and staging responses all race on the single IO thread; a slow
-	 * claim response landing after a fresher poll used to rewind the whole session — claims
-	 * flickered back, delivered counts dropped for a few seconds. The hub increments
-	 * {@code revision} on every change, so "older" is a plain comparison.
+	 * Poll, claim, deliver and staging responses race — now across two executor lanes,
+	 * so a poll genuinely can be in flight while a claim lands. A slow response applied
+	 * after a fresher one used to rewind the whole session: claims flickered back,
+	 * delivered counts dropped for a few seconds. The hub increments {@code revision}
+	 * on every change, so "older" is a plain comparison; every application runs on the
+	 * client thread, which serializes the checks. Cross-code staleness (a response for
+	 * a gather we already left) is {@link #isFollowing}'s job — codes never compare here.
 	 *
 	 * @return the session now in effect
 	 */
@@ -941,6 +1139,20 @@ public final class ClanSessionManager {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * True while the gather with this code is still the one being followed.
+	 * <p>
+	 * Background responses (poll, deliver, staging) apply against whatever session is
+	 * current when they land. With their lane separate from clicks, a response for a
+	 * gather the player has since left or switched away from could arrive late and
+	 * resurrect it — the revision guard cannot catch that, because different codes
+	 * never compare. Callers check this on the client thread before adopting.
+	 */
+	private static boolean isFollowing(String code) {
+		ClanSession cur = session;
+		return cur != null && code != null && code.equalsIgnoreCase(cur.code);
 	}
 
 	private static @Nullable ClanSession adoptSession(@Nullable ClanSession next) {
@@ -1012,9 +1224,10 @@ public final class ClanSessionManager {
 		if (mc.player == null) {
 			return;
 		}
-		// Keep the heartbeat identity fresh: it rides every hub request as headers, so
-		// offline-mode clients (who can never pass the Mojang handshake) still refresh
-		// their lastSeen by polling — without it their claims timed out mid-game.
+		// Keep the compatibility hint fresh. Identity is the verified Mojang session;
+		// these headers only matter on a hub whose operator explicitly turned
+		// verification off, where they let an offline-mode member's poll refresh
+		// lastSeen so their claims do not time out mid-game.
 		ClanHubClient.setIdentityHint(localUuid(mc), localName(mc));
 		if (session == null) {
 			// A world change on a multiworld server disconnects us; pick the gather back up
@@ -1040,6 +1253,11 @@ public final class ClanSessionManager {
 		if (busy.get()) {
 			return;
 		}
+		if (rateLimitRemainingSeconds() > 0) {
+			// The hub said 429: honour Retry-After instead of knocking every 3s.
+			// Silent on purpose — a backoff is not news for chat or the feed.
+			return;
+		}
 		String code = session.code;
 		long now = System.currentTimeMillis();
 		if (now - lastPollMillis < 2500L) {
@@ -1047,7 +1265,7 @@ public final class ClanSessionManager {
 		}
 		lastPollMillis = now;
 		int sinceRevision = session != null ? session.revision : 0;
-		IO.execute(() -> {
+		SYNC.execute(() -> {
 			try {
 				ClanHubClient c = client();
 				// since-poll: the hub answers a tiny stub when nothing changed, which is the
@@ -1058,6 +1276,11 @@ public final class ClanSessionManager {
 				}
 				if (res.ok && res.value != null) {
 					mc.execute(() -> {
+						if (!isFollowing(code)) {
+							// Left or switched while this poll was in flight; its snapshot
+							// must not resurrect a gather we are no longer in.
+							return;
+						}
 						ClanSession prev = session;
 						ClanSession adopted = adoptSession(res.value);
 						lastError = null;
@@ -1103,6 +1326,9 @@ public final class ClanSessionManager {
 					// anywhere in the error also fired on proxy/tunnel HTML error pages, so a
 					// transient gateway hiccup silently dropped everyone out of the session.
 					mc.execute(() -> {
+						if (!isFollowing(code)) {
+							return;
+						}
 						ClanRoster.forget(code);
 						if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
 							ModSettings.get().setClanActiveCode("");
@@ -1116,6 +1342,9 @@ public final class ClanSessionManager {
 						ChestMemoryStorage.get().clearStaging();
 						chat(mc, Component.translatable("message.chestmemory.clan_ended"));
 					});
+				} else if (res.isRateLimited()) {
+					// Quiet backoff: no chat, no feed entry — the next poll waits it out.
+					noteRateLimit(res);
 				}
 			} catch (Exception e) {
 				ChestMemoryMod.LOGGER.debug("Clan poll: {}", e.toString());
@@ -1317,6 +1546,38 @@ public final class ClanSessionManager {
 			msg != null ? msg : "?"));
 	}
 
+	/**
+	 * Report a failed hub response, translating the conditions the hub now signals
+	 * deliberately instead of echoing them as raw server strings:
+	 * <ul>
+	 *   <li>429 → note the backoff and say "slow down" with the wait;</li>
+	 *   <li>identity refusals (401 auth required / 403 host actions need a verified
+	 *       identity) → say that a Mojang-verified sign-in is required, which after
+	 *       {@link #authedRequest}'s retry means this client genuinely cannot produce
+	 *       one (offline launcher) — not that the hub is down;</li>
+	 *   <li>a refused plaintext hub URL → point at the https requirement.</li>
+	 * </ul>
+	 */
+	private static void failResult(Minecraft mc, ClanHubClient.Result<?> res, String fallback) {
+		if (res.isRateLimited()) {
+			noteRateLimit(res);
+			lastError = "rate limited";
+			chat(mc, Component.translatable(
+				"message.chestmemory.clan_err_slow_down", rateLimitRemainingSeconds()
+			));
+			return;
+		}
+		if (isIdentityRefusal(res)) {
+			fail("need_verified", mc);
+			return;
+		}
+		if (ClanHubClient.ERR_INSECURE_URL.equals(res.error)) {
+			fail("insecure_url", mc);
+			return;
+		}
+		failRaw(res.error != null ? res.error : fallback, mc);
+	}
+
 	private static void chat(Minecraft mc, Component c) {
 		LocalPlayer p = mc.player;
 		if (p != null) {
@@ -1366,6 +1627,10 @@ public final class ClanSessionManager {
 		if (code == null || code.isBlank() || session != null) {
 			return;
 		}
+		if (rateLimitRemainingSeconds() > 0) {
+			// A silent retry loop is exactly what a 429 asks to pause.
+			return;
+		}
 		if (!client().isConfigured() || !busy.compareAndSet(false, true)) {
 			return;
 		}
@@ -1385,9 +1650,10 @@ public final class ClanSessionManager {
 		body.addProperty("uuid", localUuid(mc));
 		IO.execute(() -> {
 			try {
-				ClanHubClient c = client();
-				ClanAuth.ensureAuthenticated(c, mc);
-				var res = c.join(code, body);
+				var res = authedRequest(mc, client(), c -> c.join(code, body));
+				if (res.isRateLimited()) {
+					noteRateLimit(res);
+				}
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {

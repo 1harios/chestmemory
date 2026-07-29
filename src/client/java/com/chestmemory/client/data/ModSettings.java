@@ -618,8 +618,35 @@ public final class ModSettings {
 	}
 
 	public void setClanHubUrl(String url) {
-		this.clanHubUrl = url == null ? "" : url.trim();
+		String u = url == null ? "" : url.trim();
+		if (u.equals(clanHubUrl())) {
+			// The screen re-saves the box on every close; a no-op must stay silent.
+			return;
+		}
+		if (!u.isEmpty() && !com.chestmemory.client.clan.ClanHubClient.isAllowedHubUrl(u)) {
+			// A plaintext hub URL would send the invite token, the Mojang-derived session
+			// token and every uuid in cleartext — refuse it here, where the player just
+			// typed it, instead of failing quietly on the first request.
+			ChestMemoryMod.LOGGER.warn("Rejected clan hub URL (https:// required, http:// only for localhost): {}", u);
+			notifyRejectedHubUrl();
+			return;
+		}
+		this.clanHubUrl = u;
 		save();
+	}
+
+	/** Chat is how the clan code reports errors; the settings screen has no line of its own. */
+	private static void notifyRejectedHubUrl() {
+		try {
+			net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+			if (mc != null && mc.player != null) {
+				mc.player.sendSystemMessage(
+					net.minecraft.network.chat.Component.translatable("message.chestmemory.clan_err_insecure_url")
+				);
+			}
+		} catch (Exception ignored) {
+			// Headless / very early startup: the log line above already tells the story.
+		}
 	}
 
 	public java.util.List<String> clanKnownCodes() {
