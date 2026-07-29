@@ -32,6 +32,8 @@ class GatherFixesTest {
 		"src/client/java/com/chestmemory/client/ChestMemoryClient.java";
 	private static final String GATHER_SESSION =
 		"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
+	private static final String MODSETTINGS =
+		"src/client/java/com/chestmemory/client/data/ModSettings.java";
 	private static final String HUB = "hub/clan_hub.py";
 	private static final String HUB_PHP = "hub/public/index.php";
 	private static final String RU = "src/main/resources/assets/chestmemory/lang/ru_ru.json";
@@ -473,7 +475,7 @@ class GatherFixesTest {
 			String php = read(HUB_PHP);
 			assertTrue(php.contains("$action === 'exclude'"), "the PHP mirror needs it too");
 			assertTrue(
-				php.contains("require_verified_host($sess, 'only the gather host can exclude items')"),
+				php.contains("require_verified_host($sess, 'only the gather host can exclude items'"),
 				"same authority check on the PHP side"
 			);
 			assertTrue(php.contains("|release_claims|exclude)"), "PHP route not extended");
@@ -506,6 +508,131 @@ class GatherFixesTest {
 			assertTrue(
 				body(read(MANAGER), "public static int clanNeed(").contains("m.excluded"),
 				"an excluded material must drop out of the local gather queue"
+			);
+		}
+	}
+
+	@Nested
+	@DisplayName("A host on an offline launcher keeps its host tools")
+	class HostSecret {
+		private static final String SECRETS =
+			"src/client/java/com/chestmemory/client/clan/ClanHostSecrets.java";
+
+		@Test
+		@DisplayName("The hub issues a secret at creation and never repeats it")
+		void issuedOnceOnly() throws Exception {
+			String hub = read(HUB);
+			assertTrue(
+				pyBody(hub, "def _create(").contains("secrets.token_urlsafe("),
+				"the creator needs proof that does not depend on Mojang"
+			);
+			assertTrue(
+				pyBody(hub, "def _create(").contains("include_secret=True"),
+				"the create response is the one place the secret may appear"
+			);
+			assertTrue(
+				pyBody(hub, "def _send_session(").contains("payload.pop(\"hostSecret\", None)"),
+				"every member polls this snapshot — leaving the secret in makes it worthless"
+			);
+			String php = read(HUB_PHP);
+			assertTrue(php.contains("unset($sess['hostSecret'])"), "PHP must strip it too");
+			assertTrue(php.contains("respond_session($sess, true)"), "PHP issues it on create");
+			assertTrue(php.contains("random_bytes("), "PHP secret must be cryptographic");
+		}
+
+		@Test
+		@DisplayName("The secret is compared in constant time, and absence never passes")
+		void comparedSafely() throws Exception {
+			String check = pyBody(read(HUB), "def _host_secret_ok(");
+			assertTrue(
+				check.contains("hmac.compare_digest("),
+				"plain equality returns on the first wrong byte and can be timed out"
+			);
+			assertTrue(
+				check.contains("if not want or not got:"),
+				"a session stored before secrets existed must not open to an empty secret"
+			);
+			assertTrue(
+				read(HUB_PHP).contains("hash_equals($want, $got)"),
+				"PHP needs the same constant-time comparison"
+			);
+		}
+
+		@Test
+		@DisplayName("The bare host uuid still proves nothing — the old hole stays shut")
+		void uuidStillRefused() throws Exception {
+			String host = pyBody(read(HUB), "def _host_session(");
+			assertTrue(
+				host.contains("self._identity()"),
+				"a verified identity is still one of only two accepted proofs"
+			);
+			assertFalse(
+				host.contains("_hint_identity()") || host.contains("body.get(\"uuid\")"),
+				"the header hint and body uuid are attacker-chosen and the host uuid is "
+					+ "public in every snapshot — honouring them was the hole 0b2b731 closed"
+			);
+		}
+
+		@Test
+		@DisplayName("The secret works even with REQUIRE_AUTH on, and only for host actions")
+		void bypassIsNarrow() throws Exception {
+			String hub = read(HUB);
+			assertTrue(
+				hub.contains("not self._host_secret_request(path, body)"),
+				"otherwise the secret is unusable unless identities are left unverified, "
+					+ "which is the worse of the two settings"
+			);
+			String probe = pyBody(hub, "def _host_secret_request(");
+			for (String action : new String[]{"update", "kick", "release_claims", "exclude", "close"}) {
+				assertTrue(
+					hub.contains("\"" + action + "\""),
+					"host action missing from the allowlist: " + action
+				);
+			}
+			assertFalse(
+				probe.contains("\"claim\"") || probe.contains("\"deliver\""),
+				"claim and deliver attribute work to a player; a secret says 'the creator'"
+			);
+			assertTrue(
+				probe.contains("parts[0]"),
+				"the code must come from the path, or one gather's secret opens another"
+			);
+			assertTrue(
+				read(HUB_PHP).contains("host_secret_request($path, read_body(), $sessions)"),
+				"PHP needs the same narrow bypass"
+			);
+		}
+
+		@Test
+		@DisplayName("The client keeps the secret, sends it, and drops it with the gather")
+		void clientWiring() throws Exception {
+			String manager = read(MANAGER);
+			assertTrue(
+				body(manager, "public static void createAsync(")
+					.contains("ClanHostSecrets.remember(res.value.code, res.value.hostSecret)"),
+				"the create response is the only chance to capture it"
+			);
+			// All five host actions must carry it.
+			assertEquals(
+				5, manager.split("addHostSecret\\(body, code\\);", -1).length - 1,
+				"every host action needs the secret, or it works for some tools and not others"
+			);
+			assertEquals(
+				4, manager.split("ClanHostSecrets\\.forget\\(code\\);", -1).length - 1,
+				"a gather that ended must not leave a secret behind"
+			);
+			assertTrue(
+				body(manager, "public static boolean isHost(").contains("ClanHostSecrets.has("),
+				"holding the secret is what the hub obeys, so the UI must not grey out"
+			);
+			String secrets = read(SECRETS);
+			assertTrue(
+				body(secrets, "public static void remember(").contains("secret.isBlank()"),
+				"a hub older than this feature sends nothing — that must not erase a good secret"
+			);
+			assertTrue(
+				read(MODSETTINGS).contains("clanHostSecrets"),
+				"secrets must survive a relog or the host loses control after a restart"
 			);
 		}
 	}

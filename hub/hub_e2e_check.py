@@ -183,6 +183,64 @@ try:
     st, empty = call("POST", f"/v1/sessions/{code}/exclude", "tok-host", {})
     check("a bodyless call is refused", st == 400, f"HTTP {st}")
 
+    print("\n== host secret: host tools without Mojang (offline launchers) ==")
+    st, made = call("POST", "/v1/sessions", "tok-host", {
+        "name": "Secret", "schemaName": "Secret",
+        "materials": {"minecraft:glass": 64, "minecraft:stone": 64},
+    })
+    scode = made.get("code", "")
+    secret = made.get("hostSecret")
+    check("create hands the creator a host secret", bool(secret), f"len={len(secret or '')}")
+
+    st, snap = call("GET", f"/v1/sessions/{scode}", "tok-member")
+    check(
+        "the secret is NOT in later snapshots",
+        "hostSecret" not in snap,
+        "every member polls this — leaking it here would make it worthless",
+    )
+    call("POST", f"/v1/sessions/{scode}/join", "tok-member")
+    st, snap2 = call("GET", f"/v1/sessions/{scode}", "tok-member")
+    check("still absent after a join", "hostSecret" not in snap2)
+
+    # The whole point: no verified identity at all, only the secret.
+    st, bysecret = call("POST", f"/v1/sessions/{scode}/exclude", None,
+                        {"itemId": "minecraft:stone", "excluded": True,
+                         "hostSecret": secret})
+    check(
+        "an unverified caller WITH the secret may exclude",
+        st == 200 and bysecret.get("materials", {}).get("minecraft:stone", {}).get("excluded") is True,
+        f"HTTP {st} {bysecret.get('error', '')}",
+    )
+    st, renamed = call("POST", f"/v1/sessions/{scode}/update", None,
+                       {"name": "Renamed by secret", "hostSecret": secret})
+    check("...and rename", st == 200 and renamed.get("name") == "Renamed by secret", f"HTTP {st}")
+    st, released = call("POST", f"/v1/sessions/{scode}/release_claims", None,
+                        {"hostSecret": secret})
+    check("...and reset claims", st == 200, f"HTTP {st}")
+
+    st, wrong = call("POST", f"/v1/sessions/{scode}/exclude", None,
+                     {"itemId": "minecraft:glass", "hostSecret": "not-the-secret"})
+    # 401 when REQUIRE_AUTH is on (a wrong secret authenticates nothing, so the blanket
+    # gate speaks first), 403 when it is off and the host check answers. Both are refusals.
+    check("a wrong secret is refused", st in (401, 403), f"HTTP {st} {wrong.get('error')}")
+    st, none = call("POST", f"/v1/sessions/{scode}/exclude", None,
+                    {"itemId": "minecraft:glass"})
+    check("no secret and no identity is refused", st in (401, 403), f"HTTP {st}")
+    st, uuidonly = call("POST", f"/v1/sessions/{scode}/exclude", None,
+                        {"itemId": "minecraft:glass", "uuid": HOST_ID["uuid"],
+                         "name": HOST_ID["name"]})
+    check(
+        "the public host uuid alone still proves nothing",
+        st in (401, 403),
+        f"HTTP {st} — this is the hole 0b2b731 closed; it must stay closed",
+    )
+    st, member_secret = call("POST", f"/v1/sessions/{scode}/exclude", "tok-member",
+                             {"itemId": "minecraft:glass"})
+    check("a member still cannot exclude", st == 403, f"HTTP {st}")
+
+    st, closed = call("POST", f"/v1/sessions/{scode}/close", None, {"hostSecret": secret})
+    check("...and close the gather", st == 200, f"HTTP {st} {closed.get('error', '')}")
+
     print("\n== old sessions without the new fields ==")
     with clan_hub._lock:  # noqa: SLF001
         legacy = clan_hub._sessions[code]  # noqa: SLF001

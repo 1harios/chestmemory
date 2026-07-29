@@ -97,6 +97,11 @@ public final class ModSettings {
 	 * See {@link com.chestmemory.client.clan.ClanRoster}.
 	 */
 	private java.util.List<String> clanKnownCodes = new java.util.ArrayList<>();
+	/**
+	 * Host secrets for gathers this player created, encoded "CODE|secret".
+	 * See {@link com.chestmemory.client.clan.ClanHostSecrets}.
+	 */
+	private java.util.List<String> clanHostSecrets = new java.util.ArrayList<>();
 	/** Code of the gather currently being followed, or empty. */
 	private String clanActiveCode = "";
 
@@ -655,6 +660,24 @@ public final class ModSettings {
 
 	public void setClanKnownCodes(java.util.List<String> codes) {
 		this.clanKnownCodes = codes == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(codes);
+		save();
+	}
+
+	/**
+	 * Host secrets for gathers this player created, encoded "CODE|secret".
+	 * <p>
+	 * The hub issues one per gather and accepts it in place of a Mojang-verified identity
+	 * for host-only actions — which is what lets an offline-mode launcher keep its host
+	 * tools. Persisted because losing the secret means losing control of your own gather.
+	 */
+	public java.util.List<String> clanHostSecrets() {
+		return clanHostSecrets == null
+			? java.util.List.of() : java.util.List.copyOf(clanHostSecrets);
+	}
+
+	public void setClanHostSecrets(java.util.List<String> entries) {
+		this.clanHostSecrets = entries == null
+			? new java.util.ArrayList<>() : new java.util.ArrayList<>(entries);
 		save();
 	}
 

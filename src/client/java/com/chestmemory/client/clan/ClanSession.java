@@ -16,6 +16,15 @@ public final class ClanSession {
 	public String schemaName = "";
 	public String hostName = "";
 	public String hostUuid = "";
+	/**
+	 * Proof of being this gather's creator, present only in the response that created it.
+	 * <p>
+	 * The hub strips it from every later snapshot — otherwise every polling member would
+	 * receive the host's proof, which would make it worthless. So this field is null on
+	 * anything but a create response: read it once and hand it to
+	 * {@link ClanHostSecrets}, never expect a poll to carry it.
+	 */
+	public @Nullable String hostSecret;
 	public long createdAt;
 	public long updatedAt;
 	public int revision;

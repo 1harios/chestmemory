@@ -388,6 +388,10 @@ public final class ClanSessionManager {
 				mc.execute(() -> {
 					busy.set(false);
 					if (res.ok && res.value != null) {
+						// Before adopting: this is the only response that carries the host
+						// secret, and the hub strips it from every snapshot after it. Miss it
+						// here and the host has no way to prove itself on an offline launcher.
+						ClanHostSecrets.remember(res.value.code, res.value.hostSecret);
 						adoptSession(res.value);
 						lastError = null;
 						lastPollMillis = System.currentTimeMillis();
@@ -589,9 +593,10 @@ public final class ClanSessionManager {
 			try {
 				ClanHubClient c = client();
 				if (host) {
-					// Closing is a host action: the hub demands a verified identity for it
-					// unconditionally, so keep the answer — a refusal must not be reported
-					// as "closed" when the session is in fact still running for everyone.
+					// Closing is a host action: the hub demands either a verified identity or
+					// the gather's host secret, so keep the answer — a refusal must not be
+					// reported as "closed" when the session is still running for everyone.
+					addHostSecret(body, code);
 					var res = authedRequest(mc, c, cl -> cl.close(code, body));
 					refused = !res.ok && isIdentityRefusal(res);
 				} else {
@@ -607,6 +612,7 @@ public final class ClanSessionManager {
 				// Leaving drops this gather from the list; the others stay so the player can
 				// switch back to them.
 				ClanRoster.forget(code);
+				ClanHostSecrets.forget(code);
 				if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
 					ModSettings.get().setClanActiveCode("");
 				}
@@ -696,11 +702,34 @@ public final class ClanSessionManager {
 		}
 	}
 
+	/**
+	 * True when this player runs the active gather.
+	 * <p>
+	 * Holding the gather's host secret counts as much as a matching uuid: the secret was
+	 * issued to whoever created it, and it is what the hub will accept. Checking only the
+	 * uuid would grey out the host controls for a player the hub would have obeyed.
+	 */
 	public static boolean isHost(Minecraft mc) {
-		if (session == null) {
+		ClanSession s = session;
+		if (s == null) {
 			return false;
 		}
-		return localUuid(mc).equalsIgnoreCase(session.hostUuid);
+		return localUuid(mc).equalsIgnoreCase(s.hostUuid) || ClanHostSecrets.has(s.code);
+	}
+
+	/**
+	 * Attach the host secret for this gather, when we hold one.
+	 * <p>
+	 * The hub takes it in place of a Mojang-verified identity for host-only actions, which
+	 * is the only way a host on an offline-mode launcher can rename, kick, reset claims,
+	 * exclude materials or close their own gather. Absent secret simply sends nothing —
+	 * a verified host does not need it, and the hub still refuses a bare uuid.
+	 */
+	private static void addHostSecret(JsonObject body, @Nullable String code) {
+		String secret = ClanHostSecrets.get(code);
+		if (secret != null && !secret.isBlank()) {
+			body.addProperty("hostSecret", secret);
+		}
 	}
 
 	/** Rename the gather on the hub (host only); members pick it up on the next poll. */
@@ -726,6 +755,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
+				addHostSecret(body, code);
 				var res = authedRequest(mc, client(), c -> c.update(code, body));
 				mc.execute(() -> {
 					busy.set(false);
@@ -782,6 +812,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
+				addHostSecret(body, code);
 				var res = authedRequest(mc, client(), c -> c.kick(code, body));
 				mc.execute(() -> {
 					busy.set(false);
@@ -834,6 +865,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
+				addHostSecret(body, code);
 				var res = authedRequest(mc, client(), c -> c.releaseClaims(code, body));
 				mc.execute(() -> {
 					busy.set(false);
@@ -914,6 +946,7 @@ public final class ClanSessionManager {
 		String code = session.code;
 		IO.execute(() -> {
 			try {
+				addHostSecret(body, code);
 				var res = authedRequest(mc, client(), c -> c.exclude(code, body));
 				mc.execute(() -> {
 					busy.set(false);
@@ -1487,6 +1520,7 @@ public final class ClanSessionManager {
 							if (adopted != null && !adopted.members.isEmpty()
 								&& !containsMember(adopted, localUuid(mc))) {
 								ClanRoster.forget(code);
+								ClanHostSecrets.forget(code);
 								if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
 									ModSettings.get().setClanActiveCode("");
 								}
@@ -1526,6 +1560,7 @@ public final class ClanSessionManager {
 							return;
 						}
 						ClanRoster.forget(code);
+						ClanHostSecrets.forget(code);
 						if (code.equalsIgnoreCase(ModSettings.get().clanActiveCode())) {
 							ModSettings.get().setClanActiveCode("");
 						}
@@ -1862,6 +1897,7 @@ public final class ClanSessionManager {
 						// Gather really ended while we were between worlds: stop retrying.
 						pausedCode = null;
 						ClanRoster.forget(code);
+						ClanHostSecrets.forget(code);
 					}
 					// Any other failure keeps pausedCode so the next attempt tries again.
 				});

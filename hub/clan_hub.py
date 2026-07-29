@@ -38,9 +38,11 @@ CLAN_TOKEN = os.environ.get("CLAN_TOKEN", "").strip()
 #: When true (the default), every mutating request must carry a verified
 #: X-Clan-Session. Defaulting to off shipped the impersonation hole to every operator
 #: who never read this file: anyone could deliver, claim and leave as anyone else.
-#: REQUIRE_AUTH=0 is the escape hatch for one mod-upgrade window (members still on the
-#: old mod keep working) — choosing it makes the hub shout at startup that identities
-#: are unverified, and host-only actions demand a verified session regardless.
+#: REQUIRE_AUTH=0 is the escape hatch for offline-mode launchers, which can never
+#: complete the Mojang handshake — choosing it makes the hub shout at startup that
+#: identities are unverified. Host-only actions still refuse an unverified uuid, but
+#: the creator can prove itself with the hostSecret issued when the gather was made,
+#: so a host on an offline launcher keeps its tools.
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() not in ("0", "false", "no")
 SESSION_TTL_SEC = int(os.environ.get("SESSION_TTL_SEC", str(7 * 24 * 3600)))
 #: A gather nobody ever joined is usually a test, an aborted attempt — or create-spam.
@@ -257,6 +259,24 @@ def _release_stale_claims(sess: dict[str, Any]) -> list[str]:
     return released
 
 
+def _host_secret_ok(sess: dict[str, Any], body: dict[str, Any] | None) -> bool:
+    """
+    True when the request carries this gather's hostSecret.
+
+    compare_digest, not ==: plain equality returns on the first wrong byte, which lets a
+    patient prober time their way through the secret one character at a time. Absent on
+    either side is a miss, never a pass — a session stored before secrets existed has no
+    hostSecret, and must not be openable by sending no secret at all.
+    """
+    if not body:
+        return False
+    want = str(sess.get("hostSecret") or "")
+    got = str(body.get("hostSecret") or "")
+    if not want or not got:
+        return False
+    return hmac.compare_digest(want.encode("utf-8"), got.encode("utf-8"))
+
+
 def _clear_claim(mat: dict[str, Any]) -> None:
     """
     Release one material's claim, every field of it.
@@ -377,10 +397,38 @@ class Handler(BaseHTTPRequestHandler):
             str(body.get("name") or body.get("hostName") or "?"),
         )
 
-    def _send_session(self, sess: dict[str, Any]) -> None:
+    #: Actions a hostSecret may authenticate on its own. Deliberately not claim/deliver/
+    #: join/leave: those record who did the work, and a secret says "the creator", not
+    #: "this player".
+    HOST_SECRET_ACTIONS = frozenset({"update", "kick", "release_claims", "exclude", "close"})
+
+    def _host_secret_request(self, path: str, body: dict[str, Any]) -> bool:
+        """True when this is a host action carrying the right secret for its own session.
+
+        Parses the path itself rather than trusting a code from the body: the secret must
+        match the very session being acted on, or holding one gather's secret would open
+        every other gather too.
+        """
+        if not path.startswith("/v1/sessions/"):
+            return False
+        parts = [p for p in path[len("/v1/sessions/") :].split("/") if p]
+        if len(parts) < 2 or parts[1] not in self.HOST_SECRET_ACTIONS:
+            return False
+        with _lock:
+            sess = _sessions.get(_normalize_code(parts[0]))
+            return sess is not None and _host_secret_ok(sess, body)
+
+    def _send_session(self, sess: dict[str, Any], include_secret: bool = False) -> None:
         """Session snapshot + the hub's clock, so clients can judge staleness without
-        trusting their own wall clock to agree with ours."""
+        trusting their own wall clock to agree with ours.
+
+        hostSecret is stripped unless this is the create response. Every member polls
+        this same snapshot, so leaving it in would hand the host's proof to the whole
+        clan — which is the one thing that makes the secret worth anything.
+        """
         payload = dict(sess)
+        if not include_secret:
+            payload.pop("hostSecret", None)
         payload["now"] = _now()
         self._send(200, payload)
 
@@ -542,7 +590,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # Mutating endpoints act on behalf of a player, so they need a verified one.
-        if REQUIRE_AUTH and self._identity() is None:
+        #
+        # One exception, and it is narrow: a host-only action carrying this gather's
+        # hostSecret. Without it the secret would be unusable whenever REQUIRE_AUTH is on,
+        # which would force an operator with offline-mode players to leave identities
+        # unverified — the worse of the two settings — just to keep host tools working.
+        # The bypass is limited to the five host actions, so claim and deliver stay
+        # identity-gated: those attribute work to a player, and only the secret's holder,
+        # the creator, is authenticated here.
+        if REQUIRE_AUTH and self._identity() is None and not self._host_secret_request(path, body):
             self._send(401, {"error": "auth required"})
             return
 
@@ -569,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "leave":
                 self._leave(code, body)
             elif action == "close":
-                self._close(code)
+                self._close(code, body)
             elif action == "update":
                 self._update(code, body)
             elif action == "kick":
@@ -672,12 +728,22 @@ class Handler(BaseHTTPRequestHandler):
                 ],
                 "materials": materials,
                 "stagingKeys": staging,
+                # Proof of being the creator that does not depend on Mojang.
+                #
+                # Host actions check a verified identity first, and that is the right
+                # check — but an offline-mode launcher can never produce one, which left
+                # such a host with no host tools at all. The uuid cannot stand in for it:
+                # it is public in every snapshot, so anyone who read the roster could
+                # replay it (the hole 0b2b731 closed). A secret can: it is generated here,
+                # handed to the creator once, and never appears in another snapshot.
+                "hostSecret": secrets.token_urlsafe(24),
             }
             _sessions[code] = sess
             # Written immediately, not coalesced: the host reads the code off their
             # screen and shares it — it must survive a crash in the same breath.
             _save_now()
-            self._send_session(sess)
+            # The one response that carries the secret. Every later snapshot strips it.
+            self._send_session(sess, include_secret=True)
 
     def _join(self, code: str, body: dict[str, Any]) -> None:
         if not _ok_code(code):
@@ -872,18 +938,29 @@ class Handler(BaseHTTPRequestHandler):
             _mark_dirty()
             self._send_session(sess)
 
-    def _host_session(self, code: str, deny: str = "only host") -> dict[str, Any] | None:
+    def _host_session(
+        self, code: str, deny: str = "only host", body: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
         """Session for a host-only action, or None after an error reply.
 
         Call under _lock. The same absent-uuid hole _close had applies to every
         host action, so the check lives in one place.
 
-        Only the verified identity counts here, even while REQUIRE_AUTH is off. The
-        compat fallbacks (X-Clan-Uuid header, body uuid) are attacker-chosen, and the
-        host's uuid is public in every session snapshot — honouring them meant anyone
-        could rename the gather, empty the roster or close the session by pasting
-        that uuid into a request.
+        Two things prove it, and neither is the uuid. A verified Mojang identity whose
+        uuid matches hostUuid, or the hostSecret handed to the creator when the gather
+        was made. The compat fallbacks (X-Clan-Uuid header, body uuid) are still refused:
+        they are attacker-chosen, and the host's uuid is public in every snapshot, so
+        honouring them meant anyone could rename the gather, empty the roster or close
+        the session by pasting that uuid into a request.
+
+        The secret exists because an offline-mode launcher cannot produce a Mojang
+        identity at all, which left such a host with no host tools whatsoever. It is not
+        a weaker check — it is unguessable and never leaves the creator, whereas the uuid
+        was sitting in the roster the whole time.
         """
+        sess = _sessions.get(code)
+        if sess is not None and _host_secret_ok(sess, body):
+            return sess
         who = self._identity()
         if who is None:
             self._send(403, {"error": "host actions require verified identity"})
@@ -905,7 +982,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         name = raw[:MAX_NAME_LEN]
         with _lock:
-            sess = self._host_session(code)
+            sess = self._host_session(code, body=body)
             if sess is None:
                 return
             sess["name"] = name
@@ -922,7 +999,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "target required"})
             return
         with _lock:
-            sess = self._host_session(code)
+            sess = self._host_session(code, body=body)
             if sess is None:
                 return
             if target == str(sess.get("hostUuid") or "").lower():
@@ -952,7 +1029,7 @@ class Handler(BaseHTTPRequestHandler):
     def _release_claims(self, code: str, body: dict[str, Any]) -> None:
         """Clear every claim (host only) — the reset button for a stalled evening."""
         with _lock:
-            sess = self._host_session(code)
+            sess = self._host_session(code, body=body)
             if sess is None:
                 return
             for m in (sess.get("materials") or {}).values():
@@ -997,7 +1074,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "too many items"})
             return
         with _lock:
-            sess = self._host_session(code, "only the gather host can exclude items")
+            sess = self._host_session(
+                code, "only the gather host can exclude items", body
+            )
             if sess is None:
                 return
             mats = sess.get("materials") or {}
@@ -1021,13 +1100,13 @@ class Handler(BaseHTTPRequestHandler):
                 _mark_dirty()
             self._send_session(sess)
 
-    def _close(self, code: str) -> None:
+    def _close(self, code: str, body: dict[str, Any]) -> None:
         with _lock:
             # An absent uuid used to skip the host check entirely and fall through to
             # the delete below, letting anyone drop any session by simply omitting it —
             # and later, a spoofed one could impersonate the host. _host_session now
             # owns both checks for every host action.
-            sess = self._host_session(code, deny="only host can close")
+            sess = self._host_session(code, deny="only host can close", body=body)
             if sess is None:
                 return
             _sessions.pop(code, None)
@@ -1053,10 +1132,11 @@ def main() -> None:
         print(
             "!!!! REQUIRE_AUTH is OFF — player identity is UNVERIFIED.\n"
             "!!!! Any request may claim any uuid: members can be impersonated (claims\n"
-            "!!!! released, deliveries forged in their name). Host-only actions still\n"
-            "!!!! demand a Mojang-verified session and will fail for offline-mode hosts.\n"
-            "!!!! This mode exists for one mod-upgrade window — unset REQUIRE_AUTH=0\n"
-            "!!!! as soon as every member runs the updated mod.",
+            "!!!! released, deliveries forged in their name). Host-only actions are NOT\n"
+            "!!!! affected: they still refuse an unverified uuid, and the creator proves\n"
+            "!!!! itself with the hostSecret issued when the gather was made.\n"
+            "!!!! Set CLAN_TOKEN and bake it into the jar if the hub is reachable from\n"
+            "!!!! the open internet — that is what keeps strangers out in this mode.",
             flush=True,
         )
     threading.Thread(target=_flush_loop, name="clanhub-save", daemon=True).start()

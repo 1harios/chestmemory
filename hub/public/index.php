@@ -49,8 +49,9 @@ if (!$requireAuth) {
         @touch($warnStamp);
         error_log(
             'chestmemory-hub: require_auth is OFF — player identity is UNVERIFIED and '
-            . 'members can be impersonated. Host-only actions still demand a verified '
-            . 'session. This mode is for one mod-upgrade window; set require_auth => true.'
+            . 'members can be impersonated. Host-only actions are unaffected: they still '
+            . 'refuse a bare uuid, and the creator proves itself with the gather'
+            . "'s hostSecret. Set a token if the hub faces the open internet."
         );
     }
 }
@@ -79,10 +80,34 @@ function respond(int $code, $obj): void
 
 /** Session snapshot + the hub's clock, so clients can judge staleness without
  *  trusting their own wall clock to agree with ours (same shape as clan_hub.py). */
-function respond_session(array $sess): void
+function respond_session(array $sess, bool $includeSecret = false): void
 {
+    // hostSecret is stripped unless this is the create response. Every member polls this
+    // same snapshot, so leaving it in would hand the host's proof to the whole clan —
+    // which is the one thing that makes the secret worth anything.
+    if (!$includeSecret) {
+        unset($sess['hostSecret']);
+    }
     $sess['now'] = now_ms();
     respond(200, $sess);
+}
+
+/**
+ * True when the request carries this gather's hostSecret.
+ *
+ * hash_equals, not ==: plain comparison returns on the first wrong byte, which lets a
+ * patient prober time their way through the secret. Absent on either side is a miss —
+ * a session stored before secrets existed must not be openable by sending none.
+ * Mirrors _host_secret_ok in clan_hub.py.
+ */
+function host_secret_ok(array $sess, array $body): bool
+{
+    $want = (string)($sess['hostSecret'] ?? '');
+    $got = (string)($body['hostSecret'] ?? '');
+    if ($want === '' || $got === '') {
+        return false;
+    }
+    return hash_equals($want, $got);
 }
 
 function client_addr(): string
@@ -364,19 +389,27 @@ const PURGE_INTERVAL_SEC = 60;
 
 function read_body(): array
 {
+    // Memoized: php://input cannot be relied on for a second read, and the host-secret
+    // check in the auth gate needs the body before any route handler asks for it.
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
     $declared = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($declared > MAX_BODY_BYTES) {
         respond(413, ['error' => 'body too large (max ' . MAX_BODY_BYTES . ' bytes)']);
     }
     $raw = file_get_contents('php://input', false, null, 0, MAX_BODY_BYTES + 1);
     if ($raw === false || $raw === '') {
-        return [];
+        $cached = [];
+        return $cached;
     }
     if (strlen($raw) > MAX_BODY_BYTES) {
         respond(413, ['error' => 'body too large (max ' . MAX_BODY_BYTES . ' bytes)']);
     }
     $j = json_decode($raw, true);
-    return is_array($j) ? $j : [];
+    $cached = is_array($j) ? $j : [];
+    return $cached;
 }
 
 /** Path after host: /v1/... or /index.php/v1/... */
@@ -462,8 +495,15 @@ function clan_actor(array $body): array
  *
  * @return array{uuid: string, name: string}
  */
-function require_verified_host(array $sess, string $deny = 'only host'): array
-{
+function require_verified_host(
+    array $sess, string $deny = 'only host', array $body = []
+): array {
+    // The hostSecret proves the creator without Mojang, which is the only way an
+    // offline-mode launcher can hold host tools. The uuid is still refused on its own:
+    // it is public in every snapshot, so honouring it let anyone replay it.
+    if (host_secret_ok($sess, $body)) {
+        return ['uuid' => (string)($sess['hostUuid'] ?? ''), 'name' => (string)($sess['hostName'] ?? '?')];
+    }
     $who = clan_identity();
     if ($who === null) {
         respond(403, ['error' => 'host actions require verified identity']);
@@ -575,8 +615,33 @@ if ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $m)) {
 }
 
 // Mutating endpoints act on behalf of a player, so they need a verified one.
+//
+// One narrow exception: a host-only action carrying its own gather's hostSecret. Without
+// it the secret would be unusable whenever require_auth is on, forcing an operator with
+// offline-mode players to leave identities unverified — the worse setting — just to keep
+// host tools. Limited to the five host actions, so claim and deliver stay identity-gated.
+// Mirrors _host_secret_request in clan_hub.py.
+function host_secret_request(string $path, array $body, array $sessions): bool
+{
+    if (!str_starts_with($path, '/v1/sessions/')) {
+        return false;
+    }
+    $parts = array_values(array_filter(explode('/', substr($path, strlen('/v1/sessions/'))), 'strlen'));
+    if (count($parts) < 2) {
+        return false;
+    }
+    if (!in_array($parts[1], ['update', 'kick', 'release_claims', 'exclude', 'close'], true)) {
+        return false;
+    }
+    // The code comes from the path, never the body: holding one gather's secret must not
+    // open any other gather.
+    $sess = $sessions[normalize_code($parts[0])] ?? null;
+    return is_array($sess) && host_secret_ok($sess, $body);
+}
+
 if ($requireAuth && $method === 'POST' && str_starts_with($path, '/v1/sessions')) {
-    if (clan_identity() === null) {
+    if (clan_identity() === null
+        && !host_secret_request($path, read_body(), $sessions)) {
         respond(401, ['error' => 'auth required']);
     }
 }
@@ -656,10 +721,13 @@ if ($method === 'POST' && $path === '/v1/sessions') {
         'members' => [['name' => $hostName, 'uuid' => $hostUuid, 'lastSeen' => $now]],
         'materials' => $materials,
         'stagingKeys' => $staging,
+        // Proof of being the creator that does not depend on Mojang — see
+        // require_verified_host. Handed over once, here, and never in another snapshot.
+        'hostSecret' => bin2hex(random_bytes(18)),
     ];
     $sessions[$code] = $sess;
     save_sessions($sessionsFile, $sessions);
-    respond_session($sess);
+    respond_session($sess, true);
 }
 
 if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close|update|kick|release_claims|exclude)/?$#', $path, $m)) {
@@ -844,7 +912,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if ($raw === '') {
             respond(400, ['error' => 'name required']);
         }
-        require_verified_host($sess);
+        require_verified_host($sess, 'only host', $body);
         $name = clamp_str($raw, MAX_NAME_LEN);
         $sess['name'] = $name;
         $sess['schemaName'] = $name;
@@ -860,7 +928,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if ($target === '') {
             respond(400, ['error' => 'target required']);
         }
-        require_verified_host($sess);
+        require_verified_host($sess, 'only host', $body);
         if ($target === strtolower((string)($sess['hostUuid'] ?? ''))) {
             respond(400, ['error' => 'host cannot kick self']);
         }
@@ -902,7 +970,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
 
     if ($action === 'release_claims') {
         // Clear every claim (host only) — the reset button for a stalled evening.
-        require_verified_host($sess);
+        require_verified_host($sess, 'only host', $body);
         if (is_array($sess['materials'] ?? null)) {
             foreach ($sess['materials'] as &$mat) {
                 if (!empty($mat['claimedBy'])) {
@@ -924,7 +992,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         // stay in the session — their delivered history is real and must not be rewritten —
         // they are just marked, and every client greys them out and stops counting them
         // toward progress. Mirrors _exclude in clan_hub.py.
-        require_verified_host($sess, 'only the gather host can exclude items');
+        require_verified_host($sess, 'only the gather host can exclude items', $body);
         $updates = [];
         if (isset($body['items']) && is_array($body['items'])) {
             foreach ($body['items'] as $k => $v) {
@@ -977,7 +1045,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         // delete below, letting anyone drop any session by simply omitting the field —
         // and later, a spoofed one could impersonate the host. Only a Mojang-verified
         // host closes now, same rule as clan_hub.py.
-        require_verified_host($sess, 'only host can close');
+        require_verified_host($sess, 'only host can close', $body);
         unset($sessions[$code]);
         save_sessions($sessionsFile, $sessions);
         respond(200, ['ok' => true, 'code' => $code]);
