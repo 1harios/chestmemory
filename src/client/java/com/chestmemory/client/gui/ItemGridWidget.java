@@ -205,16 +205,11 @@ public class ItemGridWidget extends AbstractWidget {
 				? ChestGuiStyle.formatCount(summary.neededForBuild())
 				: ChestGuiStyle.formatCount(summary.totalCount());
 			var font = this.minecraft.font;
-			int countColor;
-			if (!summary.isBuildNeed()) {
-				countColor = 0; // 0 = configured colour
-			} else if (summary.neededForBuild() <= 0) {
-				countColor = 0xFF88CCFF; // done
-			} else if (summary.stillShort() > 0) {
-				countColor = 0xFFFFEE66;
-			} else {
-				countColor = 0xFF80FFA0; // ready to take from chests
-			}
+			// Always the configured colour (near-white by default), in build mode too.
+			// The build state is already carried by the slot's own tint, so recolouring the
+			// number repeated it in a second channel — and a red count reads as an error
+			// rather than "not gathered yet".
+			int countColor = 0;
 			ChestGuiStyle.drawSlotCount(graphics, font, countText, slotX, slotY, countColor);
 
 			// First letter of claimer in top-left of slot
@@ -321,20 +316,14 @@ public class ItemGridWidget extends AbstractWidget {
 		ItemSummary s,
 		com.chestmemory.client.data.ChestMemoryStorage storage
 	) {
-		// Amount, with real stack size — 16 for pearls, 1 for tools, not always 64.
-		// Compact: "×372 (5 ст. + 52)"; the stack size itself is noise here.
-		int per = Math.max(1, resolveStack(s.itemId()).getMaxStackSize());
-		int stacks = s.fullStacks(per);
-		int rem = s.remainder(per);
-		if (stacks > 0 && rem > 0) {
-			lines.add(gray(Component.translatable(
-				"screen.chestmemory.tooltip.amount_stacks", s.totalCount(), stacks, rem)));
-		} else if (stacks > 0) {
-			lines.add(gray(Component.translatable(
-				"screen.chestmemory.tooltip.amount_stacks_even", s.totalCount(), stacks)));
-		} else {
-			lines.add(gray(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount())));
-		}
+		// The total on its own line, then the same number restated in stacks and boxes
+		// underneath — the shared form the gather screen uses, so one item cannot read two
+		// different ways depending on which screen is open. It used to be crammed into one
+		// line as "×372 (5 ст. + 52)", where that trailing figure carried no unit at all.
+		lines.add(gray(Component.translatable("screen.chestmemory.tooltip.amount", s.totalCount())));
+		BulkTooltip.append(
+			lines, s.totalCount(), Math.max(1, resolveStack(s.itemId()).getMaxStackSize())
+		);
 		// Containers and metres — WORLD chests only. The ender chest is reachable from
 		// any ender chest in any world: "320м до эндер-сундука" was nonsense, and the
 		// «Эндер-сундук: ×N» line below already says where that part lies.

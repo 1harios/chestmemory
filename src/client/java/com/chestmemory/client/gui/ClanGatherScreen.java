@@ -1754,10 +1754,13 @@ public class ClanGatherScreen extends Screen {
 					: stock >= remaining ? ChestGuiStyle.STOCK_READY
 					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
 					: ChestGuiStyle.STOCK_NONE;
-				int countColour = done ? 0xFFC8C8C8
-					: stock >= remaining ? 0xFF7FE08A
-					: stock > 0 ? 0xFFFFE066
-					: 0xFFFF9090;
+				// Zero, not a colour: drawSlotCount then uses the player's own count colour
+				// (near-white by default) — the same one the chest panel's numbers follow.
+				// The state is not lost, it is the slot tint above and the claim ring below,
+				// which is where state belongs. Colouring the number too made the grid read
+				// as three competing signals, and a red "640" looks like an error rather
+				// than "nothing in the chests for this yet".
+				int countColour = 0;
 				int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;
 				String badge = done ? "✓" : null;
 				int badgeColour = done ? 0xFF7FE08A : 0;
@@ -1899,10 +1902,8 @@ public class ClanGatherScreen extends Screen {
 					: stock >= missing ? ChestGuiStyle.STOCK_READY
 					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
 					: ChestGuiStyle.STOCK_NONE;
-				int countColour = done ? 0xFFC8C8C8
-					: stock >= missing ? 0xFF7FE08A
-					: stock > 0 ? 0xFFFFE066
-					: 0xFFFF9090;
+				// Zero: the player's configured count colour, as in the clan grid above.
+				int countColour = 0;
 				int border = isFocus ? 0xFFFFD56A : 0;
 				cells.add(new MatCell(
 					r.itemId(), done ? 0 : missing, tint, countColour,
@@ -2092,14 +2093,9 @@ public class ClanGatherScreen extends Screen {
 			lines.add(Component.translatable(
 				"screen.chestmemory.tooltip.gather_left", remaining
 			).withStyle(net.minecraft.ChatFormatting.GOLD));
-			// What is left, in boxes and stacks: how many shulkers to bring, which is the
-			// question a five-digit "осталось" cannot answer.
-			com.chestmemory.client.data.BulkAmount leftBulk = bulkOf(itemId, remaining);
-			if (leftBulk.hasStack()) {
-				lines.add(Component.translatable(
-					"screen.chestmemory.tooltip.gather_left_bulk", bulkText(leftBulk)
-				).withStyle(net.minecraft.ChatFormatting.GOLD));
-			}
+			// The same number restated in stacks and in boxes, directly under it: "how
+			// many shulkers do I bring" is what a bare five-digit remainder cannot answer.
+			BulkTooltip.append(lines, remaining, stackSizeOf(itemId));
 		} else {
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_done")
 				.withStyle(net.minecraft.ChatFormatting.GREEN));
@@ -2107,13 +2103,6 @@ public class ClanGatherScreen extends Screen {
 		lines.add(Component.literal(stockLine(itemId))
 			.withStyle(net.minecraft.ChatFormatting.GRAY));
 		addStockDetail(lines, itemId, chestStock(itemId));
-		// One box holds 27 stacks of THIS item — the conversion rate itself, so the numbers
-		// above can be checked rather than trusted.
-		lines.add(Component.translatable(
-			"screen.chestmemory.tooltip.box_holds",
-			com.chestmemory.client.data.BulkAmount.boxCapacity(icon(itemId).getMaxStackSize()),
-			Math.max(1, icon(itemId).getMaxStackSize())
-		).withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
 		lines.add(Component.empty());
 		boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 		boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
@@ -2203,27 +2192,11 @@ public class ClanGatherScreen extends Screen {
 	}
 
 	/**
-	 * Stock detail: full stacks, the shulker-box equivalent (27 stacks to a box — 1728
-	 * of a 64-stack item IS one shulker), and how much already sits inside shulkers.
+	 * What the chests hold, restated in stacks and boxes, plus how much of it already sits
+	 * inside shulkers or in the ender chest.
 	 */
 	private void addStockDetail(List<Component> lines, String itemId, int stock) {
-		com.chestmemory.client.data.BulkAmount bulk = bulkOf(itemId, stock);
-		if (bulk.hasStack()) {
-			lines.add((bulk.looseAfterStacks() > 0
-				? Component.translatable(
-					"screen.chestmemory.tooltip.gather_stacks",
-					bulk.totalStacks(), bulk.looseAfterStacks()
-				)
-				: Component.translatable(
-					"screen.chestmemory.tooltip.gather_stacks_even", bulk.totalStacks()
-				))
-				.withStyle(net.minecraft.ChatFormatting.GRAY));
-		}
-		if (bulk.hasBox()) {
-			lines.add(Component.translatable(
-				"screen.chestmemory.tooltip.gather_boxes", bulkText(bulk)
-			).withStyle(net.minecraft.ChatFormatting.GRAY));
-		}
+		BulkTooltip.append(lines, stock, stackSizeOf(itemId));
 		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(
 			ChestMemoryStorage.get().liveContainersSnapshot(), itemId
 		);
@@ -2244,39 +2217,13 @@ public class ClanGatherScreen extends Screen {
 		}
 	}
 
-	/** This item's stack size, read from the item itself — not every item stacks to 64. */
-	private com.chestmemory.client.data.BulkAmount bulkOf(String itemId, int count) {
-		return com.chestmemory.client.data.BulkAmount.of(
-			count, Math.max(1, icon(itemId).getMaxStackSize())
-		);
-	}
-
 	/**
-	 * «1 ШБ + 3 ст. + 5 шт» — the parts that are not zero, in descending size.
-	 * <p>
-	 * Replaces a single decimal figure ("1.5 шалк."), which was compact but not actionable:
-	 * half a box is not a thing anyone can carry, whereas one box plus thirteen stacks is
-	 * exactly what to bring. Zero parts are dropped rather than printed as "0 ст.", so the
-	 * common round cases stay short.
+	 * This item's real maximum stack size — 64 for stone, 16 for pearls, 1 for a tool.
+	 * Never assumed: a shulker computed against a hardcoded 64 is out by a factor of four
+	 * for pearls. The formatting itself lives in {@link BulkTooltip}, shared with the panel.
 	 */
-	private static String bulkText(com.chestmemory.client.data.BulkAmount bulk) {
-		List<String> parts = new java.util.ArrayList<>(3);
-		if (bulk.boxes() > 0) {
-			parts.add(Component.translatable(
-				"screen.chestmemory.tooltip.unit_box", bulk.boxes()
-			).getString());
-		}
-		if (bulk.stacks() > 0) {
-			parts.add(Component.translatable(
-				"screen.chestmemory.tooltip.unit_stack", bulk.stacks()
-			).getString());
-		}
-		if (bulk.items() > 0 || parts.isEmpty()) {
-			parts.add(Component.translatable(
-				"screen.chestmemory.tooltip.unit_item", bulk.items()
-			).getString());
-		}
-		return String.join(" + ", parts);
+	private int stackSizeOf(String itemId) {
+		return Math.max(1, icon(itemId).getMaxStackSize());
 	}
 
 	/** A found-by-search memory item: where it lies and that a click only glows chests. */

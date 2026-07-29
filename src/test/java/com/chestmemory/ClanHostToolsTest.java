@@ -545,7 +545,7 @@ class ClanHostToolsTest {
 			String src = read(CLAN_SCREEN);
 			assertTrue(src.contains("private void addStockDetail("), "stock detail missing");
 			assertTrue(
-				src.contains("tooltip.gather_stacks") && src.contains("tooltip.gather_shulkers"),
+				src.contains("BulkTooltip.append(") && src.contains("tooltip.gather_shulkers"),
 				"stacks and shulkers must be one hover away"
 			);
 			assertTrue(
@@ -557,7 +557,8 @@ class ClanHostToolsTest {
 			// the screen into BulkAmount so it could be unit-tested against those cases
 			// instead of only asserted as a literal here; this checks the screen still asks.
 			assertTrue(
-				src.contains("BulkAmount") && src.contains("tooltip.gather_boxes"),
+				read("src/client/java/com/chestmemory/client/gui/BulkTooltip.java")
+					.contains("tooltip.in_boxes"),
 				"big stock must be readable as shulker boxes"
 			);
 			assertTrue(

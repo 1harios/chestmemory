@@ -402,6 +402,30 @@ class Handler(BaseHTTPRequestHandler):
     #: "this player".
     HOST_SECRET_ACTIONS = frozenset({"update", "kick", "release_claims", "exclude", "close"})
 
+    def _is_member_of(self, code: str) -> bool:
+        """
+        True when whoever is asking is already on this session's roster.
+
+        Used only to pick a rate-limit bucket, never to authorize anything, so the header
+        hint counts here as much as a verified session: a poll is a poll whoever sends it,
+        and claiming to be a member of a gather you are on buys nothing but the loose
+        bucket. Authorization still goes through _identity and _host_session.
+        """
+        who = self._identity() or self._hint_identity()
+        if who is None:
+            return False
+        uuid = str(who.get("uuid") or "").lower()
+        if not uuid:
+            return False
+        with _lock:
+            sess = _sessions.get(code)
+            if not sess:
+                return False
+            return any(
+                str(m.get("uuid") or "").lower() == uuid
+                for m in (sess.get("members") or [])
+            )
+
     def _host_secret_request(self, path: str, body: dict[str, Any]) -> bool:
         """True when this is a host action carrying the right secret for its own session.
 
@@ -497,8 +521,19 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         if path.startswith("/v1/sessions/"):
-            # Guessing codes happens here, so this is the tight bucket.
-            if not self._rate_ok("lookup"):
+            # Guessing codes happens here — but so does the poll of every member sitting in
+            # a gather, and those are not the same act. The client polls every ~3s, so a
+            # single working player produces ~20 reads a minute against a bucket that allows
+            # ten, and a whole clan behind one address shares it: half a minute into a
+            # gather everyone was told to slow down, for the rest of the minute. The
+            # limiter's own notes always meant polling to sit in the loose bucket.
+            #
+            # So: a caller already on this session's roster is polling (loose), anyone else
+            # is looking up a code they do not hold (tight). A guesser is by definition not
+            # a member, and an unknown code has no roster at all, so the guessing surface
+            # keeps exactly the limit it had.
+            code_for_rate = _normalize_code(path[len("/v1/sessions/") :].split("/")[0])
+            if not self._rate_ok("action" if self._is_member_of(code_for_rate) else "lookup"):
                 return
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
             since = 0

@@ -25,13 +25,11 @@ from pathlib import Path
 
 PORT = 18799
 DATA = tempfile.mkdtemp(prefix="hubcheck-")
-os.environ.update(
-    DATA_DIR=DATA, PORT=str(PORT), REQUIRE_AUTH="1", CLAN_TOKEN="",
-    RATE_LIMIT="0", CLAN_RATE_LIMIT="0",
-)
+os.environ.update(DATA_DIR=DATA, PORT=str(PORT), REQUIRE_AUTH="1", CLAN_TOKEN="")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import clan_auth  # noqa: E402
+import clan_ratelimit  # noqa: E402
 import clan_hub  # noqa: E402
 
 HOST_ID = {"uuid": "11111111-1111-1111-1111-111111111111", "name": "HostPlayer"}
@@ -240,6 +238,38 @@ try:
 
     st, closed = call("POST", f"/v1/sessions/{scode}/close", None, {"hostSecret": secret})
     check("...and close the gather", st == 200, f"HTTP {st} {closed.get('error', '')}")
+
+    print("\n== polling is not code-guessing (the 'slow down' complaint) ==")
+    # The limiter is always live — it has no off switch — so clear the counters this run
+    # has already spent before measuring against the real limits.
+    clan_ratelimit.reset()
+
+    st, poll_sess = call("POST", "/v1/sessions", "tok-host", {
+        "name": "Poll", "schemaName": "Poll", "materials": {"minecraft:glass": 64},
+    })
+    pcode = poll_sess.get("code", "")
+    call("POST", f"/v1/sessions/{pcode}/join", "tok-member")
+
+    # A member's client polls every ~3s: 25 reads is well inside a normal minute in a
+    # gather, and more than twice the lookup bucket that used to be charged for it.
+    codes = [call("GET", f"/v1/sessions/{pcode}", "tok-member")[0] for _ in range(25)]
+    limited = [c for c in codes if c == 429]
+    check(
+        "25 polls in a row are not rate limited",
+        not limited,
+        f"{len(limited)} of {len(codes)} got 429 — this is the bug being fixed",
+    )
+
+    # A stranger walking codes is still throttled at ten.
+    guesses = [
+        call("GET", f"/v1/sessions/CM-Z{i:03d}", "tok-member")[0] for i in range(14)
+    ]
+    check(
+        "guessing unknown codes still hits the tight limit",
+        429 in guesses,
+        f"statuses: {sorted(set(guesses))} — the guessing surface must keep its limit",
+    )
+    clan_ratelimit.reset()
 
     print("\n== old sessions without the new fields ==")
     with clan_hub._lock:  # noqa: SLF001

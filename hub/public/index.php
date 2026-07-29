@@ -428,6 +428,35 @@ function api_path(): string
 }
 
 /**
+ * True when whoever is asking is already on this session's roster.
+ *
+ * Only ever used to pick a rate-limit bucket, never to authorize: the header hint counts
+ * here as much as a verified session, because a poll is a poll whoever sends it and
+ * claiming membership of a gather you are on buys nothing but the loose bucket.
+ */
+function clan_is_member_of(string $code, array $sessions): bool
+{
+    $who = clan_identity() ?? clan_hint_identity();
+    if ($who === null) {
+        return false;
+    }
+    $uuid = strtolower((string)($who['uuid'] ?? ''));
+    if ($uuid === '') {
+        return false;
+    }
+    $members = $sessions[$code]['members'] ?? null;
+    if (!is_array($members)) {
+        return false;
+    }
+    foreach ($members as $m) {
+        if (strtolower((string)($m['uuid'] ?? '')) === $uuid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Verified player behind this request, or null when unauthenticated.
  * Reads X-Clan-Session, handed out only after Mojang confirmed the account.
  * Never trusts a uuid from the request body.
@@ -526,8 +555,24 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
  */
 if ($path === '/v1/auth/challenge' || $path === '/v1/auth/verify') {
     rate_ok('auth');
-} elseif ($method === 'GET' && preg_match('#^/v1/sessions/[^/]+/?$#', $path) === 1) {
-    rate_ok('lookup');
+} elseif ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $rm) === 1) {
+    // Guessing codes happens here — but so does every member's poll, ~20 reads a minute
+    // against a bucket that allows ten, shared by a whole clan behind one address. A caller
+    // already on the roster is polling (loose bucket); anyone else is looking up a code they
+    // do not hold (tight). A guesser is by definition not a member, and an unknown code has
+    // no roster, so the guessing surface keeps exactly the limit it had.
+    // Mirrors _is_member_of in clan_hub.py.
+    //
+    // This costs a parse of sessions.json before the limiter, which the note above wanted
+    // to avoid. Python does not pay it — its store is resident in memory, so the same check
+    // is a dict lookup — but PHP is shared-nothing and has to read to know anything. The
+    // read is deliberately unlocked and only decides which counter to charge: a roster one
+    // request out of date can at worst bill one poll to the wrong bucket, and the
+    // authoritative read still happens under the lock below.
+    rate_ok(
+        clan_is_member_of(normalize_code($rm[1]), load_sessions($sessionsFile))
+            ? 'action' : 'lookup'
+    );
 } elseif ($method === 'POST' && str_starts_with($path, '/v1/sessions')) {
     rate_ok(preg_match('#/join/?$#', $path) === 1 ? 'lookup' : 'action');
 }

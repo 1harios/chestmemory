@@ -34,6 +34,10 @@ class GatherFixesTest {
 		"src/client/java/com/chestmemory/client/litematica/BuildGatherSession.java";
 	private static final String MODSETTINGS =
 		"src/client/java/com/chestmemory/client/data/ModSettings.java";
+	private static final String PANEL =
+		"src/client/java/com/chestmemory/client/gui/ItemGridWidget.java";
+	private static final String BULK_TOOLTIP =
+		"src/client/java/com/chestmemory/client/gui/BulkTooltip.java";
 	private static final String HUB = "hub/clan_hub.py";
 	private static final String HUB_PHP = "hub/public/index.php";
 	private static final String RU = "src/main/resources/assets/chestmemory/lang/ru_ru.json";
@@ -392,20 +396,71 @@ class GatherFixesTest {
 		}
 
 		@Test
-		@DisplayName("The tooltip says stacks, boxes and the conversion rate")
+		@DisplayName("Stacks and boxes are separate lines, under the amount they restate")
 		void tooltipShowsBulk() throws Exception {
 			String screen = read(CLAN_SCREEN);
 			String tip = body(screen, "private List<Component> clanCellTooltip(");
 			assertTrue(tip.contains("gather_percent"), "per-material progress");
-			assertTrue(tip.contains("gather_left_bulk"), "what is left, in boxes and stacks");
-			assertTrue(tip.contains("box_holds"), "the conversion rate, so the numbers check out");
 			assertTrue(
-				body(screen, "private static String bulkText(").contains("unit_box"),
+				tip.contains("BulkTooltip.append(lines, remaining,"),
+				"what is left must be restated in stacks and boxes right below it"
+			);
+			assertTrue(
+				body(screen, "private void addStockDetail(").contains("BulkTooltip.append("),
+				"chest stock gets the same treatment, or one screen reads two ways"
+			);
+			assertTrue(
+				read(PANEL).contains("BulkTooltip.append("),
+				"the item list shares the form — it used to print a unitless remainder"
+			);
+			String bulk = read(BULK_TOOLTIP);
+			assertTrue(
+				body(bulk, "public static String stacksText(").contains("unit_stack"),
 				"the breakdown is built from localized units"
+			);
+			assertFalse(
+				body(bulk, "public static String stacksText(").contains("unit_box"),
+				"the stacks line must never mention boxes — that mix is what confused people"
+			);
+			assertTrue(
+				body(bulk, "public static String boxesText(").contains("unit_box"),
+				"and the boxes line leads with boxes"
+			);
+			assertFalse(
+				screen.contains("box_holds") || read(PANEL).contains("box_holds"),
+				"the '1 box = 1728' footnote explained arithmetic nobody asked about"
 			);
 			assertFalse(
 				screen.contains("private static String formatBoxes("),
 				"the single decimal figure it replaced was not actionable"
+			);
+		}
+
+		@Test
+		@DisplayName("Counts are the player's own colour, not a second traffic light")
+		void countsUseTheSetting() throws Exception {
+			String screen = read(CLAN_SCREEN);
+			// The three colours the count itself used. Green 0xFF7FE08A stays: it is the ✓
+			// badge on a finished material and the members tab's completed-claim text, both
+			// of which are marks in their own right, not a number wearing a state.
+			assertFalse(
+				screen.contains("0xFFFFE066")
+					|| screen.contains("0xFFFF9090")
+					|| screen.contains("0xFFC8C8C8"),
+				"the number was recoloured yellow/red on top of the slot tint, so a red "
+					+ "count read as an error rather than 'no stock for this yet'"
+			);
+			assertTrue(
+				screen.contains("int countColour = 0;"),
+				"zero makes drawSlotCount fall back to the configured colour"
+			);
+			assertTrue(
+				read(PANEL).contains("int countColor = 0;"),
+				"the item list follows the same setting in build mode too"
+			);
+			assertTrue(
+				screen.contains("ChestGuiStyle.STOCK_READY"),
+				"state still has to be visible — it lives in the slot tint"
 			);
 		}
 	}
@@ -638,6 +693,48 @@ class GatherFixesTest {
 	}
 
 	@Nested
+	@DisplayName("Polling a gather is not code-guessing")
+	class RateBuckets {
+		@Test
+		@DisplayName("A member's poll goes to the loose bucket, a stranger's lookup does not")
+		void pollIsNotALookup() throws Exception {
+			String hub = read(HUB);
+			assertTrue(
+				hub.contains("\"action\" if self._is_member_of(code_for_rate) else \"lookup\""),
+				"the client polls ~20 times a minute against a bucket that allows ten, so a "
+					+ "working gather told everyone to slow down half a minute in"
+			);
+			String member = pyBody(hub, "def _is_member_of(");
+			assertTrue(
+				member.contains("self._identity() or self._hint_identity()"),
+				"a poll is a poll whoever sends it — this only picks a counter"
+			);
+			assertTrue(
+				member.contains("sess.get(\"members\")"),
+				"membership is the discriminator: a guesser is by definition not a member"
+			);
+			assertTrue(
+				read(HUB_PHP).contains("clan_is_member_of("),
+				"PHP must classify the same way or the two hubs disagree"
+			);
+		}
+
+		@Test
+		@DisplayName("The tight bucket still exists, and join still pays it")
+		void guessingStillThrottled() throws Exception {
+			String hub = read(HUB);
+			assertTrue(
+				hub.contains("\"lookup\" if path.endswith(\"/join\") else \"action\""),
+				"joining by code is the real entry attempt and stays tight"
+			);
+			assertTrue(
+				read("hub/clan_ratelimit.py").contains("LOOKUP_LIMIT = 10"),
+				"the guessing limit itself must not be quietly raised to paper over this"
+			);
+		}
+	}
+
+	@Nested
 	@DisplayName("Every new string exists in both languages")
 	class Strings {
 		@Test
@@ -651,8 +748,8 @@ class GatherFixesTest {
 				"screen.chestmemory.clan.mat_excluded_host_hint",
 				"screen.chestmemory.clan.mat_exclude_hint",
 				"screen.chestmemory.tooltip.gather_percent",
-				"screen.chestmemory.tooltip.gather_left_bulk",
-				"screen.chestmemory.tooltip.box_holds",
+				"screen.chestmemory.tooltip.in_stacks",
+				"screen.chestmemory.tooltip.in_boxes",
 				"screen.chestmemory.tooltip.unit_box",
 				"screen.chestmemory.tooltip.unit_stack",
 				"screen.chestmemory.tooltip.unit_item",
