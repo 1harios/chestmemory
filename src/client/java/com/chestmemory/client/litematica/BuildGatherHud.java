@@ -149,6 +149,13 @@ public final class BuildGatherHud {
 			// Aligned stat rows: label | value
 			rows.add(stat(font, "hud.chestmemory.lbl_need", formatCount(current.missing()),
 				current.missing() > 0 ? 0xFFFFE066 : 0xFF70E090));
+			// The same number in stacks, and in boxes once there is a whole one. Standing at a
+			// chest, "×1600" is not the question — "how much do I take" is, and that is counted
+			// in stacks. Tools and boats have no stack tier and simply get no line.
+			String bulk = bulkText(current.itemId(), current.missing());
+			if (!bulk.isEmpty()) {
+				rows.add(stat(font, "hud.chestmemory.lbl_bulk", bulk, 0xFFBFBFBF));
+			}
 			rows.add(stat(font, "hud.chestmemory.lbl_inv", formatCount(current.inPlayer()),
 				current.inPlayer() > 0 ? 0xFF70E090 : 0xFF888888));
 			rows.add(stat(font, "hud.chestmemory.lbl_staging", formatCount(current.inStaging()),
@@ -176,6 +183,17 @@ public final class BuildGatherHud {
 			));
 		}
 
+		// Overall progress of the whole list, not just the current material: the HUD could say
+		// "нужно ×1600" all evening with no sense of whether that was the last item or the
+		// first of forty.
+		int allNeed = BuildGatherSession.hudTotalNeed();
+		int allDone = BuildGatherSession.hudTotalDone();
+		if (allNeed > 0) {
+			rows.add(Row.bar(allDone / (float) allNeed, Component.translatable(
+				"hud.chestmemory.overall", (int) (100L * allDone / allNeed)
+			).getString()));
+		}
+
 		// Only N — no P in HUD
 		rows.add(new Row(
 			ellipsize(font, Component.translatable("hud.chestmemory.keys_short").getString(), textMax),
@@ -183,22 +201,66 @@ public final class BuildGatherHud {
 			false
 		));
 
+		// Compact mode: the current material and the overall bar, nothing else. For players who
+		// want to know what they are on without a panel sitting over the world.
+		if (ModSettings.get().gatherHudCompact()) {
+			List<Row> slim = new ArrayList<>(2);
+			if (current != null) {
+				slim.add(new Row(
+					ellipsize(font, current.displayName() + "  " + formatCount(current.missing()), textMax),
+					0xFFFFFFFF, false
+				));
+			}
+			for (Row r : rows) {
+				if (r.isBar()) {
+					slim.add(r);
+					break;
+				}
+			}
+			if (slim.isEmpty()) {
+				// Nothing to be compact about — say the one thing that is true.
+				slim.add(new Row(
+					ellipsize(font, Component.translatable("hud.chestmemory.no_target").getString(), textMax),
+					0xFFAAAAAA, false
+				));
+			}
+			rows = slim;
+		}
+
 		int boxH = PAD_Y * 2 + rows.size() * LINE_H + 2;
 
-		// Place in the configured corner. The HUD used to be nailed to the top-left,
-		// where it fought with the F3 overlay and with other mods' HUDs.
+		// Scale the whole box: a HUD that reads well on one monitor is tiny on a 4K screen and
+		// overbearing at 720p, and this is the setting people reach for first.
+		float scale = ModSettings.get().gatherHudScalePct() / 100F;
+		boolean scaled = Math.abs(scale - 1F) > 0.001F;
+
+		// Place in the configured corner. The HUD used to be nailed to the top-left, where it
+		// fought with the F3 overlay and with other mods' HUDs.
+		//
+		// The corner maths uses the box's size ON SCREEN, which is the scaled size — measuring
+		// the unscaled one left a half-box gap at the bottom and right edges as soon as the
+		// scale was not 100%. The result is then divided back into the scaled coordinate space
+		// the matrix draws in.
 		int screenW = graphics.guiWidth();
 		int screenH = graphics.guiHeight();
+		int drawW = Math.round(BOX_W * scale);
+		int drawH = Math.round(boxH * scale);
 		switch (ModSettings.get().gatherHudCorner()) {
-			case 1 -> x = screenW - BOX_W - BOX_X;
-			case 2 -> y = screenH - boxH - 8;
+			case 1 -> x = screenW - drawW - BOX_X;
+			case 2 -> y = screenH - drawH - 8;
 			case 3 -> {
-				x = screenW - BOX_W - BOX_X;
-				y = screenH - boxH - 8;
+				x = screenW - drawW - BOX_X;
+				y = screenH - drawH - 8;
 			}
 			default -> {
 				// top-left, as before
 			}
+		}
+		if (scaled) {
+			graphics.pose().pushMatrix();
+			graphics.pose().scale(scale, scale);
+			x = Math.round(x / scale);
+			y = Math.round(y / scale);
 		}
 
 		// Soft background, single thin border (accent from settings)
@@ -210,6 +272,18 @@ public final class BuildGatherHud {
 
 		int ly = y + PAD_Y;
 		for (Row row : rows) {
+			if (row.isBar()) {
+				// Bar first, its label sitting on top of it: two separate lines for "how far
+				// along" would cost a fifth of the box's height to say one thing.
+				int barW = BOX_W - PAD_X * 2;
+				com.chestmemory.client.gui.ChestGuiStyle.drawProgressBar(
+					graphics, x + PAD_X, ly + 1, barW, LINE_H - 3, row.fill
+				);
+				int tw = font.width(row.text);
+				graphics.text(font, row.text, x + PAD_X + (barW - tw) / 2, ly + 1, 0xFFFFFFFF, true);
+				ly += LINE_H;
+				continue;
+			}
 			if (row.split) {
 				graphics.text(font, row.label, x + PAD_X, ly, 0xFFA0A0A0, false);
 				int vx = x + PAD_X + LABEL_W;
@@ -218,6 +292,9 @@ public final class BuildGatherHud {
 				graphics.text(font, row.text, x + PAD_X, ly, row.color, false);
 			}
 			ly += LINE_H;
+		}
+		if (scaled) {
+			graphics.pose().popMatrix();
 		}
 	}
 
@@ -245,9 +322,47 @@ public final class BuildGatherHud {
 		return text + "…";
 	}
 
-	private record Row(String text, int color, boolean split, String label) {
+	/**
+	 * One HUD line: plain text, a label/value pair, or a progress bar.
+	 *
+	 * @param fill 0..1 for a bar row, negative for a text row
+	 */
+	private record Row(String text, int color, boolean split, String label, float fill) {
 		Row(String text, int color, boolean split) {
-			this(text, color, split, "");
+			this(text, color, split, "", -1F);
 		}
+
+		Row(String text, int color, boolean split, String label) {
+			this(text, color, split, label, -1F);
+		}
+
+		static Row bar(float fill, String text) {
+			return new Row(text, 0xFFD8D8D8, false, "", Math.max(0F, Math.min(1F, fill)));
+		}
+
+		boolean isBar() {
+			return fill >= 0F;
+		}
+	}
+
+	/** «25 ст.» / «1 ШБ + 3 ст.», or empty when the amount does not warrant either. */
+	private static String bulkText(String itemId, int amount) {
+		if (amount <= 0) {
+			return "";
+		}
+		int per = 64;
+		try {
+			per = Math.max(1, com.chestmemory.client.data.ItemStackKeys.toStack(itemId).getMaxStackSize());
+		} catch (Exception e) {
+			// An unknown or removed item: fall back to a plain stack size rather than no line.
+		}
+		var bulk = com.chestmemory.client.data.BulkAmount.of(amount, per);
+		if (bulk.hasBox()) {
+			return com.chestmemory.client.gui.BulkTooltip.boxesText(bulk);
+		}
+		if (bulk.hasStack()) {
+			return com.chestmemory.client.gui.BulkTooltip.stacksText(bulk);
+		}
+		return "";
 	}
 }

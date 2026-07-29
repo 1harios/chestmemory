@@ -427,7 +427,10 @@ class GatherFixesTest {
 		void tooltipShowsBulk() throws Exception {
 			String screen = read(CLAN_SCREEN);
 			String tip = body(screen, "private List<Component> clanCellTooltip(");
-			assertTrue(tip.contains("gather_percent"), "per-material progress");
+			// The percentage line is gone: "сдано 128 / 1728" already says it, and a second
+			// phrasing of the same fact pushed the numbers that differ further down.
+			assertFalse(tip.contains("gather_percent"), "one way of saying progress is enough");
+			assertTrue(tip.contains("gather_delivered"), "delivered over need stays");
 			assertTrue(
 				tip.contains("BulkTooltip.append(lines, remaining,"),
 				"what is left must be restated in stacks and boxes right below it"
@@ -776,7 +779,6 @@ class GatherFixesTest {
 				"screen.chestmemory.clan.mat_excluded_hint",
 				"screen.chestmemory.clan.mat_excluded_host_hint",
 				"screen.chestmemory.clan.mat_exclude_hint",
-				"screen.chestmemory.tooltip.gather_percent",
 				"screen.chestmemory.tooltip.in_stacks",
 				"screen.chestmemory.tooltip.in_boxes",
 				"screen.chestmemory.tooltip.unit_box",

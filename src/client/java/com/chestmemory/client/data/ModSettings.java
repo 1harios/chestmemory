@@ -48,6 +48,15 @@ public final class ModSettings {
 	private int nearestColor = ColorPalette.DEFAULT_NEAREST;
 	private int slotColor = ColorPalette.DEFAULT_SLOT;
 	private int routeFocusColor = ColorPalette.DEFAULT_ROUTE;
+	/**
+	 * HUD size, percent of normal (60–150).
+	 * <p>
+	 * The box was a fixed 160px at a fixed font size, which is small on a 4K screen and
+	 * enormous at 1280x720 — the first thing anyone wants to change about a HUD.
+	 */
+	private int gatherHudScalePct = 100;
+	/** One line instead of the box: the current material and the overall progress, nothing else. */
+	private boolean gatherHudCompact;
 	private int hudAccentColor = ColorPalette.DEFAULT_HUD_ACCENT;
 	private int hudTitleColor = ColorPalette.DEFAULT_HUD_TITLE;
 	/** Outline for build-site warehouse (staging) chests. */
@@ -436,6 +445,30 @@ public final class ModSettings {
 		setRouteFocusColor(ColorPalette.cycle(routeFocusColor()));
 	}
 
+	public int gatherHudScalePct() {
+		// Clamped on read as well as on write: the file is editable by hand, and a zero here
+		// would collapse the HUD to nothing with no way to see the setting that did it.
+		return Math.max(60, Math.min(150, gatherHudScalePct));
+	}
+
+	public void setGatherHudScalePct(int pct) {
+		this.gatherHudScalePct = Math.max(60, Math.min(150, pct));
+		save();
+	}
+
+	public boolean gatherHudCompact() {
+		return gatherHudCompact;
+	}
+
+	public void setGatherHudCompact(boolean on) {
+		this.gatherHudCompact = on;
+		save();
+	}
+
+	public void toggleGatherHudCompact() {
+		setGatherHudCompact(!gatherHudCompact);
+	}
+
 	public int hudAccentColor() {
 		return ColorPalette.normalizeRgb(hudAccentColor);
 	}
@@ -498,6 +531,8 @@ public final class ModSettings {
 		this.nearestColor = ColorPalette.DEFAULT_NEAREST;
 		this.slotColor = ColorPalette.DEFAULT_SLOT;
 		this.routeFocusColor = ColorPalette.DEFAULT_ROUTE;
+		this.gatherHudScalePct = 100;
+		this.gatherHudCompact = false;
 		this.hudAccentColor = ColorPalette.DEFAULT_HUD_ACCENT;
 		this.hudTitleColor = ColorPalette.DEFAULT_HUD_TITLE;
 		this.warehouseColor = ColorPalette.DEFAULT_WAREHOUSE;

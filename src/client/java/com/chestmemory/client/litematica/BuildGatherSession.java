@@ -111,6 +111,9 @@ public final class BuildGatherSession {
 		return hudLines;
 	}
 
+	private static int hudTotalNeed;
+	private static int hudTotalDone;
+
 	public static @Nullable String listName() {
 		return listName;
 	}
@@ -1238,6 +1241,37 @@ public final class BuildGatherSession {
 		}
 
 		hudLines = List.copyOf(lines);
+
+		// Totals for the HUD's overall bar. Computed here, over the WHOLE material list,
+		// because hudLines deliberately holds only the next few items and drops anything
+		// already finished — summing those would have the bar creep backwards as materials
+		// completed and left the list.
+		int allNeed = 0;
+		int allDone = 0;
+		var clanSession = com.chestmemory.client.clan.ClanSessionManager.session();
+		if (clanSession != null) {
+			// In a clan gather the hub's totals are the shared truth; a member's own
+			// inventory is not progress until it reaches the warehouse.
+			allNeed = clanSession.totalNeed();
+			allDone = clanSession.totalDelivered();
+		} else {
+			for (LitematicaCompat.MaterialNeed nd : needs) {
+				int t = Math.max(0, nd.total());
+				allNeed += t;
+				allDone += Math.max(0, t - remainingNeed(nd.itemId(), client.player));
+			}
+		}
+		hudTotalNeed = allNeed;
+		hudTotalDone = Math.min(allNeed, allDone);
+	}
+
+	/** Materials the whole list still wants, and how much of it is done — see hudLines(). */
+	public static int hudTotalNeed() {
+		return hudTotalNeed;
+	}
+
+	public static int hudTotalDone() {
+		return hudTotalDone;
 	}
 
 	private static void addHudLine(
