@@ -3,3 +3,10 @@ hub.log
 data/
 .clan_token
 sessions.json
+# carries the clan token as a curl header line (written by the shell scripts)
+.curl_auth
+PUBLIC.txt
+watchdog.log
+lt.log
+lt.url
+*.pid

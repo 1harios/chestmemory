@@ -63,7 +63,19 @@ public final class ChestRoute {
 				}
 				double d = ChestMemoryStorage.distanceTo(r, cursor, dimension);
 				if (d < 0) {
-					// fallback euclidean
+					// distanceTo refuses a world block that belongs to another dimension, and the
+					// euclidean fallback then measured Nether coordinates against overworld ones as
+					// if they shared a space: a Nether chest at (100, 64, 100) beat a real chest 200
+					// blocks down the corridor, and every leg distance in the route summary was
+					// meaningless. Candidates span dimensions whenever the panel filter is the
+					// default ALL, so this was the common case, not the corner one.
+					//
+					// Leaving it in `remaining` is safe: it can never win bestDist, and the loop
+					// breaks on a null best once nothing reachable is left.
+					if (isElsewhere(r, dimension)) {
+						continue;
+					}
+					// Same dimension, merely no comparable distance — measure it directly.
 					d = cursor.distanceTo(Vec3.atCenterOf(p));
 				}
 				if (d < bestDist) {
@@ -103,6 +115,17 @@ public final class ChestRoute {
 			t += Math.max(0, s.legDist());
 		}
 		return t;
+	}
+
+	/**
+	 * True when this record sits in a dimension other than the player's, so no amount of
+	 * walking from here ever reaches it.
+	 */
+	private static boolean isElsewhere(ContainerRecord r, @Nullable String playerDimension) {
+		return r.isWorldBlock()
+			&& playerDimension != null
+			&& r.dimension() != null
+			&& !playerDimension.equals(r.dimension());
 	}
 
 	private static @Nullable BlockPos posOf(ContainerRecord r) {

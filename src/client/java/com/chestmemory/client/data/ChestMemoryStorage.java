@@ -6,6 +6,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.stream.JsonReader;
 import com.google.gson.reflect.TypeToken;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
@@ -22,12 +23,14 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Type;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -59,6 +62,12 @@ public final class ChestMemoryStorage {
 	private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 	/** Bumped when the on-disk profile schema changes in a non-backwards-compatible way. */
 	private static final int FORMAT_VERSION = 3;
+	/**
+	 * Cap on the readable part of a profile id. A 250-character hostname produced a file
+	 * name past the filesystem's 255-byte limit, and then every save threw and the profile
+	 * never persisted at all. The hash suffix keeps such ids distinct once truncated.
+	 */
+	private static final int MAX_SLUG_CHARS = 64;
 	/**
 	 * Profile writes happen off the render thread — a big base serializes to a sizeable JSON
 	 * file, and writing it synchronously froze a frame every autosave. One thread keeps the
@@ -155,19 +164,22 @@ public final class ChestMemoryStorage {
 	}
 
 	private static @Nullable String resolveMultiplayerWorldId(Minecraft client) {
+		// Always key by address (host:port), never merge different servers
+		String address = currentServerAddress(client);
+		return address == null ? null : "mp_" + sanitizeAddress(address);
+	}
 
+	/** Address of the server we are connected to (host:port), or null when unknown. */
+	private static @Nullable String currentServerAddress(Minecraft client) {
 		ServerData server = client.getCurrentServer();
 		if (server != null && server.ip != null && !server.ip.isBlank()) {
-			// Always key by address (host:port), never merge different servers
-			return "mp_" + sanitizeAddress(server.ip);
+			return server.ip;
 		}
-
 		ClientPacketListener connection = client.getConnection();
 		if (connection != null && connection.getServerData() != null
 			&& connection.getServerData().ip != null && !connection.getServerData().ip.isBlank()) {
-			return "mp_" + sanitizeAddress(connection.getServerData().ip);
+			return connection.getServerData().ip;
 		}
-
 		return null;
 	}
 
@@ -225,17 +237,33 @@ public final class ChestMemoryStorage {
 
 	/**
 	 * Keep host and port distinguishable: play.example.com:25565 → play_example_com_25565.
-	 * Server addresses are already ASCII, so no hash suffix is needed (and adding one
-	 * would orphan every existing multiplayer profile).
+	 * <p>
+	 * A hash of the address is appended for the same reason singleplayer names carry one. This
+	 * used to say server addresses are always ASCII so no hash was needed — but the address
+	 * field accepts IDN hostnames, and майнкрафт.рф sanitizes to the empty string, so every
+	 * such server shared one mp_.json. That is worse than a mixed panel: the verifier only
+	 * spares a record whose world tag is PROVABLY different, and a server that hides its seed
+	 * sends hashed seed 0, which yields no tag at all — so walking around one server deleted
+	 * the other's remembered chests out of the shared file, two strikes at a time.
+	 * <p>
+	 * The slug is capped because a 250-character hostname produced a file name longer than the
+	 * filesystem's limit, and then every single save threw.
 	 */
 	private static String sanitizeAddress(String address) {
-		String a = address.trim().toLowerCase(Locale.ROOT);
-		// strip path junk
-		int slash = a.indexOf('/');
-		if (slash >= 0) {
-			a = a.substring(0, slash);
+		String a = normalizeAddress(address);
+		String slug = legacySanitize(a);
+		if (slug.length() > MAX_SLUG_CHARS) {
+			slug = slug.substring(0, MAX_SLUG_CHARS);
 		}
-		return legacySanitize(a);
+		String hash = shortHash(a);
+		return slug.isEmpty() ? hash : slug + "_" + hash;
+	}
+
+	/** Lower-cased address with any trailing path junk removed. */
+	private static String normalizeAddress(String address) {
+		String a = address.trim().toLowerCase(Locale.ROOT);
+		int slash = a.indexOf('/');
+		return slash >= 0 ? a.substring(0, slash) : a;
 	}
 
 	public synchronized void ensureLoaded(Minecraft client) {
@@ -349,25 +377,21 @@ public final class ChestMemoryStorage {
 	}
 
 	/**
-	 * Singleplayer profile ids gained a hash suffix (see {@link #sanitize}). Rename the
-	 * pre-hash file to the new id once, so existing memory isn't orphaned by the upgrade.
-	 * Skipped when the new file already exists or the legacy slug was empty — an empty
-	 * slug means the old file was the shared {@code sp_.json} bucket that several worlds
-	 * may have written to, and silently claiming it for one world would be wrong.
+	 * Profile ids gained a hash suffix — singleplayer first (see {@link #sanitize}), and now
+	 * multiplayer as well (see {@link #sanitizeAddress}). Rename the pre-hash file to the new
+	 * id once, so existing memory isn't orphaned by the upgrade.
+	 * <p>
+	 * Skipped when the new file already exists or the legacy slug was empty. An empty slug
+	 * means the old file was a shared bucket ({@code sp_.json} / {@code mp_.json}) that several
+	 * worlds may have written to, and silently handing it to one of them would be wrong — that
+	 * shared bucket is the very thing being migrated away from.
 	 */
 	private void migrateLegacyProfile(Minecraft client, String worldId) {
-		if (!worldId.startsWith("sp_") || !client.isLocalServer()) {
+		String legacyId = legacyProfileId(client, worldId);
+		if (legacyId == null) {
 			return;
 		}
-		IntegratedServer server = client.getSingleplayerServer();
-		if (server == null) {
-			return;
-		}
-		String legacySlug = legacySanitize(server.getWorldData().getLevelName());
-		if (legacySlug.isEmpty()) {
-			return;
-		}
-		Path legacy = worldFile("sp_" + legacySlug);
+		Path legacy = worldFile(legacyId);
 		Path target = worldFile(worldId);
 		if (legacy.equals(target) || !Files.isRegularFile(legacy) || Files.exists(target)) {
 			return;
@@ -378,6 +402,30 @@ public final class ChestMemoryStorage {
 		} catch (IOException e) {
 			ChestMemoryMod.LOGGER.warn("Could not migrate profile {}: {}", legacy.getFileName(), e.toString());
 		}
+	}
+
+	/** Pre-hash id this profile would have had, or null when there is nothing to migrate. */
+	private static @Nullable String legacyProfileId(Minecraft client, String worldId) {
+		if (worldId.startsWith("sp_")) {
+			if (!client.isLocalServer()) {
+				return null;
+			}
+			IntegratedServer server = client.getSingleplayerServer();
+			if (server == null) {
+				return null;
+			}
+			String slug = legacySanitize(server.getWorldData().getLevelName());
+			return slug.isEmpty() ? null : "sp_" + slug;
+		}
+		if (worldId.startsWith("mp_")) {
+			String address = currentServerAddress(client);
+			if (address == null) {
+				return null;
+			}
+			String slug = legacySanitize(normalizeAddress(address));
+			return slug.isEmpty() ? null : "mp_" + slug;
+		}
+		return null;
 	}
 
 	private static final class WorldFile {
@@ -393,13 +441,121 @@ public final class ChestMemoryStorage {
 		boolean loadFailed;
 	}
 
+	/** Thrown when a profile was written by a newer format than this build understands. */
+	private static final class NewerFormatException extends RuntimeException {
+		NewerFormatException(String message) {
+			super(message);
+		}
+	}
+
 	private WorldFile loadFromDisk(String worldId) {
 		awaitPendingWrite(worldId);
-		WorldFile result = new WorldFile();
 		Path file = worldFile(worldId);
-		if (!Files.isRegularFile(file)) {
-			return result;
+		if (Files.isRegularFile(file)) {
+			try {
+				return readProfile(file);
+			} catch (NewerFormatException e) {
+				// A future version wrote this. Loading what we can understand and saving it back
+				// would silently discard whatever the newer format added, so treat it exactly like
+				// a parse failure: keep playing on an empty profile, never write over the file.
+				WorldFile refused = new WorldFile();
+				refused.loadFailed = true;
+				ChestMemoryMod.LOGGER.error(
+					"Chest memory for {} was written by a newer version ({}) — it will NOT be "
+						+ "overwritten. Update the mod, or move {} aside to start fresh.",
+					worldId, e.getMessage(), file
+				);
+				return refused;
+			} catch (Exception e) {
+				ChestMemoryMod.LOGGER.error("Could not parse chest memory for {} — looking for a backup", worldId, e);
+			}
 		}
+
+		// Either the profile is genuinely new, or a crash landed inside the write. The backup
+		// used to be made by MOVING the live file aside, so between the two renames no main
+		// file existed at all — and a missing file read as "fresh", which left loadFailed
+		// false, so the guard that exists to protect a damaged profile never engaged. The next
+		// save then overwrote the intact .tmp, and the one after rotated the near-empty new
+		// file on top of the last good .bak. Months of scanning, gone in two saves.
+		WorldFile rescued = recoverProfile(worldId, file);
+		if (rescued != null) {
+			return rescued;
+		}
+		if (Files.exists(file)) {
+			// Unreadable and nothing to fall back on. Refuse to write, so whatever is on disk
+			// stays there to be repaired by hand.
+			WorldFile failed = new WorldFile();
+			failed.loadFailed = true;
+			ChestMemoryMod.LOGGER.error(
+				"Chest memory for {} is unreadable and no usable backup was found — it will NOT "
+					+ "be overwritten. Fix or remove {} to start fresh.",
+				worldId, file
+			);
+			return failed;
+		}
+		return new WorldFile();
+	}
+
+	/**
+	 * Last-resort recovery from the sidecar files a write leaves behind.
+	 * <p>
+	 * Both candidates are tried newest-first by modification time rather than by assumed
+	 * order: {@code .tmp} holds the state being written and is therefore usually the freshest,
+	 * but it is also the one that can be truncated, and a stale one may survive an old failed
+	 * write. A truncated candidate simply fails to parse and the next is tried.
+	 * <p>
+	 * On success the winner is copied back over the main file immediately. Leaving the damaged
+	 * original in place would mean the next save's backup rotation copies it on top of the good
+	 * {@code .bak} — turning a recoverable profile into an unrecoverable one.
+	 *
+	 * @return the recovered profile, or null when nothing usable was found
+	 */
+	private @Nullable WorldFile recoverProfile(String worldId, Path file) {
+		List<Path> candidates = new ArrayList<>();
+		for (String suffix : new String[]{".tmp", ".bak"}) {
+			Path candidate = file.resolveSibling(file.getFileName() + suffix);
+			if (Files.isRegularFile(candidate)) {
+				candidates.add(candidate);
+			}
+		}
+		if (candidates.isEmpty()) {
+			return null;
+		}
+		candidates.sort((a, b) -> Long.compare(modifiedAt(b), modifiedAt(a)));
+		for (Path candidate : candidates) {
+			try {
+				WorldFile recovered = readProfile(candidate);
+				ChestMemoryMod.LOGGER.warn(
+					"Recovered chest memory for {} from {} — {} containers restored",
+					worldId, candidate.getFileName(), recovered.containers.size()
+				);
+				try {
+					Files.copy(candidate, file, StandardCopyOption.REPLACE_EXISTING);
+				} catch (IOException e) {
+					ChestMemoryMod.LOGGER.warn("Could not restore {} in place: {}", worldId, e.toString());
+				}
+				return recovered;
+			} catch (Exception e) {
+				ChestMemoryMod.LOGGER.warn("Backup {} is not usable either: {}", candidate.getFileName(), e.toString());
+			}
+		}
+		return null;
+	}
+
+	private static long modifiedAt(Path path) {
+		try {
+			return Files.getLastModifiedTime(path).toMillis();
+		} catch (IOException e) {
+			return Long.MIN_VALUE;
+		}
+	}
+
+	/**
+	 * Parse one profile file. Throws when the bytes cannot be trusted, so callers can decide
+	 * between recovery and refusing to write; never returns a half-populated profile.
+	 */
+	private WorldFile readProfile(Path file) throws IOException {
+		WorldFile result = new WorldFile();
 		try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
 			JsonElement root = JsonParser.parseReader(reader);
 			if (root == null || root.isJsonNull()) {
@@ -413,6 +569,13 @@ public final class ChestMemoryStorage {
 						for (String key : meta.keySet()) {
 							result.meta.put(key, meta.get(key).getAsString());
 						}
+					}
+					// formatVersion was written since v3 and never once read, so a future shape
+					// change had no way to announce itself — this build would have loaded it as far
+					// as it recognised and written the remainder away.
+					int onDisk = parseFormatVersion(result.meta.get("formatVersion"));
+					if (onDisk > FORMAT_VERSION) {
+						throw new NewerFormatException("format " + onDisk + " > " + FORMAT_VERSION);
 					}
 					result.containers = GSON.fromJson(obj.get("containers"), MAP_TYPE);
 					if (result.containers == null) {
@@ -443,21 +606,22 @@ public final class ChestMemoryStorage {
 			if (result.containers == null) {
 				result.containers = new LinkedHashMap<>();
 			}
-		} catch (Exception e) {
-			// Parse failure: keep the file on disk untouched and refuse to overwrite it.
-			result.loadFailed = true;
-			result.containers = new LinkedHashMap<>();
-			ChestMemoryMod.LOGGER.error(
-				"Failed to load chest memory for {} — the profile will NOT be overwritten. "
-					+ "Fix or remove {} to start fresh.",
-				worldId, file, e
-			);
-			return result;
 		}
 		// Clear legacy world tags and rebuild keys from the records themselves, so files
 		// written by any format version land on the keys this version looks up.
 		result.containers = ProfileMigration.normalize(result.containers);
 		return result;
+	}
+
+	private static int parseFormatVersion(@Nullable String raw) {
+		if (raw == null || raw.isBlank()) {
+			return 0;
+		}
+		try {
+			return Integer.parseInt(raw.trim());
+		} catch (NumberFormatException e) {
+			return 0;
+		}
 	}
 
 	/** Block until an in-flight write of this profile lands, so loads read settled bytes. */
@@ -506,6 +670,8 @@ public final class ChestMemoryStorage {
 		meta.addProperty("id", worldId);
 		meta.addProperty("kind", worldId.startsWith("mp_") ? "multiplayer" : "singleplayer");
 		meta.addProperty("formatVersion", String.valueOf(FORMAT_VERSION));
+		// Written so the panel can label a tab without parsing a single record.
+		meta.addProperty("containerCount", String.valueOf(liveContainers.size()));
 		root.add("meta", meta);
 		root.add("containers", GSON.toJsonTree(liveContainers, MAP_TYPE));
 		root.add("knownDimensions", GSON.toJsonTree(new ArrayList<>(liveKnownDimensions)));
@@ -524,6 +690,24 @@ public final class ChestMemoryStorage {
 		}
 	}
 
+	/**
+	 * A write failed, so the session's data is still only in memory — mark it unsaved again.
+	 * <p>
+	 * scheduleSave clears the dirty flag when it queues the write, not when the write lands.
+	 * A full disk or a locked file therefore ended the session silently: saveNow() on quit saw
+	 * a clean profile and did nothing, and everything scanned since the last good save was
+	 * dropped even though the player exited normally. ModSettings.flushNow already documents
+	 * and avoids exactly this; the profile writer did not.
+	 * <p>
+	 * Ignored when the world has since changed: ensureLoaded already flushed a newer snapshot,
+	 * and re-dirtying a profile we no longer hold would write one world's records into another.
+	 */
+	private synchronized void onWriteFailed(String worldId) {
+		if (worldId.equals(liveWorldId)) {
+			liveDirty = true;
+		}
+	}
+
 	/** Runs on {@link #SAVE_IO}. The JSON tree is a private snapshot — no lock needed. */
 	private void writeProfileFile(String worldId, JsonObject root) {
 		Path file = worldFile(worldId);
@@ -534,11 +718,24 @@ public final class ChestMemoryStorage {
 			try (Writer writer = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
 				GSON.toJson(root, writer);
 			}
+			// Push the bytes to the platter before anything is renamed. Without this the swap
+			// below can land on disk ahead of the payload, so a power cut leaves a file that
+			// exists, parses as nothing, and is now the only copy.
+			try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+				channel.force(true);
+			} catch (IOException e) {
+				ChestMemoryMod.LOGGER.debug("Could not flush {} before swap: {}", worldId, e.toString());
+			}
 			// Keep one generation of backup, then swap the new file in atomically.
+			//
+			// COPY, not move: moving it aside meant that between the two renames the profile did
+			// not exist at all, and a crash in that window read as "fresh profile" on the next
+			// launch — which disarmed the very guard that protects a damaged profile. The atomic
+			// move below already provides the swap; the backup only needs to be a second copy.
 			if (Files.isRegularFile(file)) {
 				Path backup = file.resolveSibling(file.getFileName() + ".bak");
 				try {
-					Files.move(file, backup, StandardCopyOption.REPLACE_EXISTING);
+					Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);
 				} catch (IOException e) {
 					ChestMemoryMod.LOGGER.warn("Could not refresh backup for {}: {}", worldId, e.toString());
 				}
@@ -557,6 +754,7 @@ public final class ChestMemoryStorage {
 			} catch (IOException ignored) {
 				// best effort
 			}
+			onWriteFailed(worldId);
 		}
 		// The PENDING_WRITES entry is left in place on purpose: waiting on a finished future
 		// is free, and removing it here could race a newer task that replaced the entry.
@@ -1227,6 +1425,23 @@ public final class ChestMemoryStorage {
 		return out;
 	}
 
+	/**
+	 * Stop browsing another profile and point the view back at the live one.
+	 * <p>
+	 * Browsing a second profile pins its entire container map in this singleton, and closing
+	 * the panel used to leave it there until the next switch — so a glance at another server
+	 * doubled the mod's memory for the rest of the session. Called when the panel closes.
+	 */
+	public synchronized void releaseViewingProfile() {
+		if (viewingContainers == liveContainers) {
+			return;
+		}
+		viewingWorldId = liveWorldId;
+		viewingDisplayName = liveDisplayName;
+		viewingContainers = liveContainers;
+		viewingKnownDimensions = liveKnownDimensions;
+	}
+
 	public synchronized void setViewingWorld(String worldId) {
 		if (worldId == null) {
 			return;
@@ -1295,9 +1510,11 @@ public final class ChestMemoryStorage {
 				if (byId.containsKey(id)) {
 					continue;
 				}
-				WorldFile file = loadFromDisk(id);
-				String name = file.meta.getOrDefault("displayName", prettyId(id));
-				int count = file.containers == null ? 0 : file.containers.size();
+				ProfileHeader header = readProfileHeader(path);
+				String name = header != null && header.displayName() != null
+					? header.displayName()
+					: prettyId(id);
+				int count = header != null ? header.containerCount() : 0;
 				byId.put(id, new WorldTab(id, name, false, count));
 			}
 		} catch (IOException e) {
@@ -1316,6 +1533,98 @@ public final class ChestMemoryStorage {
 		return tabs;
 	}
 
+	/** Just enough of a profile to label a tab. */
+	private record ProfileHeader(@Nullable String displayName, int containerCount) {
+	}
+
+	/** Keyed on size and modification time, so an untouched profile is never re-read. */
+	private record HeaderStamp(long modified, long size) {
+	}
+
+	private static final Map<String, HeaderStamp> HEADER_STAMPS = new HashMap<>();
+	private static final Map<String, ProfileHeader> HEADER_CACHE = new HashMap<>();
+
+	/**
+	 * Read a profile's name and container count without materialising a single record.
+	 * <p>
+	 * Opening the panel used to run a full loadFromDisk over every profile ever written — every
+	 * server ever visited, every record built and normalised — to obtain a name and a size, then
+	 * throw the whole object graph away. It ran on the render thread holding the storage lock, so
+	 * the scanner tick queued up behind it, and it was re-paid whenever the short cache lapsed:
+	 * on a veteran profile set that is a visible stall on every panel open and every resize.
+	 */
+	private static @Nullable ProfileHeader readProfileHeader(Path file) {
+		String cacheKey = file.toString();
+		HeaderStamp stamp = null;
+		try {
+			stamp = new HeaderStamp(Files.getLastModifiedTime(file).toMillis(), Files.size(file));
+			if (stamp.equals(HEADER_STAMPS.get(cacheKey))) {
+				ProfileHeader cached = HEADER_CACHE.get(cacheKey);
+				if (cached != null) {
+					return cached;
+				}
+			}
+		} catch (IOException ignored) {
+			// Unreadable attributes only mean no caching this round.
+		}
+		try (JsonReader reader = new JsonReader(Files.newBufferedReader(file, StandardCharsets.UTF_8))) {
+			String displayName = null;
+			int count = -1;
+			int topLevelKeys = 0;
+			boolean wrapped = false;
+			reader.beginObject();
+			while (reader.hasNext()) {
+				String field = reader.nextName();
+				topLevelKeys++;
+				if ("meta".equals(field)) {
+					wrapped = true;
+					reader.beginObject();
+					while (reader.hasNext()) {
+						String key = reader.nextName();
+						if ("displayName".equals(key)) {
+							displayName = reader.nextString();
+						} else if ("containerCount".equals(key)) {
+							count = parseFormatVersion(reader.nextString());
+						} else {
+							reader.skipValue();
+						}
+					}
+					reader.endObject();
+				} else if ("containers".equals(field)) {
+					wrapped = true;
+					if (count > 0) {
+						reader.skipValue();
+					} else {
+						// Written before meta carried the count: tally keys, still without building
+						// a single record.
+						int seen = 0;
+						reader.beginObject();
+						while (reader.hasNext()) {
+							reader.nextName();
+							reader.skipValue();
+							seen++;
+						}
+						reader.endObject();
+						count = seen;
+					}
+				} else {
+					reader.skipValue();
+				}
+			}
+			reader.endObject();
+			// A legacy file is a bare map of containers, so its top-level keys ARE the count.
+			int resolved = count >= 0 ? count : (wrapped ? 0 : topLevelKeys);
+			ProfileHeader header = new ProfileHeader(displayName, resolved);
+			if (stamp != null) {
+				HEADER_STAMPS.put(cacheKey, stamp);
+				HEADER_CACHE.put(cacheKey, header);
+			}
+			return header;
+		} catch (Exception e) {
+			ChestMemoryMod.LOGGER.warn("Could not read profile header {}: {}", file.getFileName(), e.toString());
+			return null;
+		}
+	}
 	private static String prettyId(String id) {
 		if (id.startsWith("sp_")) {
 			return "SP: " + id.substring(3).replace('_', ' ');
@@ -1800,9 +2109,16 @@ public final class ChestMemoryStorage {
 	/**
 	 * RFC 4180 field escaping: quote when the value contains a comma, quote or
 	 * line break; inner quotes are doubled ({@code "} → {@code ""}).
+	 * <p>
+	 * A leading =, +, - or @ is also neutralised with a single quote. Item names in this file
+	 * come from anvils, including other players', and the mod hands the result to the player to
+	 * open in a spreadsheet — where a cell beginning with = is a formula, not a name.
 	 */
 	private static String csvField(@Nullable Object value) {
 		String s = value == null ? "" : String.valueOf(value);
+		if (!s.isEmpty() && "=+-@".indexOf(s.charAt(0)) >= 0) {
+			s = "'" + s;
+		}
 		if (s.contains("\"") || s.contains(",") || s.contains("\n") || s.contains("\r")) {
 			return '"' + s.replace("\"", "\"\"") + '"';
 		}

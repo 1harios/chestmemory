@@ -28,12 +28,13 @@ ISPmanager → **Постоянные процессы** → **Создать**:
 
 Статус должен стать **active**.
 
-Проверка по SSH (после создания процесса):
+Проверка по SSH (после создания процесса). Токен не подставляй в командную строку —
+аргументы видны другим аккаунтам хоста через `ps`; `start.sh` кладёт заголовок в
+`.curl_auth` (600):
 
 ```bash
 cd ~/chestmemory-hub
-TOKEN=$(cat .clan_token)
-curl -sS -H "X-Clan-Token: $TOKEN" http://127.0.0.1:18787/v1/health
+curl -sS -K .curl_auth http://127.0.0.1:18787/v1/health
 # → "persistent": true, "version": 2
 ls -la data/sessions.json
 ```

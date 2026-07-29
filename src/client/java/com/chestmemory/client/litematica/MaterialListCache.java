@@ -47,6 +47,18 @@ public final class MaterialListCache {
 	 * tell whether we are away from the schematic. The captured dimension can.
 	 */
 	private static @Nullable String cachedDimension;
+	/**
+	 * Storage profile the list was captured on — {@code ChestMemoryStorage.liveWorldId()},
+	 * keyed on the server address / singleplayer world.
+	 * <p>
+	 * The dimension alone cannot tell two servers apart: every server calls its Overworld
+	 * {@code minecraft:overworld}, so a gather parked on server A and resumed on server B
+	 * compared equal — Litematica had no list on B either, the cache served A's bill of
+	 * materials, and highlights and routes were rebuilt from B's chest memory against a
+	 * build that is not there. The profile id is the same boundary the chest memory itself
+	 * files records under, so a mismatch is exactly "these are not the schematic's chests".
+	 */
+	private static @Nullable String cachedWorldId;
 
 	private MaterialListCache() {
 	}
@@ -70,6 +82,7 @@ public final class MaterialListCache {
 		cached = null;
 		cachedListName = null;
 		cachedDimension = null;
+		cachedWorldId = null;
 	}
 
 	/**
@@ -94,6 +107,18 @@ public final class MaterialListCache {
 		@Nullable String listName,
 		@Nullable String dimension
 	) {
+		return resolve(live, listName, dimension, null);
+	}
+
+	/**
+	 * @param worldId storage profile the player is on right now, or null when unknown
+	 */
+	public static List<LitematicaCompat.MaterialNeed> resolve(
+		List<LitematicaCompat.MaterialNeed> live,
+		@Nullable String listName,
+		@Nullable String dimension,
+		@Nullable String worldId
+	) {
 		if (!live.isEmpty()) {
 			// A different schematic must never inherit the previous one's cache.
 			if (listName != null && cachedListName != null && !listName.equals(cachedListName)) {
@@ -106,14 +131,56 @@ public final class MaterialListCache {
 			if (dimension != null) {
 				cachedDimension = dimension;
 			}
+			if (worldId != null) {
+				cachedWorldId = worldId;
+			}
 			return live;
 		}
 		if (cached == null) {
 			return live;
 		}
+		if (isDifferentWorld(worldId)) {
+			// Joining a DIFFERENT server lands here too: Litematica has no list there
+			// either, so without this check the copy captured on server A was served on
+			// server B and the parked gather resumed against the wrong world's chests.
+			// Refuse to serve, but keep the copy — landing back on the original profile
+			// resumes the parked build, which is the whole point of park(). Unknown ids
+			// fail open: the destructive mistake is emptying a parked gather mid-portal.
+			return live;
+		}
 		// Litematica has no list but a gather is running: serve the copy so a portal trip
 		// does not look like a finished build.
 		return cached;
+	}
+
+	/** True only when both profile ids are known and disagree — unknown never counts. */
+	private static boolean isDifferentWorld(@Nullable String worldId) {
+		return worldId != null && cachedWorldId != null && !worldId.equals(cachedWorldId);
+	}
+
+	/**
+	 * Record that Litematica's own (scanned) list reports the build complete.
+	 * <p>
+	 * Keeping the old copy after that would resurrect it: the next world load drops
+	 * Litematica's list as always, {@link #resolve} would fall back to the cached bill, and
+	 * a finished build would come back from a Nether trip demanding every material again.
+	 * An <em>empty</em> cached list — as opposed to a cleared one — keeps the schematic's
+	 * name for the HUD caption while making "nothing left" the answer that gets served.
+	 */
+	public static void noteFinished(@Nullable String listName, @Nullable String dimension, @Nullable String worldId) {
+		if (listName != null && cachedListName != null && !listName.equals(cachedListName)) {
+			clear();
+		}
+		cached = List.of();
+		if (listName != null) {
+			cachedListName = listName;
+		}
+		if (dimension != null) {
+			cachedDimension = dimension;
+		}
+		if (worldId != null) {
+			cachedWorldId = worldId;
+		}
 	}
 
 	/**
@@ -126,7 +193,22 @@ public final class MaterialListCache {
 	 * @param dimension where the player is standing now
 	 */
 	public static boolean isAwayFromSchematic(@Nullable String dimension) {
-		if (cached == null || cachedDimension == null || dimension == null) {
+		return isAwayFromSchematic(dimension, null);
+	}
+
+	/**
+	 * @param worldId storage profile the player is on right now, or null when unknown
+	 */
+	public static boolean isAwayFromSchematic(@Nullable String dimension, @Nullable String worldId) {
+		if (cached == null) {
+			return false;
+		}
+		if (isDifferentWorld(worldId)) {
+			// Another server entirely is "away" no matter what the dimension says —
+			// its Overworld carries the same "minecraft:overworld" id as the schematic's.
+			return true;
+		}
+		if (cachedDimension == null || dimension == null) {
 			return false;
 		}
 		return !cachedDimension.equals(dimension);
@@ -135,6 +217,11 @@ public final class MaterialListCache {
 	/** Dimension the cached list was captured in, or null. */
 	public static @Nullable String cachedDimension() {
 		return cachedDimension;
+	}
+
+	/** Storage profile the cached list was captured on, or null. */
+	public static @Nullable String cachedWorldId() {
+		return cachedWorldId;
 	}
 
 	/** Schematic name the cache belongs to, for the HUD. */

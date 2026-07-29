@@ -1,13 +1,11 @@
 package com.chestmemory.client.litematica;
 
 import com.chestmemory.client.data.ChestMemoryStorage;
-import com.chestmemory.client.data.ContainerFilter;
 import com.chestmemory.client.data.ContainerRecord;
 import com.chestmemory.client.data.DimensionChoice;
 import com.chestmemory.client.data.ItemSummary;
 import com.chestmemory.client.data.ListScope;
 import com.chestmemory.client.data.ModSettings;
-import com.chestmemory.client.data.SortMode;
 import com.chestmemory.client.highlight.ChestHighlighter;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -178,6 +176,20 @@ public final class BuildGatherSession {
 		if (itemId == null) {
 			return 0;
 		}
+		return remainingNeedCounted(itemId, countInPlayer(player, itemId));
+	}
+
+	/**
+	 * {@link #remainingNeed} with the inventory walk hoisted out: the HUD and panel count
+	 * the whole inventory once per refresh and pass per-item counts in, instead of walking
+	 * 41 slots (with a key allocation per non-empty slot) once per material row.
+	 *
+	 * @param inPlayerRaw actual backpack count — the clan-gather zeroing happens here
+	 */
+	private static int remainingNeedCounted(String itemId, int inPlayerRaw) {
+		if (itemId == null) {
+			return 0;
+		}
 		int inStaging = countInStaging(itemId);
 		// Clan delivered (shared warehouse progress) merges as max with local staging
 		int clanDel = com.chestmemory.client.clan.ClanSessionManager.clanDelivered(itemId);
@@ -190,13 +202,15 @@ public final class BuildGatherSession {
 		// Solo it stays as it was — there is no warehouse to require, and carrying the
 		// material IS having gathered it.
 		boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInActiveGather(itemId);
-		int inPlayer = clanGather ? 0 : countInPlayer(player, itemId);
+		int inPlayer = clanGather ? 0 : inPlayerRaw;
 		int covered = inPlayer + warehouse;
-		for (LitematicaCompat.MaterialNeed n : LitematicaAccess.missingMaterials()) {
-			if (itemId.equals(n.itemId())) {
-				// Progress = inv + staging / clan delivered (not source chests)
-				return Math.max(0, n.total() - covered);
-			}
+		// total() always carries the full need — the clan fallback list included (see
+		// clanMaterials in LitematicaAccess) — so deliveries are netted out exactly once,
+		// right here.
+		LitematicaCompat.MaterialNeed n = LitematicaAccess.missingMaterialsById().get(itemId);
+		if (n != null) {
+			// Progress = inv + staging / clan delivered (not source chests)
+			return Math.max(0, n.total() - covered);
 		}
 		int snapTotal = queueMissing.getOrDefault(itemId, 0);
 		if (snapTotal <= 0) {
@@ -228,6 +242,29 @@ public final class BuildGatherSession {
 			}
 		}
 		return total;
+	}
+
+	/**
+	 * One walk over the whole inventory: item key → count.
+	 * <p>
+	 * ItemStackKeys.keyOf allocates on every call, and matching per material row re-keyed
+	 * all 41 slots once per row — E rows × 41 slots several times a second was pure garbage
+	 * for information one walk already had. Refresh-scoped: build it, use it for every row
+	 * of that refresh, drop it.
+	 */
+	private static Map<String, Integer> inventoryCounts(@Nullable LocalPlayer player) {
+		if (player == null) {
+			return Map.of();
+		}
+		Inventory inv = player.getInventory();
+		Map<String, Integer> out = new HashMap<>();
+		for (int i = 0; i < inv.getContainerSize(); i++) {
+			ItemStack stack = inv.getItem(i);
+			if (!stack.isEmpty()) {
+				out.merge(com.chestmemory.client.data.ItemStackKeys.keyOf(stack), stack.getCount(), Integer::sum);
+			}
+		}
+		return out;
 	}
 
 	// ── the main panel's filter, honoured by the gather ───────────────────
@@ -287,6 +324,49 @@ public final class BuildGatherSession {
 			total += r.countOf(itemId);
 		}
 		return total;
+	}
+
+	/** Chest-only stock for one item: how many, and across how many containers. */
+	private record ChestStock(int count, int containers) {
+	}
+
+	/**
+	 * Chest stock under an explicit panel filter, excluding virtual records exactly as
+	 * {@link #filteredSources} does — so a panel row and the gather that follows it can
+	 * never disagree about what is in chests.
+	 * <p>
+	 * Takes the filter as parameters rather than reading the session's own filter state,
+	 * because the panel passes the values it is drawing with and those need not be the
+	 * settings the gather was started under.
+	 */
+	private static ChestStock chestStockFor(
+		String itemId,
+		DimensionChoice dimFilter,
+		@Nullable String playerDim,
+		@Nullable Vec3 playerPos,
+		ListScope scope,
+		double rangeBlocks
+	) {
+		int total = 0;
+		int containers = 0;
+		for (ContainerRecord r
+			: ChestMemoryStorage.get().liveSourceHighlightableWithItem(itemId, dimFilter, playerDim)) {
+			if (r.isVirtual()) {
+				continue;
+			}
+			if (scope == ListScope.NEARBY && playerPos != null && playerDim != null) {
+				double d = ChestMemoryStorage.distanceTo(r, playerPos, playerDim);
+				if (d < 0 || d > rangeBlocks) {
+					continue;
+				}
+			}
+			int held = r.countOf(itemId);
+			if (held > 0) {
+				total += held;
+				containers++;
+			}
+		}
+		return new ChestStock(total, containers);
 	}
 
 	public static int countInChestsLive(String itemId, DimensionChoice dimFilter, @Nullable String playerDim) {
@@ -434,12 +514,15 @@ public final class BuildGatherSession {
 			hudLines = List.of();
 			return;
 		}
-		if (!LitematicaAccess.isAvailable() || !LitematicaAccess.hasActiveMaterialList()) {
-			refreshHud(client);
+		// The tick gate must sit ABOVE the degraded branch. Below it, losing the material
+		// list (portal, wrong server, broken bridge) ran refreshHud at the full 20Hz — five
+		// times the healthy rate, exactly when every refresh was already the expensive kind
+		// that falls through cache and clan lookups.
+		if (++tickCounter % 5 != 0) {
 			return;
 		}
-
-		if (++tickCounter % 5 != 0) {
+		if (!LitematicaAccess.isAvailable() || !LitematicaAccess.hasActiveMaterialList()) {
+			refreshHud(client);
 			return;
 		}
 
@@ -1034,20 +1117,6 @@ public final class BuildGatherSession {
 		String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
 		List<ItemSummary> out = new ArrayList<>();
 
-		// Pre-aggregate stock with filters (same as main Ё list)
-		Map<String, ItemSummary> stockById = new HashMap<>();
-		for (ItemSummary s : ChestMemoryStorage.get().listItems(
-			"",
-			ContainerFilter.ALL,
-			dimFilter,
-			stockScope,
-			dim,
-			pos,
-			rangeBlocks,
-			SortMode.COUNT
-		)) {
-			stockById.put(s.itemId(), s);
-		}
 
 		for (LitematicaCompat.MaterialNeed need : needs) {
 			if (!q.isEmpty()) {
@@ -1057,12 +1126,17 @@ public final class BuildGatherSession {
 				}
 			}
 
-			ItemSummary stock = stockById.get(need.itemId());
-			int inChests = stock != null ? stock.totalCount() : 0;
-			int containers = stock != null ? stock.containerCount() : 0;
-			double dist = stock != null && stock.hasDistance()
-				? stock.nearestDistance()
-				: nearestLiveDist(need.itemId(), pos, dim, dimFilter);
+			// Chest stock as the gather sees it. This used to come from a whole-profile
+			// listItems(ContainerFilter.ALL) aggregation, which counts the ender chest and
+			// carried shulkers — while every gather path excludes both (see filteredSources).
+			// An item whose only stock was the ender chest drew a green READY row reading
+			// "in chests: N" while rankPhase called it craft-only and announced that there was
+			// nothing in chests. Same for the distance: distanceTo answers 0 for the ender
+			// chest on purpose, so the row claimed the material was underfoot.
+			ChestStock chestStock = chestStockFor(need.itemId(), dimFilter, dim, pos, stockScope, rangeBlocks);
+			int inChests = chestStock.count();
+			int containers = chestStock.containers();
+			double dist = nearestLiveDist(need.itemId(), pos, dim, dimFilter);
 			int inPlayer = countInPlayer(client.player, need.itemId());
 			// Still need after inv + staging warehouse
 			int missing = remainingNeed(need.itemId(), client.player);

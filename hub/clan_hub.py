@@ -2,7 +2,8 @@
 """
 Chest Memory — clan gather hub (persistent).
 
-Sessions are saved to disk after every change and reloaded on start.
+Sessions are persisted to disk (coalesced, at most every SAVE_COALESCE_SEC after a
+change; creates and closes write immediately) and reloaded on start.
 Survives process crash / VDS reboot (as long as the process is started again).
 
   DATA_DIR=./data PORT=18787 CLAN_TOKEN=secret python3 clan_hub.py
@@ -12,9 +13,11 @@ API: see README.md
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
-import random
+import secrets
+import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,11 +35,18 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 #: leave it empty and members only ever type a code. Set it if you additionally want
 #: the hub invisible to anyone without it.
 CLAN_TOKEN = os.environ.get("CLAN_TOKEN", "").strip()
-#: When true, every mutating request must carry a verified X-Clan-Session.
-#: Leave off for one upgrade window so members on the old mod keep working, then
-#: turn it on — that is what actually closes the impersonation hole.
-REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes")
+#: When true (the default), every mutating request must carry a verified
+#: X-Clan-Session. Defaulting to off shipped the impersonation hole to every operator
+#: who never read this file: anyone could deliver, claim and leave as anyone else.
+#: REQUIRE_AUTH=0 is the escape hatch for one mod-upgrade window (members still on the
+#: old mod keep working) — choosing it makes the hub shout at startup that identities
+#: are unverified, and host-only actions demand a verified session regardless.
+REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() not in ("0", "false", "no")
 SESSION_TTL_SEC = int(os.environ.get("SESSION_TTL_SEC", str(7 * 24 * 3600)))
+#: A gather nobody ever joined is usually a test, an aborted attempt — or create-spam.
+#: Letting each one sit for the full 7 days lets a scripted client accumulate them at
+#: zero cost to itself; a solo session the host stopped heartbeating dies in a day.
+SOLO_SESSION_TTL_SEC = int(os.environ.get("SOLO_SESSION_TTL_SEC", str(24 * 3600)))
 #: A member's claims are released after this long without a heartbeat.
 #:
 #: The client polls every ~3s while the game is running, and polling refreshes
@@ -53,6 +63,33 @@ ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 # full on every mutation, so unbounded input is both a RAM and a disk-fill vector.
 MAX_BODY_BYTES = 512 * 1024
 
+# Growth caps. The body cap above bounds one request; nothing bounded how many
+# requests accumulate. POST /v1/sessions in a loop filled RAM and disk on the small
+# VPS deploy_vps.sh targets — each session lived 7 days and every mutation rewrote
+# the whole store.
+MAX_SESSIONS_TOTAL = 256
+#: A busy clan runs a handful of parallel gathers; dozens from one host is a script.
+MAX_SESSIONS_PER_HOST = 4
+MAX_MEMBERS_PER_SESSION = 64
+MAX_MATERIALS_PER_SESSION = 400
+#: stagingKeys grow by append from every member, so without a cap one scripted
+#: member inflates the session (and the file it is rewritten into) without limit.
+MAX_STAGING_KEYS_PER_SESSION = 256
+#: Kicks are moderation, not a permanent ban list — past this, oldest entries fall
+#: off rather than letting kick/rejoin cycles grow the session forever.
+MAX_KICKED_TRACKED = 256
+#: Real names and item ids ("minecraft:weathered_cut_copper_stairs") stay well under
+#: these; anything longer is padding aimed at the store size.
+MAX_NAME_LEN = 48
+MAX_ITEM_ID_LEN = 128
+#: Scanning every session on every GET/POST serialized all traffic behind the purge;
+#: once a minute catches the same expiries at a fraction of the work.
+PURGE_INTERVAL_SEC = 60
+#: Mutations mark the store dirty and a background thread persists it, so a burst of
+#: staging pushes costs one disk rewrite instead of one per request. A crash loses at
+#: most this many seconds — deliver totals are absolute, so the next push heals them.
+SAVE_COALESCE_SEC = 2
+
 
 class _BodyTooLarge(Exception):
     """Raised by _read_json when Content-Length exceeds MAX_BODY_BYTES."""
@@ -60,6 +97,9 @@ class _BodyTooLarge(Exception):
 
 _lock = threading.RLock()
 _sessions: dict[str, dict[str, Any]] = {}
+#: Store changed since the last write — see SAVE_COALESCE_SEC. Guarded by _lock.
+_dirty = False
+_last_purge_mono = 0.0
 
 
 def _now() -> int:
@@ -67,7 +107,9 @@ def _now() -> int:
 
 
 def _gen_code() -> str:
-    return "CM-" + "".join(random.choice(ALPHABET) for _ in range(4))
+    # secrets, not random: Mersenne Twister output is reconstructable from enough
+    # observed codes, and the code is the only thing gating entry to a session.
+    return "CM-" + "".join(secrets.choice(ALPHABET) for _ in range(4))
 
 
 def _normalize_code(raw: str) -> str:
@@ -133,14 +175,58 @@ def _save_sessions() -> None:
             pass
 
 
-def _purge_old() -> None:
-    cutoff = _now() - SESSION_TTL_SEC * 1000
-    dead = [c for c, s in _sessions.items() if int(s.get("updatedAt", 0) or 0) < cutoff]
+def _mark_dirty() -> None:
+    """Queue a save for the flush thread instead of writing inline. Call under _lock."""
+    global _dirty
+    _dirty = True
+
+
+def _save_now() -> None:
+    """Write the store immediately and clear the queued save. Call under _lock."""
+    global _dirty
+    _save_sessions()
+    _dirty = False
+
+
+def _flush_loop() -> None:
+    """Persist coalesced changes — the price of a crash is SAVE_COALESCE_SEC, not data."""
+    while True:
+        time.sleep(SAVE_COALESCE_SEC)
+        with _lock:
+            if _dirty:
+                _save_now()
+
+
+def _purge_old(force: bool = False) -> None:
+    """Drop expired sessions, at most once per PURGE_INTERVAL_SEC unless forced.
+
+    This used to run in full on every GET and POST: every request paid for a scan of
+    all sessions while holding the lock, which is pure waste between expiries.
+    """
+    global _last_purge_mono
+    if not force and time.monotonic() - _last_purge_mono < PURGE_INTERVAL_SEC:
+        return
+    _last_purge_mono = time.monotonic()
+    now = _now()
+    dead: list[str] = []
+    for c, s in _sessions.items():
+        last = int(s.get("updatedAt", 0) or 0)
+        ttl = SESSION_TTL_SEC
+        members = s.get("members") or []
+        if len(members) <= 1:
+            # Solo sessions die on the short TTL — but heartbeats only refresh
+            # lastSeen, not updatedAt, so count them or an idle-but-online host
+            # would lose their gather a day after the last actual change.
+            ttl = min(ttl, SOLO_SESSION_TTL_SEC)
+            for m in members:
+                last = max(last, int(m.get("lastSeen", 0) or 0))
+        if last < now - ttl * 1000:
+            dead.append(c)
     if not dead:
         return
     for c in dead:
         _sessions.pop(c, None)
-    _save_sessions()
+    _mark_dirty()
 
 
 def _release_stale_claims(sess: dict[str, Any]) -> list[str]:
@@ -177,19 +263,38 @@ def _touch(sess: dict[str, Any]) -> None:
     sess["revision"] = int(sess.get("revision", 0)) + 1
 
 
-def _member_upsert(sess: dict[str, Any], name: str, uuid: str) -> None:
+def _member_upsert(sess: dict[str, Any], name: str, uuid: str) -> bool:
+    """
+    :return: False when the roster is full and this uuid is not on it — join treats
+             that as an error, heartbeat-ish callers just shrug.
+    """
     # A kicked member must not drift back in through the heartbeat: their client keeps
     # polling until it notices the kick. Only an explicit join lifts the flag.
     kicked = sess.get("kicked") or []
     if uuid and uuid.lower() in {str(k).lower() for k in kicked}:
-        return
+        return True
+    name = (name or "")[:MAX_NAME_LEN]
     members = sess.setdefault("members", [])
     for m in members:
         if str(m.get("uuid", "")).lower() == uuid.lower():
             m["name"] = name or m.get("name", "")
             m["lastSeen"] = _now()
-            return
+            return True
+    if len(members) >= MAX_MEMBERS_PER_SESSION:
+        return False
     members.append({"name": name or "?", "uuid": uuid, "lastSeen": _now()})
+    return True
+
+
+def _clean_staging_keys(keys_in: Any) -> list[str]:
+    """Deduped, length-clamped staging keys; callers cap the resulting list size."""
+    clean: list[str] = []
+    if isinstance(keys_in, list):
+        for k in keys_in:
+            s = str(k).strip()[:MAX_ITEM_ID_LEN]
+            if s and s not in clean:
+                clean.append(s)
+    return clean
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -270,7 +375,9 @@ class Handler(BaseHTTPRequestHandler):
         if not CLAN_TOKEN:
             return True
         got = self.headers.get("X-Clan-Token", "")
-        return got == CLAN_TOKEN
+        # compare_digest, not ==: plain equality returns on the first wrong byte,
+        # which lets a patient prober time their way through the token.
+        return hmac.compare_digest(got.encode("utf-8", "replace"), CLAN_TOKEN.encode("utf-8"))
 
     def _send(self, code: int, obj: Any) -> None:
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -368,7 +475,7 @@ class Handler(BaseHTTPRequestHandler):
                     # disk for each would grind. lastSeen precision on restart is worth
                     # seconds, not fsyncs — persist it opportunistically with real changes.
                     if released:
-                        _save_sessions()
+                        _mark_dirty()
                 # since-poll: nothing the client does not already have — answer a stub.
                 if since > 0 and int(sess.get("revision", 0)) == since:
                     self._send(200, {
@@ -437,7 +544,7 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "leave":
                 self._leave(code, body)
             elif action == "close":
-                self._close(code, body)
+                self._close(code)
             elif action == "update":
                 self._update(code, body)
             elif action == "kick":
@@ -466,8 +573,9 @@ class Handler(BaseHTTPRequestHandler):
         if not host_uuid:
             self._send(400, {"error": "hostUuid required"})
             return
-        name = str(body.get("name") or "Build")
-        schema = str(body.get("schemaName") or name)
+        host_name = host_name[:MAX_NAME_LEN]
+        name = str(body.get("name") or "Build")[:MAX_NAME_LEN]
+        schema = str(body.get("schemaName") or name)[:MAX_NAME_LEN]
         materials: dict[str, Any] = {}
         for k, v in materials_in.items():
             try:
@@ -476,7 +584,10 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             if need <= 0:
                 continue
-            materials[str(k)] = {
+            key = str(k)
+            if len(key) > MAX_ITEM_ID_LEN:
+                continue
+            materials[key] = {
                 "need": need,
                 "delivered": 0,
                 "claimedBy": None,
@@ -485,9 +596,32 @@ class Handler(BaseHTTPRequestHandler):
         if not materials:
             self._send(400, {"error": "empty materials"})
             return
+        if len(materials) > MAX_MATERIALS_PER_SESSION:
+            self._send(400, {"error": "too many materials (max %d)" % MAX_MATERIALS_PER_SESSION})
+            return
+        staging = _clean_staging_keys(body.get("stagingKeys"))
+        if len(staging) > MAX_STAGING_KEYS_PER_SESSION:
+            self._send(400, {"error": "too many staging keys (max %d)" % MAX_STAGING_KEYS_PER_SESSION})
+            return
 
         with _lock:
             _purge_old()
+            # Creation is the one call that grows the store without knowing a code, so
+            # the growth caps live here: a global one for the hub's own survival and a
+            # per-host one so a single scripted client cannot eat the global budget.
+            if len(_sessions) >= MAX_SESSIONS_TOTAL:
+                self._send(503, {"error": "session limit reached"})
+                return
+            mine = sum(
+                1 for s in _sessions.values()
+                if str(s.get("hostUuid") or "").lower() == host_uuid.lower()
+            )
+            if mine >= MAX_SESSIONS_PER_HOST:
+                self._send(
+                    429,
+                    {"error": "too many open sessions for this host (max %d)" % MAX_SESSIONS_PER_HOST},
+                )
+                return
             for _ in range(40):
                 code = _gen_code()
                 if code not in _sessions:
@@ -508,12 +642,12 @@ class Handler(BaseHTTPRequestHandler):
                     {"name": host_name, "uuid": host_uuid, "lastSeen": _now()}
                 ],
                 "materials": materials,
-                "stagingKeys": list(body.get("stagingKeys") or [])
-                if isinstance(body.get("stagingKeys"), list)
-                else [],
+                "stagingKeys": staging,
             }
             _sessions[code] = sess
-            _save_sessions()
+            # Written immediately, not coalesced: the host reads the code off their
+            # screen and shares it — it must survive a crash in the same breath.
+            _save_now()
             self._send_session(sess)
 
     def _join(self, code: str, body: dict[str, Any]) -> None:
@@ -537,9 +671,11 @@ class Handler(BaseHTTPRequestHandler):
                 sess["kicked"] = [
                     k for k in kicked if str(k).lower() != uuid.lower()
                 ]
-            _member_upsert(sess, name, uuid)
+            if not _member_upsert(sess, name, uuid):
+                self._send(409, {"error": "session full (max %d members)" % MAX_MEMBERS_PER_SESSION})
+                return
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
     def _claim(self, code: str, body: dict[str, Any]) -> None:
@@ -578,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 m["claimedName"] = name
             _member_upsert(sess, name, uuid)
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
     def _deliver(self, code: str, body: dict[str, Any]) -> None:
@@ -641,7 +777,7 @@ class Handler(BaseHTTPRequestHandler):
             _member_upsert(sess, name, uuid)
             if changed:
                 _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
     def _staging(self, code: str, body: dict[str, Any]) -> None:
@@ -657,27 +793,26 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(keys_in, list):
             self._send(400, {"error": "stagingKeys must be list"})
             return
-        clean: list[str] = []
-        for k in keys_in:
-            s = str(k).strip()
-            if s and s not in clean:
-                clean.append(s)
+        clean = _clean_staging_keys(keys_in)
         with _lock:
             sess = _sessions.get(code)
             if not sess:
                 self._send(404, {"error": "not found"})
                 return
             if replace:
-                sess["stagingKeys"] = clean
+                merged = clean
             else:
-                cur = list(sess.get("stagingKeys") or [])
+                merged = list(sess.get("stagingKeys") or [])
                 for k in clean:
-                    if k not in cur:
-                        cur.append(k)
-                sess["stagingKeys"] = cur
+                    if k not in merged:
+                        merged.append(k)
+            if len(merged) > MAX_STAGING_KEYS_PER_SESSION:
+                self._send(400, {"error": "too many staging keys (max %d)" % MAX_STAGING_KEYS_PER_SESSION})
+                return
+            sess["stagingKeys"] = merged
             _member_upsert(sess, name, uuid)
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
     def _leave(self, code: str, body: dict[str, Any]) -> None:
@@ -698,22 +833,31 @@ class Handler(BaseHTTPRequestHandler):
                 if str(m.get("uuid") or "").lower() != uuid.lower()
             ]
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
-    def _host_session(self, code: str, body: dict[str, Any]) -> dict[str, Any] | None:
+    def _host_session(self, code: str, deny: str = "only host") -> dict[str, Any] | None:
         """Session for a host-only action, or None after an error reply.
 
         Call under _lock. The same absent-uuid hole _close had applies to every
         host action, so the check lives in one place.
+
+        Only the verified identity counts here, even while REQUIRE_AUTH is off. The
+        compat fallbacks (X-Clan-Uuid header, body uuid) are attacker-chosen, and the
+        host's uuid is public in every session snapshot — honouring them meant anyone
+        could rename the gather, empty the roster or close the session by pasting
+        that uuid into a request.
         """
-        uuid, _ = self._actor(body)
+        who = self._identity()
+        if who is None:
+            self._send(403, {"error": "host actions require verified identity"})
+            return None
         sess = _sessions.get(code)
         if not sess:
             self._send(404, {"error": "not found"})
             return None
-        if not uuid or str(sess.get("hostUuid") or "").lower() != uuid.lower():
-            self._send(403, {"error": "only host"})
+        if str(sess.get("hostUuid") or "").lower() != who["uuid"].lower():
+            self._send(403, {"error": deny})
             return None
         return sess
 
@@ -723,15 +867,15 @@ class Handler(BaseHTTPRequestHandler):
         if not raw:
             self._send(400, {"error": "name required"})
             return
-        name = raw[:48]
+        name = raw[:MAX_NAME_LEN]
         with _lock:
-            sess = self._host_session(code, body)
+            sess = self._host_session(code)
             if sess is None:
                 return
             sess["name"] = name
             sess["schemaName"] = name
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
     def _kick(self, code: str, body: dict[str, Any]) -> None:
@@ -742,7 +886,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "target required"})
             return
         with _lock:
-            sess = self._host_session(code, body)
+            sess = self._host_session(code)
             if sess is None:
                 return
             if target == str(sess.get("hostUuid") or "").lower():
@@ -764,14 +908,16 @@ class Handler(BaseHTTPRequestHandler):
             kicked = sess.setdefault("kicked", [])
             if target not in {str(k).lower() for k in kicked}:
                 kicked.append(target)
+                # Oldest entries fall off past the cap — see MAX_KICKED_TRACKED.
+                del kicked[:-MAX_KICKED_TRACKED]
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
     def _release_claims(self, code: str, body: dict[str, Any]) -> None:
         """Clear every claim (host only) — the reset button for a stalled evening."""
         with _lock:
-            sess = self._host_session(code, body)
+            sess = self._host_session(code)
             if sess is None:
                 return
             for m in (sess.get("materials") or {}).values():
@@ -779,44 +925,68 @@ class Handler(BaseHTTPRequestHandler):
                     m["claimedBy"] = None
                     m["claimedName"] = None
             _touch(sess)
-            _save_sessions()
+            _mark_dirty()
             self._send_session(sess)
 
-    def _close(self, code: str, body: dict[str, Any]) -> None:
-        uuid, actor_name = self._actor(body)
+    def _close(self, code: str) -> None:
         with _lock:
-            sess = _sessions.get(code)
-            if not sess:
-                self._send(404, {"error": "not found"})
-                return
             # An absent uuid used to skip the host check entirely and fall through to
-            # the delete below, letting anyone drop any session by simply omitting it.
-            if not uuid:
-                self._send(403, {"error": "only host can close"})
-                return
-            if str(sess.get("hostUuid") or "").lower() != uuid.lower():
-                self._send(403, {"error": "only host can close"})
+            # the delete below, letting anyone drop any session by simply omitting it —
+            # and later, a spoofed one could impersonate the host. _host_session now
+            # owns both checks for every host action.
+            sess = self._host_session(code, deny="only host can close")
+            if sess is None:
                 return
             _sessions.pop(code, None)
-            _save_sessions()
+            # Written immediately: a coalesce-window crash must not resurrect a gather
+            # the host just ended for everyone.
+            _save_now()
             self._send(200, {"ok": True, "code": code})
+
+
+def _sigterm(signum: int, frame: Any) -> None:
+    # systemd stops with SIGTERM; without this, the last SAVE_COALESCE_SEC of
+    # mutations died with the process on every `systemctl restart`.
+    raise KeyboardInterrupt
 
 
 def main() -> None:
     _load_sessions()
     with _lock:
-        _purge_old()
+        _purge_old(force=True)
+    if not REQUIRE_AUTH:
+        # flush: hub.log / journald get stdout through a pipe, which Python
+        # block-buffers — unflushed, this warning surfaces hours late or never.
+        print(
+            "!!!! REQUIRE_AUTH is OFF — player identity is UNVERIFIED.\n"
+            "!!!! Any request may claim any uuid: members can be impersonated (claims\n"
+            "!!!! released, deliveries forged in their name). Host-only actions still\n"
+            "!!!! demand a Mojang-verified session and will fail for offline-mode hosts.\n"
+            "!!!! This mode exists for one mod-upgrade window — unset REQUIRE_AUTH=0\n"
+            "!!!! as soon as every member runs the updated mod.",
+            flush=True,
+        )
+    threading.Thread(target=_flush_loop, name="clanhub-save", daemon=True).start()
+    signal.signal(signal.SIGTERM, _sigterm)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(
-        "Chest Memory clan hub v3 persistent on http://%s:%s  token=%s  data=%s  sessions=%s"
-        % (HOST, PORT, "yes" if CLAN_TOKEN else "no", SESSIONS_FILE, len(_sessions))
+        "Chest Memory clan hub v3 persistent on http://%s:%s  token=%s  auth=%s  data=%s  sessions=%s"
+        % (
+            HOST,
+            PORT,
+            "yes" if CLAN_TOKEN else "no",
+            "required" if REQUIRE_AUTH else "OFF",
+            SESSIONS_FILE,
+            len(_sessions),
+        ),
+        flush=True,
     )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("stop — saving…")
         with _lock:
-            _save_sessions()
+            _save_now()
 
 
 if __name__ == "__main__":

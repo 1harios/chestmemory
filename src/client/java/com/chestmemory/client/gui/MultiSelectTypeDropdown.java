@@ -2,7 +2,6 @@ package com.chestmemory.client.gui;
 
 import com.chestmemory.client.data.ContainerFilter;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarratedElementType;
@@ -27,6 +26,8 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 	private final Consumer<EnumSet<ContainerFilter>> onChanged;
 	private boolean open;
 	private int scroll;
+	/** Row highlighted by keyboard navigation while the list is open. */
+	private int keyboardIndex;
 	private final int maxVisible = 9;
 	private final int rowH;
 
@@ -167,16 +168,6 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 		return s;
 	}
 
-	private String ellipsize(String text, int maxTextW, Font font) {
-		if (font.width(text) <= maxTextW) {
-			return text;
-		}
-		while (text.length() > 3 && font.width(text + "…") > maxTextW) {
-			text = text.substring(0, text.length() - 1);
-		}
-		return text + "…";
-	}
-
 	@Override
 	protected void extractWidgetRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
 		drawClosedBar(graphics, mouseX, mouseY, open);
@@ -199,7 +190,7 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 
 		var font = this.minecraft.font;
 		int maxTextW = this.width - 18;
-		String text = ellipsize(closedLabel(), maxTextW, font);
+		String text = ChestGuiStyle.ellipsize(font, closedLabel(), maxTextW);
 		graphics.text(font, text, x0 + 5, y0 + (this.height - 8) / 2, 0xFF3F3F3F, false);
 		String arrow = open ? "▲" : "▼";
 		graphics.text(font, arrow, x0 + this.width - 12, y0 + (this.height - 8) / 2, 0xFF3F3F3F, false);
@@ -235,6 +226,10 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 			ContainerFilter opt = options.get(idx);
 			int ry = top + i * rowH;
 			boolean hover = mouseX >= x0 && mouseX < x1 && mouseY >= ry && mouseY < ry + rowH;
+			// Keyboard highlight reads the same as hover, so arrow keys are not blind.
+			if (!hover && this.isFocused() && idx == keyboardIndex) {
+				hover = true;
+			}
 			boolean on = isOn(opt);
 			if (hover) {
 				graphics.fill(x0 + 1, ry, x1 - 1, ry + rowH, 0xA0FFE08A);
@@ -252,7 +247,7 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 			if (on) {
 				graphics.fill(cx + 2, cy + 2, cx + 6, cy + 6, 0xFF2E8B2E);
 			}
-			String optText = ellipsize(opt.label().getString(), maxTextW, font);
+			String optText = ChestGuiStyle.ellipsize(font, opt.label().getString(), maxTextW);
 			graphics.text(font, optText, x0 + 15, ry + (rowH - 8) / 2, 0xFF202020, false);
 		}
 
@@ -351,6 +346,60 @@ public class MultiSelectTypeDropdown extends AbstractWidget {
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Keyboard control, mirroring DropdownWidget: the two dropdowns share the same filter
+	 * row, so a keyboard user could tab to this one, open nothing and pick nothing while
+	 * its neighbour worked fine. Enter/Space opens, then toggles the highlighted type —
+	 * the list stays open, exactly like a mouse click, because multi-select means several
+	 * toggles per visit. Arrows move the highlight, Esc closes just the list.
+	 */
+	@Override
+	public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+		if (!this.active || !this.visible) {
+			return false;
+		}
+		int key = event.key();
+		if (key == org.lwjgl.glfw.GLFW.GLFW_KEY_ENTER
+			|| key == org.lwjgl.glfw.GLFW.GLFW_KEY_KP_ENTER
+			|| key == org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE) {
+			if (!open) {
+				this.open = true;
+				this.scroll = 0;
+				this.keyboardIndex = 0;
+				return true;
+			}
+			if (keyboardIndex >= 0 && keyboardIndex < options.size()) {
+				this.playDownSound(Minecraft.getInstance().getSoundManager());
+				toggleOption(options.get(keyboardIndex));
+			}
+			return true;
+		}
+		if (!open) {
+			return false;
+		}
+		if (key == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+			this.open = false;
+			return true;
+		}
+		int delta = switch (key) {
+			case org.lwjgl.glfw.GLFW.GLFW_KEY_DOWN -> 1;
+			case org.lwjgl.glfw.GLFW.GLFW_KEY_UP -> -1;
+			default -> 0;
+		};
+		if (delta == 0) {
+			return false;
+		}
+		keyboardIndex = Mth.clamp(keyboardIndex + delta, 0, Math.max(0, options.size() - 1));
+		// Keep the highlighted row inside the visible window
+		int visible = visibleRows();
+		if (keyboardIndex < scroll) {
+			scroll = keyboardIndex;
+		} else if (keyboardIndex >= scroll + visible) {
+			scroll = keyboardIndex - visible + 1;
+		}
+		return true;
 	}
 
 	@Override

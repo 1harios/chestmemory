@@ -31,9 +31,29 @@ if (!is_dir($dataDir)) {
 }
 $sessionsFile = $dataDir . '/sessions.json';
 require_once __DIR__ . '/clan_auth.php';
+require_once __DIR__ . '/clan_ratelimit.php';
 clan_auth_init($dataDir);
-/** Require a verified session for mutating requests. See clan_auth.php. */
-$requireAuth = (bool)($config['require_auth'] ?? false);
+clan_rl_init($dataDir);
+/**
+ * Require a verified session for mutating requests. See clan_auth.php.
+ * Defaulting to false shipped the impersonation hole to every operator who kept the
+ * sample config; false is now the explicit escape hatch for one mod-upgrade window.
+ */
+$requireAuth = (bool)($config['require_auth'] ?? true);
+$GLOBALS['clan_require_auth'] = $requireAuth;
+if (!$requireAuth) {
+    // Loud but not per-request: once an hour survives log rotation without turning
+    // the error log into a scroll of the same line.
+    $warnStamp = $dataDir . '/auth_off_warned.stamp';
+    if (!is_file($warnStamp) || time() - (int)@filemtime($warnStamp) > 3600) {
+        @touch($warnStamp);
+        error_log(
+            'chestmemory-hub: require_auth is OFF — player identity is UNVERIFIED and '
+            . 'members can be impersonated. Host-only actions still demand a verified '
+            . 'session. This mode is for one mod-upgrade window; set require_auth => true.'
+        );
+    }
+}
 $token = (string)($config['token'] ?? '');
 $ttlMs = (int)($config['ttl_sec'] ?? 604800) * 1000;
 /**
@@ -55,6 +75,32 @@ function respond(int $code, $obj): void
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($obj, JSON_UNESCAPED_UNICODE);
     exit;
+}
+
+/** Session snapshot + the hub's clock, so clients can judge staleness without
+ *  trusting their own wall clock to agree with ours (same shape as clan_hub.py). */
+function respond_session(array $sess): void
+{
+    $sess['now'] = now_ms();
+    respond(200, $sess);
+}
+
+function client_addr(): string
+{
+    // REMOTE_ADDR, deliberately NOT X-Forwarded-For: the web server terminates the
+    // client connection right here, so that header is whatever the client typed —
+    // honouring it would hand a guessing loop a fresh rate bucket per request.
+    return (string)($_SERVER['REMOTE_ADDR'] ?? '?');
+}
+
+/** Enforce the per-address limit; replies 429 itself when exceeded. */
+function rate_ok(string $kind): void
+{
+    $retry = clan_rl_check($kind, client_addr());
+    if ($retry !== null) {
+        header('Retry-After: ' . $retry);
+        respond(429, ['error' => 'rate limited']);
+    }
 }
 
 function check_token(string $expected): void
@@ -135,24 +181,70 @@ function gen_code(array $sessions): string
     respond(500, ['error' => 'code exhausted']);
 }
 
-function purge(array &$sessions, int $ttlMs): void
+function purge(array &$sessions, int $ttlMs, string $dataDir): void
 {
-    $cutoff = now_ms() - $ttlMs;
-    $changed = false;
-    foreach ($sessions as $c => $s) {
-        $u = (int)($s['updatedAt'] ?? 0);
-        if ($u < $cutoff) {
-            unset($sessions[$c]);
-            $changed = true;
-        }
+    // Time-gated: a full scan of every session used to run on each GET and POST,
+    // paid by whoever happened to send the request. Once a minute catches the same
+    // expiries. The stamp file survives the shared-nothing request model.
+    $stamp = $dataDir . '/purge.stamp';
+    if (is_file($stamp) && time() - (int)@filemtime($stamp) < PURGE_INTERVAL_SEC) {
+        return;
     }
-    if ($changed) {
-        // caller saves
+    @touch($stamp);
+    $now = now_ms();
+    foreach ($sessions as $c => $s) {
+        $last = (int)($s['updatedAt'] ?? 0);
+        $ttl = $ttlMs;
+        $members = is_array($s['members'] ?? null) ? $s['members'] : [];
+        if (count($members) <= 1) {
+            // Solo sessions die on the short TTL — but heartbeats only refresh
+            // lastSeen, not updatedAt, so count them or an idle-but-online host
+            // would lose their gather a day after the last actual change.
+            $ttl = min($ttl, SOLO_SESSION_TTL_SEC * 1000);
+            foreach ($members as $m) {
+                $last = max($last, (int)($m['lastSeen'] ?? 0));
+            }
+        }
+        if ($last < $now - $ttl) {
+            unset($sessions[$c]);
+            // caller saves on its own mutations; a purge-only GET leaves the file
+            // as-is and the entry simply re-purges until the next write.
+        }
     }
 }
 
-function member_upsert(array &$sess, string $name, string $uuid): void
+/**
+ * Cut a string to $max characters without tearing a UTF-8 sequence: a blind byte cut
+ * can leave invalid UTF-8, json_encode() then fails and save_sessions() silently
+ * skips the write — the response says "renamed", the disk says otherwise.
+ */
+function clamp_str(string $s, int $max): string
 {
+    if (function_exists('mb_substr')) {
+        return mb_substr($s, 0, $max);
+    }
+    $cut = substr($s, 0, $max);
+    while ($cut !== '' && !preg_match('//u', $cut)) {
+        $cut = substr($cut, 0, -1);
+    }
+    return $cut;
+}
+
+/**
+ * @return bool false when the roster is full and this uuid is not on it — join
+ *              treats that as an error, heartbeat-ish callers just shrug.
+ */
+function member_upsert(array &$sess, string $name, string $uuid): bool
+{
+    // A kicked member must not drift back in through the heartbeat: their client
+    // keeps polling until it notices the kick. Only an explicit join lifts the flag.
+    $kicked = is_array($sess['kicked'] ?? null) ? $sess['kicked'] : [];
+    foreach ($kicked as $k) {
+        if ($uuid !== '' && strcasecmp((string)$k, $uuid) === 0) {
+            return true;
+        }
+    }
+    $name = clamp_str($name, MAX_NAME_LEN);
     $members = &$sess['members'];
     if (!is_array($members)) {
         $members = [];
@@ -161,10 +253,29 @@ function member_upsert(array &$sess, string $name, string $uuid): void
         if (strcasecmp((string)($m['uuid'] ?? ''), $uuid) === 0) {
             $m['name'] = $name !== '' ? $name : ($m['name'] ?? '?');
             $m['lastSeen'] = now_ms();
-            return;
+            return true;
         }
     }
+    if (count($members) >= MAX_MEMBERS_PER_SESSION) {
+        return false;
+    }
     $members[] = ['name' => $name !== '' ? $name : '?', 'uuid' => $uuid, 'lastSeen' => now_ms()];
+    return true;
+}
+
+/** Deduped, length-clamped staging keys; callers cap the resulting list size. */
+function clean_staging_keys($keysIn): array
+{
+    $clean = [];
+    if (is_array($keysIn)) {
+        foreach ($keysIn as $k) {
+            $s = clamp_str(trim((string)$k), MAX_ITEM_ID_LEN);
+            if ($s !== '' && !in_array($s, $clean, true)) {
+                $clean[] = $s;
+            }
+        }
+    }
+    return $clean;
 }
 
 /**
@@ -213,6 +324,29 @@ function touch_sess(array &$sess): void
  *  request, so unbounded input is both a memory and a disk-fill vector. */
 const MAX_BODY_BYTES = 512 * 1024;
 
+/*
+ * Growth caps — keep in lockstep with clan_hub.py. The body cap above bounds one
+ * request; nothing bounded how many requests accumulate: POST /v1/sessions in a
+ * loop filled the store (each session lives 7 days), and every request rereads and
+ * rewrites the whole file.
+ */
+const MAX_SESSIONS_TOTAL = 256;
+/** A busy clan runs a handful of parallel gathers; dozens from one host is a script. */
+const MAX_SESSIONS_PER_HOST = 4;
+const MAX_MEMBERS_PER_SESSION = 64;
+const MAX_MATERIALS_PER_SESSION = 400;
+/** stagingKeys grow by append from every member — uncapped, one scripted member
+ *  inflates the session (and the file it is rewritten into) without limit. */
+const MAX_STAGING_KEYS_PER_SESSION = 256;
+/** Kicks are moderation, not a permanent ban list — past this, oldest entries fall off. */
+const MAX_KICKED_TRACKED = 256;
+/** Real names and item ids stay well under these; longer is padding aimed at the store. */
+const MAX_NAME_LEN = 48;
+const MAX_ITEM_ID_LEN = 128;
+/** A gather nobody ever joined is a test, an aborted attempt — or create-spam. */
+const SOLO_SESSION_TTL_SEC = 24 * 3600;
+const PURGE_INTERVAL_SEC = 60;
+
 function read_body(): array
 {
     $declared = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
@@ -256,17 +390,45 @@ function clan_identity(): ?array
 }
 
 /**
- * [uuid, name] to act as. Prefers the verified session; falls back to the body
- * only while require_auth is off, so a clan can upgrade the hub before every
- * member has updated the mod.
+ * Unverified identity hint from headers, honoured only while require_auth is off.
+ *
+ * Offline-mode launchers can never complete the Mojang handshake, so without this a
+ * plain poll carried no identity at all — lastSeen never moved, and the hub released
+ * the player's claims after claim_timeout while they were actively online. (The
+ * Python hub has honoured this hint for a while; this one silently didn't.)
+ *
+ * @return array{uuid: string, name: string}|null
+ */
+function clan_hint_identity(): ?array
+{
+    if (!empty($GLOBALS['clan_require_auth'])) {
+        return null;
+    }
+    $uuid = trim((string)($_SERVER['HTTP_X_CLAN_UUID'] ?? ''));
+    if ($uuid === '') {
+        return null;
+    }
+    $name = trim((string)($_SERVER['HTTP_X_CLAN_NAME'] ?? '?'));
+    return ['uuid' => $uuid, 'name' => $name !== '' ? $name : '?'];
+}
+
+/**
+ * [uuid, name] to act as. Prefers the verified session; falls back to the header
+ * hint and then to the body only while require_auth is off, so a clan can upgrade
+ * the hub before every member has updated the mod.
  *
  * @return array{0: string, 1: string}
  */
 function clan_actor(array $body): array
 {
-    $who = clan_identity();
+    $who = clan_identity() ?? clan_hint_identity();
     if ($who !== null) {
         return [$who['uuid'], $who['name']];
+    }
+    if (!empty($GLOBALS['clan_require_auth'])) {
+        // Unreachable for routed POSTs (the auth gate replied 401 already), kept so
+        // no future call site can wander back into trusting the body by accident.
+        return ['', '?'];
     }
     return [
         (string)($body['uuid'] ?? $body['hostUuid'] ?? ''),
@@ -274,9 +436,46 @@ function clan_actor(array $body): array
     ];
 }
 
+/**
+ * Verified identity for a host-only action; replies itself when that fails.
+ *
+ * Only the verified identity counts here, even while require_auth is off. The
+ * compat fallbacks (X-Clan-Uuid header, body uuid) are attacker-chosen, and the
+ * host's uuid is public in every session snapshot — honouring them meant anyone
+ * could rename the gather, empty the roster or close the session by pasting that
+ * uuid into a request.
+ *
+ * @return array{uuid: string, name: string}
+ */
+function require_verified_host(array $sess, string $deny = 'only host'): array
+{
+    $who = clan_identity();
+    if ($who === null) {
+        respond(403, ['error' => 'host actions require verified identity']);
+    }
+    if (strcasecmp((string)($sess['hostUuid'] ?? ''), (string)$who['uuid']) !== 0) {
+        respond(403, ['error' => $deny]);
+    }
+    return $who;
+}
+
 check_token($token);
 $path = api_path();
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+/*
+ * Rate limits sit before the store lock: a guessing loop must cost a counter lookup,
+ * not a full parse of sessions.json. Same bucket split as clan_hub.py — lookups
+ * (code guessing) tight, auth (nonce grinding) tight, in-session actions generous.
+ * Health stays unthrottled, matching Python.
+ */
+if ($path === '/v1/auth/challenge' || $path === '/v1/auth/verify') {
+    rate_ok('auth');
+} elseif ($method === 'GET' && preg_match('#^/v1/sessions/[^/]+/?$#', $path) === 1) {
+    rate_ok('lookup');
+} elseif ($method === 'POST' && str_starts_with($path, '/v1/sessions')) {
+    rate_ok(preg_match('#/join/?$#', $path) === 1 ? 'lookup' : 'action');
+}
 
 /*
  * Every request reads the whole store, mutates it and writes it back. Without a lock
@@ -305,7 +504,7 @@ if ($lockHandle !== false) {
 }
 
 $sessions = load_sessions($sessionsFile);
-purge($sessions, $ttlMs);
+purge($sessions, $ttlMs, $dataDir);
 
 if ($method === 'GET' && $path === '/v1/auth/challenge') {
     $nonce = clan_auth_new_challenge();
@@ -340,8 +539,10 @@ if ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $m)) {
         respond(404, ['error' => 'not found']);
     }
     // The poll IS the heartbeat — it used to refresh nothing, so lastSeen only moved
-    // on claim/deliver and a long mining trip looked like a disconnect.
-    $who = clan_identity();
+    // on claim/deliver and a long mining trip looked like a disconnect. Verified
+    // identity first; the header hint covers offline-mode clients while require_auth
+    // is off — without it their lastSeen never moved and claims timed out mid-game.
+    $who = clan_identity() ?? clan_hint_identity();
     $changed = false;
     if ($who !== null) {
         member_upsert($sessions[$code], $who['name'], $who['uuid']);
@@ -355,7 +556,7 @@ if ($method === 'GET' && preg_match('#^/v1/sessions/([^/]+)/?$#', $path, $m)) {
     if ($changed) {
         save_sessions($sessionsFile, $sessions);
     }
-    respond(200, $sessions[$code]);
+    respond_session($sessions[$code]);
 }
 
 // Mutating endpoints act on behalf of a player, so they need a verified one.
@@ -371,17 +572,26 @@ if ($method === 'POST' && $path === '/v1/sessions') {
     if (!is_array($materialsIn) || $materialsIn === []) {
         respond(400, ['error' => 'materials required']);
     }
-    $hostName = (string)($body['hostName'] ?? $body['name'] ?? 'Host');
-    [$hostUuid, $actorName] = clan_actor($body);
+    // NOT clan_actor(): in the create body "name" is the BUILD's name, so the generic
+    // fallback registered the host in the roster as "Castle" instead of their nick.
+    $who = clan_identity() ?? clan_hint_identity();
+    if ($who !== null) {
+        $hostUuid = (string)$who['uuid'];
+        $hostName = (string)$who['name'];
+    } else {
+        $hostUuid = (string)($body['hostUuid'] ?? $body['uuid'] ?? '');
+        $hostName = (string)($body['hostName'] ?? 'Host');
+    }
     if ($hostUuid === '') {
         respond(400, ['error' => 'hostUuid required']);
     }
-    $name = (string)($body['name'] ?? 'Build');
-    $schema = (string)($body['schemaName'] ?? $name);
+    $hostName = clamp_str($hostName, MAX_NAME_LEN);
+    $name = clamp_str((string)($body['name'] ?? 'Build'), MAX_NAME_LEN);
+    $schema = clamp_str((string)($body['schemaName'] ?? $name), MAX_NAME_LEN);
     $materials = [];
     foreach ($materialsIn as $k => $v) {
         $need = (int)$v;
-        if ($need > 0) {
+        if ($need > 0 && strlen((string)$k) <= MAX_ITEM_ID_LEN) {
             $materials[(string)$k] = [
                 'need' => $need,
                 'delivered' => 0,
@@ -392,6 +602,28 @@ if ($method === 'POST' && $path === '/v1/sessions') {
     }
     if ($materials === []) {
         respond(400, ['error' => 'empty materials']);
+    }
+    if (count($materials) > MAX_MATERIALS_PER_SESSION) {
+        respond(400, ['error' => 'too many materials (max ' . MAX_MATERIALS_PER_SESSION . ')']);
+    }
+    $staging = clean_staging_keys($body['stagingKeys'] ?? null);
+    if (count($staging) > MAX_STAGING_KEYS_PER_SESSION) {
+        respond(400, ['error' => 'too many staging keys (max ' . MAX_STAGING_KEYS_PER_SESSION . ')']);
+    }
+    // Creation is the one call that grows the store without knowing a code, so the
+    // growth caps live here: a global one for the hub's own survival and a per-host
+    // one so a single scripted client cannot eat the global budget.
+    if (count($sessions) >= MAX_SESSIONS_TOTAL) {
+        respond(503, ['error' => 'session limit reached']);
+    }
+    $mine = 0;
+    foreach ($sessions as $s) {
+        if (strcasecmp((string)($s['hostUuid'] ?? ''), $hostUuid) === 0) {
+            $mine++;
+        }
+    }
+    if ($mine >= MAX_SESSIONS_PER_HOST) {
+        respond(429, ['error' => 'too many open sessions for this host (max ' . MAX_SESSIONS_PER_HOST . ')']);
     }
     $code = gen_code($sessions);
     $now = now_ms();
@@ -406,20 +638,17 @@ if ($method === 'POST' && $path === '/v1/sessions') {
         'revision' => 1,
         'members' => [['name' => $hostName, 'uuid' => $hostUuid, 'lastSeen' => $now]],
         'materials' => $materials,
-        'stagingKeys' => [],
+        'stagingKeys' => $staging,
     ];
     $sessions[$code] = $sess;
     save_sessions($sessionsFile, $sessions);
-    respond(200, $sess);
+    respond_session($sess);
 }
 
-if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close)/?$#', $path, $m)) {
+if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver|staging|leave|close|update|kick|release_claims)/?$#', $path, $m)) {
     $code = normalize_code($m[1]);
     $action = $m[2];
     $body = read_body();
-    if (!isset($sessions[$code]) && $action !== 'close') {
-        // close may 404 too
-    }
     if (!isset($sessions[$code])) {
         respond(404, ['error' => 'not found']);
     }
@@ -431,10 +660,20 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if ($uuid === '') {
             respond(400, ['error' => 'uuid required']);
         }
-        member_upsert($sess, $name, $uuid);
+        // A deliberate re-join lifts the kicked flag: kicks are moderation, not a ban.
+        $kicked = is_array($sess['kicked'] ?? null) ? $sess['kicked'] : [];
+        if ($kicked !== []) {
+            $sess['kicked'] = array_values(array_filter(
+                $kicked,
+                static fn($k) => strcasecmp((string)$k, $uuid) !== 0
+            ));
+        }
+        if (!member_upsert($sess, $name, $uuid)) {
+            respond(409, ['error' => 'session full (max ' . MAX_MEMBERS_PER_SESSION . ' members)']);
+        }
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
-        respond(200, $sess);
+        respond_session($sess);
     }
 
     if ($action === 'claim') {
@@ -465,28 +704,64 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         member_upsert($sess, $name, $uuid);
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
-        respond(200, $sess);
+        respond_session($sess);
     }
 
     if ($action === 'deliver') {
         [$uuid, $actorName] = clan_actor($body);
         $name = $actorName !== '?' ? $actorName : (string)($body['name'] ?? '?');
-        $item = (string)($body['itemId'] ?? '');
-        $amount = (int)($body['amount'] ?? 0);
-        if ($uuid === '' || $item === '' || $amount <= 0) {
+        // Two shapes: single {"itemId","amount"} and batch {"amounts": {item: n}}.
+        // The batch is what the periodic warehouse push sends — parsed as the single
+        // shape it read amount=0, so every push bounced with 400 on this hub.
+        $amounts = [];
+        if (is_array($body['amounts'] ?? null)) {
+            foreach ($body['amounts'] as $k => $v) {
+                $n = (int)$v;
+                if ($n > 0) {
+                    $amounts[(string)$k] = $n;
+                }
+            }
+        } else {
+            $item = (string)($body['itemId'] ?? '');
+            $amount = (int)($body['amount'] ?? 0);
+            if ($item !== '' && $amount > 0) {
+                $amounts[$item] = $amount;
+            }
+        }
+        if ($uuid === '' || $amounts === []) {
             respond(400, ['error' => 'itemId/amount/uuid required']);
         }
-        if (!isset($sess['materials'][$item])) {
+        $known = 0;
+        $changed = false;
+        foreach ($amounts as $item => $amount) {
+            if (!isset($sess['materials'][$item])) {
+                continue;
+            }
+            $known++;
+            $mat = &$sess['materials'][$item];
+            $need = (int)($mat['need'] ?? 0);
+            $del = (int)($mat['delivered'] ?? 0);
+            $newDelivered = min($need, max($del, $amount));
+            if ($newDelivered !== $del) {
+                $mat['delivered'] = $newDelivered;
+                // Remember who actually raised the count — the client's activity
+                // feed used to guess the claim holder, which is often not the
+                // person who carried the items in.
+                $mat['lastDeliveredBy'] = $name;
+                $mat['lastDeliveredAt'] = now_ms();
+                $changed = true;
+            }
+            unset($mat);
+        }
+        if ($known === 0) {
             respond(404, ['error' => 'unknown item']);
         }
-        $mat = &$sess['materials'][$item];
-        $need = (int)($mat['need'] ?? 0);
-        $del = (int)($mat['delivered'] ?? 0);
-        $mat['delivered'] = min($need, max($del, $amount));
         member_upsert($sess, $name, $uuid);
-        touch_sess($sess);
+        if ($changed) {
+            touch_sess($sess);
+        }
         save_sessions($sessionsFile, $sessions);
-        respond(200, $sess);
+        respond_session($sess);
     }
 
     if ($action === 'staging') {
@@ -500,28 +775,25 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         if (!is_array($keysIn)) {
             respond(400, ['error' => 'stagingKeys must be list']);
         }
-        $clean = [];
-        foreach ($keysIn as $k) {
-            $s = trim((string)$k);
-            if ($s !== '' && !in_array($s, $clean, true)) {
-                $clean[] = $s;
-            }
-        }
+        $clean = clean_staging_keys($keysIn);
         if ($replace) {
-            $sess['stagingKeys'] = $clean;
+            $merged = $clean;
         } else {
-            $cur = is_array($sess['stagingKeys'] ?? null) ? $sess['stagingKeys'] : [];
+            $merged = is_array($sess['stagingKeys'] ?? null) ? $sess['stagingKeys'] : [];
             foreach ($clean as $k) {
-                if (!in_array($k, $cur, true)) {
-                    $cur[] = $k;
+                if (!in_array($k, $merged, true)) {
+                    $merged[] = $k;
                 }
             }
-            $sess['stagingKeys'] = $cur;
         }
+        if (count($merged) > MAX_STAGING_KEYS_PER_SESSION) {
+            respond(400, ['error' => 'too many staging keys (max ' . MAX_STAGING_KEYS_PER_SESSION . ')']);
+        }
+        $sess['stagingKeys'] = $merged;
         member_upsert($sess, $name, $uuid);
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
-        respond(200, $sess);
+        respond_session($sess);
     }
 
     if ($action === 'leave') {
@@ -539,16 +811,95 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
         ));
         touch_sess($sess);
         save_sessions($sessionsFile, $sessions);
-        respond(200, $sess);
+        respond_session($sess);
+    }
+
+    if ($action === 'update') {
+        // Rename the gather (host only). The name every member sees on their panel.
+        $raw = trim((string)($body['name'] ?? ''));
+        if ($raw === '') {
+            respond(400, ['error' => 'name required']);
+        }
+        require_verified_host($sess);
+        $name = clamp_str($raw, MAX_NAME_LEN);
+        $sess['name'] = $name;
+        $sess['schemaName'] = $name;
+        touch_sess($sess);
+        save_sessions($sessionsFile, $sessions);
+        respond_session($sess);
+    }
+
+    if ($action === 'kick') {
+        // Remove a member (host only): claims released, roster row gone, and the
+        // heartbeat cannot re-add them — only a fresh join by code can.
+        $target = strtolower(trim((string)($body['target'] ?? '')));
+        if ($target === '') {
+            respond(400, ['error' => 'target required']);
+        }
+        require_verified_host($sess);
+        if ($target === strtolower((string)($sess['hostUuid'] ?? ''))) {
+            respond(400, ['error' => 'host cannot kick self']);
+        }
+        $members = is_array($sess['members'] ?? null) ? $sess['members'] : [];
+        $kept = array_values(array_filter(
+            $members,
+            static fn($m) => strtolower((string)($m['uuid'] ?? '')) !== $target
+        ));
+        if (count($kept) === count($members)) {
+            respond(404, ['error' => 'no such member']);
+        }
+        $sess['members'] = $kept;
+        if (is_array($sess['materials'] ?? null)) {
+            foreach ($sess['materials'] as &$mat) {
+                if (strtolower((string)($mat['claimedBy'] ?? '')) === $target) {
+                    $mat['claimedBy'] = null;
+                    $mat['claimedName'] = null;
+                }
+            }
+            unset($mat);
+        }
+        $kicked = is_array($sess['kicked'] ?? null) ? $sess['kicked'] : [];
+        $already = false;
+        foreach ($kicked as $k) {
+            if (strtolower((string)$k) === $target) {
+                $already = true;
+                break;
+            }
+        }
+        if (!$already) {
+            $kicked[] = $target;
+            // Oldest entries fall off past the cap — see MAX_KICKED_TRACKED.
+            $kicked = array_slice($kicked, -MAX_KICKED_TRACKED);
+        }
+        $sess['kicked'] = $kicked;
+        touch_sess($sess);
+        save_sessions($sessionsFile, $sessions);
+        respond_session($sess);
+    }
+
+    if ($action === 'release_claims') {
+        // Clear every claim (host only) — the reset button for a stalled evening.
+        require_verified_host($sess);
+        if (is_array($sess['materials'] ?? null)) {
+            foreach ($sess['materials'] as &$mat) {
+                if (!empty($mat['claimedBy'])) {
+                    $mat['claimedBy'] = null;
+                    $mat['claimedName'] = null;
+                }
+            }
+            unset($mat);
+        }
+        touch_sess($sess);
+        save_sessions($sessionsFile, $sessions);
+        respond_session($sess);
     }
 
     if ($action === 'close') {
-        [$uuid, $actorName] = clan_actor($body);
         // An empty uuid used to short-circuit the host check and fall through to the
-        // delete below, letting anyone drop any session by simply omitting the field.
-        if ($uuid === '' || strcasecmp((string)($sess['hostUuid'] ?? ''), $uuid) !== 0) {
-            respond(403, ['error' => 'only host can close']);
-        }
+        // delete below, letting anyone drop any session by simply omitting the field —
+        // and later, a spoofed one could impersonate the host. Only a Mojang-verified
+        // host closes now, same rule as clan_hub.py.
+        require_verified_host($sess, 'only host can close');
         unset($sessions[$code]);
         save_sessions($sessionsFile, $sessions);
         respond(200, ['ok' => true, 'code' => $code]);

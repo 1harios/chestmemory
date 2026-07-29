@@ -103,7 +103,6 @@ public class ClanGatherScreen extends Screen {
 
 	private final Screen parent;
 	private EditBox hubBox;
-	private EditBox tokenBox;
 	private EditBox codeBox;
 	private String status = "";
 	/** Two-step guard for "say in chat": the code is readable by everyone on the server. */
@@ -118,6 +117,17 @@ public class ClanGatherScreen extends Screen {
 	private boolean closeArmed;
 	/** Member armed for a kick (host clicked their row once), or null. */
 	private @org.jspecify.annotations.Nullable String kickArmUuid;
+	/**
+	 * Tick countdowns for the armed confirms above — 5 seconds, like the chest panel's
+	 * Clear. Armed used to mean armed forever: a host who clicked «Сказать код» once,
+	 * browsed other tabs and came back minutes later broadcast the session code to the
+	 * whole server with what looked like a first click.
+	 */
+	private static final int ARM_TIMEOUT_TICKS = 100;
+	private int sayCodeArmTicks;
+	private int releaseArmTicks;
+	private int closeArmTicks;
+	private int kickArmTicks;
 	/** Search over the gather grid; kept across rebuilds like the code draft. */
 	private String gatherQuery = "";
 	private @org.jspecify.annotations.Nullable EditBox gatherSearchBox;
@@ -134,21 +144,124 @@ public class ClanGatherScreen extends Screen {
 	private int tabsY = -1;
 	private int tabsLeft;
 	private int tabsWidth;
-	/** Gather-list geometry, filled while rendering so clicks can be mapped to a code. */
 	/** Live chest stock per item, briefly cached — the grid asks per cell per frame. */
 	private final java.util.Map<String, Integer> stockCache = new java.util.HashMap<>();
 	private long stockCacheAt;
+	/**
+	 * Tab ids and labels the strip was last built for. tabAt runs every frame for the
+	 * hover, and drawTabs right after it — each pass built a fresh Component per tab and
+	 * then measured it, although the visible set only changes when a session starts or
+	 * ends or the solo list appears. The Components stay translatable, so a language
+	 * switch re-resolves them without a rebuild; only the id set can go stale, and it is
+	 * compared on every call.
+	 */
+	private int[] tabLabelIds = new int[0];
+	private Component[] tabLabels = new Component[0];
+	/**
+	 * Subtitle and idle status line, rebuilt by refreshHeaderText() instead of per frame.
+	 * Both are Component.translatable(...).getString() chains that were re-run 60+ times
+	 * a second while their inputs sat unchanged. Keyed on the session snapshot and the
+	 * mode; slower inputs (the solo list's name, the hub-config flag) ride a 500ms roll.
+	 */
+	private String subtitleCache = "";
+	private String statusFallbackCache = "";
+	private @org.jspecify.annotations.Nullable ClanSession headerBuiltSession;
+	private @org.jspecify.annotations.Nullable GatherMode headerBuiltMode;
+	private long headerBuiltAt;
+	/**
+	 * Built cells of the clan grid. Copying, band-sorting (two stock lookups per
+	 * comparison) and query-filtering the whole material map ran per frame; the inputs
+	 * only change when the hub hands over a new snapshot (adoptSession replaces the
+	 * object, so identity is the check), when the query changes, or when the 500ms stock
+	 * roll can shift a band. Stale means: counts and tints can lag half a second behind
+	 * a delivery or a scan — the same staleness the stock tints already accept.
+	 */
+	private List<MatCell> clanCells = java.util.List.of();
+	private @org.jspecify.annotations.Nullable ClanSession clanCellsSession;
+	private String clanCellsQuery = "";
+	private long clanCellsAt;
+	/** Built cells of the solo grid; keys mirror the clan cache (list identity stands in
+	 *  for the session snapshot, plus the focus ring, which moves without new data). */
+	private List<MatCell> soloCells = java.util.List.of();
+	private @org.jspecify.annotations.Nullable List<com.chestmemory.client.data.ItemSummary> soloCellsRows;
+	private String soloCellsQuery = "";
+	private @org.jspecify.annotations.Nullable String soloCellsFocus;
+	/** Solo legend numbers, computed with the cells so the caption matches the grid. */
+	private int soloLegendShown;
+	private int soloLegendDone;
+	private int soloLegendStocked;
+	/** Solo rows by id, for the hover tooltip — kept in step with the solo cells. */
+	private java.util.Map<String, com.chestmemory.client.data.ItemSummary> soloRowById = java.util.Map.of();
+	/**
+	 * Solo schematic list shared by the gather grid and the Info tab, behind the same
+	 * 500ms roll as stockCache: buildPanelList walks every container per material, and
+	 * both tabs used to run that walk per frame. Half a second of staleness is what its
+	 * missingMaterials snapshot already has; one field means the two tabs can never
+	 * disagree.
+	 */
+	private List<com.chestmemory.client.data.ItemSummary> soloPanelRows = java.util.List.of();
+	private long soloPanelRowsAt;
+	/**
+	 * Search matches from the whole chest memory, keyed on the query and the gather's
+	 * own id set, refreshed on the 500ms roll. The listItems walk behind them (every
+	 * container, fresh maps, a name-resolving sort) used to run per frame for as long
+	 * as one character sat in the search box. Stale means: a delivery or scan takes up
+	 * to half a second to change a dimmed count — same as the stock tints.
+	 */
+	private List<com.chestmemory.client.data.ItemSummary> externalCacheRows = java.util.List.of();
+	private java.util.Set<String> externalCacheIds = java.util.Set.of();
+	private String externalCacheQuery = "";
+	private java.util.Set<String> externalCacheGatherIds = java.util.Set.of();
+	private long externalCacheAt;
+	/**
+	 * Composed tooltip for the hovered cell, ItemGridWidget's exact pattern: cached per
+	 * hovered id, refreshed twice a second, because building one walks the container
+	 * list four times over (live count, nearest distance, shulker and ender breakdowns).
+	 */
+	private @org.jspecify.annotations.Nullable String tooltipItemId;
+	private long tooltipBuiltMs;
+	private List<Component> tooltipLines = java.util.List.of();
+	/** Ids mirroring the painted cells; rebuilt only when a cache hands over a new list. */
+	private @org.jspecify.annotations.Nullable List<MatCell> gridIdsFor;
+	private java.util.List<String> gridIdsCache = java.util.List.of();
+	/**
+	 * Member uuid (lower case) → their claim, once per session snapshot. The roster row
+	 * used to walk ALL materials per visible member per frame — O(members × materials),
+	 * with a display-name resolve inside — for an answer that cannot change until the
+	 * hub hands over a new snapshot.
+	 */
+	private java.util.Map<String, MemberClaim> memberClaims = java.util.Map.of();
+	private @org.jspecify.annotations.Nullable ClanSession memberClaimsSession;
+	/**
+	 * Flattened feed rows on the 500ms roll: ClanEventLog.all() copies the log and every
+	 * row flattened its Component and formatted an age label, per frame. New entries and
+	 * the ticking ages ("5с" → "6с") surface within half a second — finer than the
+	 * labels' own units, so the lag is invisible.
+	 */
+	private List<FeedRow> feedRows = java.util.List.of();
+	private long feedRowsAt;
+	/**
+	 * Known gathers on the 500ms roll: ClanRoster.all() is a List.copyOf per call, asked
+	 * for by the list tab's render pass every frame. Click mapping reads the same field,
+	 * so a click is resolved against exactly the rows that were painted.
+	 */
+	private List<com.chestmemory.client.clan.ClanRoster.Entry> rosterRows = java.util.List.of();
+	private long rosterRowsAt;
 	/** Y where the material grid must stop, set by init() next to the controls below it. */
 	private int gridBottom = -1;
-	private int listRowsTop = -1;
 	/**
 	 * Y where the gather list has to stop, set by init() next to the controls it must clear.
 	 * Hard-coding the offset in the drawing code is what let the empty-list caption land on
 	 * top of the buttons.
 	 */
 	private int listBottom = -1;
-	private int listRowH = 22;
-	private java.util.List<String> listCodes = java.util.List.of();
+	/**
+	 * Y of the kick hint under the host-settings rows, recorded by initHostSettings().
+	 * It used to be re-derived in the drawing code as a chain of hard-coded offsets that
+	 * had to mirror the row layout by hand — adding one settings row put the hint on top
+	 * of a toggle.
+	 */
+	private int hostSettingsHintY;
 	private int panelLeft;
 	private int panelTop;
 	private int panelW;
@@ -180,6 +293,30 @@ public class ClanGatherScreen extends Screen {
 	@Override
 	public void tick() {
 		super.tick();
+		// Armed confirms disarm themselves, mirroring the chest panel's Clear countdown —
+		// see ARM_TIMEOUT_TICKS for the stale-arm broadcast this prevents.
+		boolean disarmed = false;
+		if (this.sayCodeArmed && --this.sayCodeArmTicks <= 0) {
+			this.sayCodeArmed = false;
+			disarmed = true;
+		}
+		if (this.releaseArmed && --this.releaseArmTicks <= 0) {
+			this.releaseArmed = false;
+			disarmed = true;
+		}
+		if (this.closeArmed && --this.closeArmTicks <= 0) {
+			this.closeArmed = false;
+			disarmed = true;
+		}
+		if (this.kickArmUuid != null && --this.kickArmTicks <= 0) {
+			this.kickArmUuid = null;
+			disarmed = true;
+		}
+		if (disarmed) {
+			// The standing hint («нажмите ещё раз…») described the armed state; it must
+			// not outlive it and keep promising a second click that now arms again.
+			this.status = "";
+		}
 		String switching = ClanSessionManager.switchingTo();
 		boolean busy = ClanSessionManager.isBusy();
 		ClanSession s = ClanSessionManager.session();
@@ -204,7 +341,10 @@ public class ClanGatherScreen extends Screen {
 			|| hasCode != this.builtForHasCode
 			|| hub != this.builtForHub
 			|| soloActive != this.builtForSoloActive
-			|| mode != this.builtForMode) {
+			|| mode != this.builtForMode
+			// A dropped arm changes button labels («…точно?» back to the plain caption),
+			// and those are baked at build time.
+			|| disarmed) {
 			// A rebuild recreates the EditBox, and typing the first character triggers one —
 			// so without this the box loses focus after a single keystroke and the player has
 			// to click it again for every letter of the code.
@@ -228,6 +368,8 @@ public class ClanGatherScreen extends Screen {
 				this.gatherSearchBox.moveCursorToEnd(false);
 			}
 		}
+		// After the comparisons, so a rebuild's fresh state is what gets baked in.
+		refreshHeaderText();
 	}
 
 	public ClanGatherScreen(Screen parent) {
@@ -245,12 +387,26 @@ public class ClanGatherScreen extends Screen {
 		this.builtForCode = built != null ? built.code : null;
 		this.builtForSoloActive = com.chestmemory.client.litematica.BuildGatherSession.isActive();
 		this.builtForMode = gatherMode();
+		// Every per-tab EditBox field is dropped up front. A rebuild that did not rebuild
+		// a box left the field aimed at the detached widget, still marked focused — so
+		// after a tab switch, tick()'s focus restore handed real focus back to that
+		// orphan, and keystrokes edited an invisible box (silently changing codeDraft).
+		this.codeBox = null;
+		this.renameBox = null;
 		this.gatherSearchBox = null;
 		this.searchOnGatherTab = false;
+		// A rebuild can land mid-hover and move the grid, so the cached tooltip could keep
+		// painting for a cell no longer under the pointer — dropped with the widgets.
+		this.tooltipItemId = null;
+		this.tooltipLines = java.util.List.of();
 		this.panelW = ChestGuiStyle.panelWidth(this.width);
 		this.panelH = ChestGuiStyle.panelHeight(this.height);
 		this.panelLeft = (this.width - this.panelW) / 2;
 		this.panelTop = (this.height - this.panelH) / 2;
+		// Language switches and window resizes both funnel through init(), and both are
+		// baked into the cached header strings (resolved text, panel-width ellipsis).
+		this.headerBuiltMode = null;
+		refreshHeaderText();
 
 		int left = this.panelLeft + 12;
 		int w = this.panelW - 24;
@@ -259,9 +415,8 @@ public class ClanGatherScreen extends Screen {
 		int gap = 4;
 
 		// When the build ships the clan's hub, members only ever type a session code —
-		// no URL, no token. The manual fields appear only for a build without one.
+		// no URL, no token. The manual field appears only for a build without one.
 		this.hubBox = null;
-		this.tokenBox = null;
 		if (ClanDefaults.hasBakedHub()) {
 			// A corner lamp instead of a full-width strip: the strip spent a whole row on
 			// one word. The word lives in the tooltip now, the colour is read live every
@@ -300,8 +455,10 @@ public class ClanGatherScreen extends Screen {
 				left, y, w, rowH,
 				Component.translatable("screen.chestmemory.clan.save_hub"),
 				() -> {
+					// Only the URL: this callback outlived the token box (see above) and
+					// kept dereferencing it, so «Сохранить хаб» crashed every build
+					// without a baked hub.
 					ModSettings.get().setClanHubUrl(this.hubBox.getValue());
-					ModSettings.get().setClanToken(this.tokenBox.getValue());
 					this.status = Component.translatable("screen.chestmemory.clan.hub_saved").getString();
 				}
 			));
@@ -465,6 +622,7 @@ public class ClanGatherScreen extends Screen {
 						// session, so require a second click instead of firing on the first.
 						if (!this.sayCodeArmed) {
 							this.sayCodeArmed = true;
+							this.sayCodeArmTicks = ARM_TIMEOUT_TICKS;
 							this.status = Component.translatable("screen.chestmemory.clan.say_code_hint").getString();
 							this.rebuildWidgets();
 							return;
@@ -532,7 +690,6 @@ public class ClanGatherScreen extends Screen {
 				return;
 			}
 			this.hostSettings = false;
-			this.renameBox = null;
 			addGatherSearch(left, y, w);
 			// One row of controls: warehouse and code tools moved to Инфо, and the hover
 			// facts ride a vanilla tooltip — the grid gets everything above this line.
@@ -565,7 +722,6 @@ public class ClanGatherScreen extends Screen {
 		}
 
 		if (mode == GatherMode.SOLO) {
-			this.renameBox = null;
 			addGatherSearch(left, y, w);
 			// Start/next/stop stay: they ARE the gathering. The warehouse row moved to Инфо.
 			this.gridBottom = row1 - 26;
@@ -620,7 +776,6 @@ public class ClanGatherScreen extends Screen {
 
 		// EMPTY: nothing to collect from — the body explains the two ways to get a gather,
 		// the buttons take you there.
-		this.renameBox = null;
 		this.gridBottom = -1;
 		this.addRenderableWidget(new SettingRowButton(
 			left, row2, half, rowH,
@@ -684,6 +839,7 @@ public class ClanGatherScreen extends Screen {
 				// Someone's evening of mining hangs off these claims — ask twice.
 				if (!this.releaseArmed) {
 					this.releaseArmed = true;
+					this.releaseArmTicks = ARM_TIMEOUT_TICKS;
 					this.rebuildWidgets();
 					return;
 				}
@@ -705,6 +861,7 @@ public class ClanGatherScreen extends Screen {
 				}
 				if (!this.closeArmed) {
 					this.closeArmed = true;
+					this.closeArmTicks = ARM_TIMEOUT_TICKS;
 					this.status = Component.translatable("screen.chestmemory.clan.delete_hint").getString();
 					this.rebuildWidgets();
 					return;
@@ -731,6 +888,9 @@ public class ClanGatherScreen extends Screen {
 			() -> ModSettings.get().gatherAutoAdvance(),
 			() -> ModSettings.get().setGatherAutoAdvance(!ModSettings.get().gatherAutoAdvance())
 		));
+		// The kick hint is painted by drawHostSettings; recording the row cursor here is
+		// what keeps the two in lockstep when a settings row is added or reordered.
+		this.hostSettingsHintY = y + rowH + 8;
 
 		this.addRenderableWidget(new SettingRowButton(
 			left, row2, half, rowH,
@@ -756,37 +916,106 @@ public class ClanGatherScreen extends Screen {
 	 * whole point of finding it — instead of trying to claim what is not in the gather.
 	 */
 	private void appendExternalMatches(List<MatCell> cells, String q, java.util.Set<String> gatherIds) {
-		this.externalRows = java.util.List.of();
-		this.externalIds = java.util.Set.of();
-		if (q.isEmpty() || this.minecraft == null) {
-			return;
-		}
-		java.util.List<com.chestmemory.client.data.ItemSummary> ext = new java.util.ArrayList<>();
-		java.util.Set<String> ids = new java.util.HashSet<>();
-		String dim = this.minecraft.level != null
-			? ChestMemoryStorage.dimensionId(this.minecraft.level) : null;
-		net.minecraft.world.phys.Vec3 pos = this.minecraft.player != null
-			? this.minecraft.player.position() : null;
-		for (com.chestmemory.client.data.ItemSummary sum : ChestMemoryStorage.get().listItems(
-			q,
-			com.chestmemory.client.data.ContainerFilter.ALL,
-			com.chestmemory.client.data.DimensionChoice.ALL,
-			com.chestmemory.client.data.ListScope.WORLD_TOTAL,
-			dim, pos, 0,
-			com.chestmemory.client.data.SortMode.COUNT
-		)) {
-			if (gatherIds.contains(sum.itemId())) {
-				continue;
+		// The listItems walk below aggregates the whole chest memory; it used to run per
+		// frame while a query sat in the box. Only the query and the gather's id set can
+		// change what it returns from one moment to the next — plus the chests themselves,
+		// which the 500ms roll covers, the cadence every other cache here uses. Callers run
+		// at that same cadence, so the recompute fires at most twice a second.
+		long now = System.currentTimeMillis();
+		if (!q.equals(this.externalCacheQuery)
+			|| !gatherIds.equals(this.externalCacheGatherIds)
+			|| now - this.externalCacheAt > 500L) {
+			java.util.List<com.chestmemory.client.data.ItemSummary> ext = new java.util.ArrayList<>();
+			java.util.Set<String> ids = new java.util.HashSet<>();
+			if (!q.isEmpty() && this.minecraft != null) {
+				String dim = this.minecraft.level != null
+					? ChestMemoryStorage.dimensionId(this.minecraft.level) : null;
+				net.minecraft.world.phys.Vec3 pos = this.minecraft.player != null
+					? this.minecraft.player.position() : null;
+				for (com.chestmemory.client.data.ItemSummary sum : ChestMemoryStorage.get().listItems(
+					q,
+					com.chestmemory.client.data.ContainerFilter.ALL,
+					com.chestmemory.client.data.DimensionChoice.ALL,
+					com.chestmemory.client.data.ListScope.WORLD_TOTAL,
+					dim, pos, 0,
+					com.chestmemory.client.data.SortMode.COUNT
+				)) {
+					if (gatherIds.contains(sum.itemId())) {
+						continue;
+					}
+					ext.add(sum);
+					ids.add(sum.itemId());
+					if (ext.size() >= 34) {
+						break;
+					}
+				}
 			}
-			ext.add(sum);
-			ids.add(sum.itemId());
+			this.externalCacheRows = ext;
+			this.externalCacheIds = ids;
+			this.externalCacheQuery = q;
+			// A copy, not the passed-in set: the clan hands over a live keySet view.
+			this.externalCacheGatherIds = java.util.Set.copyOf(gatherIds);
+			this.externalCacheAt = now;
+		}
+		this.externalRows = this.externalCacheRows;
+		this.externalIds = this.externalCacheIds;
+		for (com.chestmemory.client.data.ItemSummary sum : this.externalCacheRows) {
 			cells.add(new MatCell(sum.itemId(), sum.totalCount(), 0, 0xFF9E9E9E, null, 0, 0));
-			if (ext.size() >= 34) {
-				break;
+		}
+	}
+
+	/**
+	 * Keep the painted order while the pointer is over the tray.
+	 * <p>
+	 * clanBand feeds the sort from the 500ms stockCache, so the grid re-sorted itself
+	 * twice a second: a cell could move between the frame the player aimed at and the
+	 * frame they clicked, and the click mapped to the new order — they claimed whatever
+	 * slid under the pointer. Rebuilds still refresh every cell's data (counts, tints,
+	 * rings); only the order is held: surviving ids keep the positions last painted, new
+	 * ids go after them. A changed query is exempt — that reorder is the player's own
+	 * typing, and freezing filtered rows in stale positions would break the live filter.
+	 * The band order returns on the first rebuild after the pointer leaves the tray.
+	 */
+	private List<MatCell> holdGridOrder(
+		List<MatCell> fresh,
+		List<MatCell> previous,
+		boolean sameQuery,
+		int left,
+		int top,
+		int contentW
+	) {
+		if (!sameQuery || previous.isEmpty() || !pointerOverGrid(left, top, contentW)) {
+			return fresh;
+		}
+		java.util.Map<String, Integer> at = new java.util.HashMap<>();
+		for (int i = 0; i < previous.size(); i++) {
+			at.putIfAbsent(previous.get(i).itemId(), i);
+		}
+		List<MatCell> held = new java.util.ArrayList<>(fresh);
+		held.sort(java.util.Comparator.comparingInt((MatCell c) -> {
+			Integer prev = at.get(c.itemId());
+			// Ids the last frame did not show sort after everything held in place, in
+			// their fresh relative order (the sort is stable).
+			return prev != null ? prev : previous.size();
+		}));
+		return held;
+	}
+
+	/** True when the pointer is inside the grid tray — the zone where reordering bites. */
+	private boolean pointerOverGrid(int left, int top, int contentW) {
+		int bottom = this.gridBottom > 0 ? this.gridBottom : this.panelTop + this.panelH - 50;
+		return this.hoverX >= left && this.hoverX < left + contentW
+			&& this.hoverY >= top && this.hoverY < bottom;
+	}
+
+	/** Cached external row for an id — ≤34 entries, scanned only while one is hovered. */
+	private com.chestmemory.client.data.@org.jspecify.annotations.Nullable ItemSummary externalRowById(String itemId) {
+		for (com.chestmemory.client.data.ItemSummary sum : this.externalRows) {
+			if (sum.itemId().equals(itemId)) {
+				return sum;
 			}
 		}
-		this.externalRows = ext;
-		this.externalIds = ids;
+		return null;
 	}
 
 	/** Search over the grid — and over the whole chest memory, appended dimmed. */
@@ -799,7 +1028,8 @@ public class ClanGatherScreen extends Screen {
 		this.gatherSearchBox.setHint(Component.translatable("screen.chestmemory.clan.search_hint"));
 		this.gatherSearchBox.setTextColor(0xFFFFFFFF);
 		this.gatherSearchBox.setValue(this.gatherQuery);
-		// The grid reads the query per frame, so typing filters live — no rebuilds.
+		// The cell caches key on the query and rebuild the frame it changes, so typing
+		// still filters live — no widget rebuilds.
 		this.gatherSearchBox.setResponder(v -> this.gatherQuery = v);
 		this.addRenderableWidget(this.gatherSearchBox);
 		this.searchOnGatherTab = true;
@@ -1019,6 +1249,13 @@ public class ClanGatherScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		// The painted hit-tests below receive every mouse button, unlike real widgets
+		// (which filter through isValidClickButton) — so a right-click on a roster row
+		// armed a kick and a right-click on a cell claimed it. Anything but the left
+		// button goes straight to the widgets.
+		if (event.button() != 0) {
+			return super.mouseClicked(event, doubleClick);
+		}
 		// Tabs are painted, not widgets, so they are hit-tested here — before the default
 		// handling, which would otherwise swallow the click on the panel background.
 		if (this.tab == TAB_MEMBERS && this.minecraft != null
@@ -1041,6 +1278,7 @@ public class ClanGatherScreen extends Screen {
 						);
 					} else {
 						this.kickArmUuid = target.uuid;
+						this.kickArmTicks = ARM_TIMEOUT_TICKS;
 						this.status = Component.translatable(
 							"screen.chestmemory.clan.kick_confirm",
 							target.name == null || target.name.isBlank() ? "?" : target.name
@@ -1095,6 +1333,9 @@ public class ClanGatherScreen extends Screen {
 				this.kickArmUuid = null;
 				this.releaseArmed = false;
 				this.closeArmed = false;
+				// This reset used to skip sayCodeArmed, so the arm survived a trip through
+				// the other tabs and the return click posted the code to public chat.
+				this.sayCodeArmed = false;
 				this.rebuildWidgets();
 			}
 			return true;
@@ -1113,14 +1354,39 @@ public class ClanGatherScreen extends Screen {
 			return null;
 		}
 		// Delegated to the scroll state, which knows the offset. Doing the arithmetic here
-		// broke the moment the list could scroll: listCodes holds only the visible rows, so a
-		// scrolled list mapped every click to the wrong gather.
+		// broke the moment the list could scroll: a per-frame list of the visible rows only,
+		// indexed from zero, mapped every click on a scrolled list to the wrong gather.
 		int idx = this.gatherScroll.rowAt(mx, my, 20);
 		if (idx < 0) {
 			return null;
 		}
-		var entries = com.chestmemory.client.clan.ClanRoster.all();
+		// The cached list the rows were painted from, so the click cannot land on a row
+		// the player has not seen yet.
+		var entries = rosterRows();
 		return idx < entries.size() ? entries.get(idx).code() : null;
+	}
+
+	/** Known gathers — see {@link #rosterRows} for why the copy sits behind a roll. */
+	private List<com.chestmemory.client.clan.ClanRoster.Entry> rosterRows() {
+		long now = System.currentTimeMillis();
+		if (now - this.rosterRowsAt > 500L) {
+			this.rosterRowsAt = now;
+			this.rosterRows = com.chestmemory.client.clan.ClanRoster.all();
+		}
+		return this.rosterRows;
+	}
+
+	/** Labels for the visible tabs — see {@link #tabLabelIds} for why they are cached. */
+	private Component[] tabLabelsFor(int[] vis) {
+		if (!java.util.Arrays.equals(vis, this.tabLabelIds)) {
+			Component[] labels = new Component[vis.length];
+			for (int i = 0; i < vis.length; i++) {
+				labels[i] = Component.translatable(TAB_KEYS[vis[i]]);
+			}
+			this.tabLabelIds = vis;
+			this.tabLabels = labels;
+		}
+		return this.tabLabels;
 	}
 
 	/** Tab index under the cursor, or -1. Geometry shared with the tab renderer. */
@@ -1129,12 +1395,8 @@ public class ClanGatherScreen extends Screen {
 			return -1;
 		}
 		int[] vis = visibleTabs();
-		Component[] labels = new Component[vis.length];
-		for (int i = 0; i < vis.length; i++) {
-			labels[i] = Component.translatable(TAB_KEYS[vis[i]]);
-		}
 		int idx = ChestGuiStyle.tabIndexAt(
-			this.font, labels, this.tabsLeft, this.tabsWidth, this.tabsY, mx, my
+			this.font, tabLabelsFor(vis), this.tabsLeft, this.tabsWidth, this.tabsY, mx, my
 		);
 		return idx < 0 ? -1 : vis[idx];
 	}
@@ -1142,9 +1404,6 @@ public class ClanGatherScreen extends Screen {
 	private void saveHubQuiet() {
 		if (this.hubBox != null) {
 			ModSettings.get().setClanHubUrl(this.hubBox.getValue());
-		}
-		if (this.tokenBox != null) {
-			ModSettings.get().setClanToken(this.tokenBox.getValue());
 		}
 	}
 
@@ -1162,28 +1421,37 @@ public class ClanGatherScreen extends Screen {
 		ChestGuiStyle.drawChestPanel(graphics, this.panelLeft, this.panelTop, this.panelW, this.panelH);
 	}
 
-	@Override
-	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
-		super.extractRenderState(graphics, mouseX, mouseY, a);
-		this.hoverX = mouseX;
-		this.hoverY = mouseY;
-		// Title and subtitle on two lines, exactly as the chest panel does it: the header has
-		// room for both, and the second line is where the screen says what it is showing.
-		ChestGuiStyle.drawCentered(
-			graphics, this.font, this.title,
-			this.panelLeft + this.panelW / 2, this.panelTop + 8,
-			ChestGuiStyle.TEXT_TITLE
-		);
-		ClanSession header = ClanSessionManager.session();
+	/**
+	 * Rebuild the subtitle and the idle status line — from tick() and init(), not from
+	 * the render pass.
+	 * <p>
+	 * Both are Component.translatable(...).getString() chains (format lookup, argument
+	 * substitution, flattening) and were rebuilt 60+ times a second while nothing about
+	 * them changed. A new session snapshot or a mode flip refreshes them at once; what is
+	 * only reachable through slower calls — the solo list's name, the hub-config flag —
+	 * rides the 500ms roll, so a renamed schematic or a saved hub URL shows within half
+	 * a second.
+	 */
+	private void refreshHeaderText() {
+		ClanSession s = ClanSessionManager.session();
+		GatherMode mode = gatherMode();
+		long now = System.currentTimeMillis();
+		if (s == this.headerBuiltSession && mode == this.headerBuiltMode
+			&& now - this.headerBuiltAt <= 500L) {
+			return;
+		}
+		this.headerBuiltSession = s;
+		this.headerBuiltMode = mode;
+		this.headerBuiltAt = now;
 		String subtitle;
-		if (header != null) {
-			String build = header.schemaName == null || header.schemaName.isBlank()
+		if (s != null) {
+			String build = s.schemaName == null || s.schemaName.isBlank()
 				? Component.translatable("screen.chestmemory.clan.unnamed_build").getString()
-				: header.schemaName;
+				: s.schemaName;
 			subtitle = Component.translatable(
-				"screen.chestmemory.clan.header_in", header.code, build
+				"screen.chestmemory.clan.header_in", s.code, build
 			).getString();
-		} else if (gatherMode() == GatherMode.SOLO) {
+		} else if (mode == GatherMode.SOLO) {
 			String list = com.chestmemory.client.litematica.BuildGatherSession.listName();
 			if (list == null || list.isBlank()) {
 				list = LitematicaAccess.activeListName();
@@ -1197,9 +1465,37 @@ public class ClanGatherScreen extends Screen {
 		} else {
 			subtitle = Component.translatable("screen.chestmemory.clan.header_out").getString();
 		}
+		this.subtitleCache = ChestGuiStyle.ellipsize(this.font, subtitle, this.panelW - 24);
+		if (s != null) {
+			this.statusFallbackCache = "";
+		} else if (mode == GatherMode.SOLO) {
+			this.statusFallbackCache =
+				Component.translatable("screen.chestmemory.clan.status_solo").getString();
+		} else if (!ClanSessionManager.isConfigured()) {
+			this.statusFallbackCache =
+				Component.translatable("screen.chestmemory.clan.status_need_hub").getString();
+		} else {
+			this.statusFallbackCache =
+				Component.translatable("screen.chestmemory.clan.status_ready").getString();
+		}
+	}
+
+	@Override
+	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
+		super.extractRenderState(graphics, mouseX, mouseY, a);
+		this.hoverX = mouseX;
+		this.hoverY = mouseY;
+		// Title and subtitle on two lines, exactly as the chest panel does it: the header has
+		// room for both, and the second line is where the screen says what it is showing.
+		ChestGuiStyle.drawCentered(
+			graphics, this.font, this.title,
+			this.panelLeft + this.panelW / 2, this.panelTop + 8,
+			ChestGuiStyle.TEXT_TITLE
+		);
+		// Composed and ellipsized in refreshHeaderText(), off the render path.
 		ChestGuiStyle.drawCentered(
 			graphics, this.font,
-			ChestGuiStyle.ellipsize(this.font, subtitle, this.panelW - 24),
+			this.subtitleCache,
 			this.panelLeft + this.panelW / 2, this.panelTop + 20,
 			ChestGuiStyle.TEXT_MUTED
 		);
@@ -1213,11 +1509,11 @@ public class ClanGatherScreen extends Screen {
 		if (this.tabsY >= 0) {
 			this.hoveredTab = tabAt(mouseX, mouseY);
 			int[] vis = visibleTabs();
-			Component[] labels = new Component[vis.length];
+			// The same cached labels tabAt just hit-tested — one array, both users.
+			Component[] labels = tabLabelsFor(vis);
 			int selected = 0;
 			int hovered = -1;
 			for (int i = 0; i < vis.length; i++) {
-				labels[i] = Component.translatable(TAB_KEYS[vis[i]]);
 				if (vis[i] == this.tab) {
 					selected = i;
 				}
@@ -1244,29 +1540,24 @@ public class ClanGatherScreen extends Screen {
 		}
 
 
-		// Status line last, so a fresh message always wins over the standing hints.
-		String line;
-		if (!this.status.isBlank()) {
-			line = this.status;
-		} else if (ClanSessionManager.isInSession()) {
-			line = "";
-		} else if (gatherMode() == GatherMode.SOLO) {
-			line = Component.translatable("screen.chestmemory.clan.status_solo").getString();
-		} else if (!ClanSessionManager.isConfigured()) {
-			line = Component.translatable("screen.chestmemory.clan.status_need_hub").getString();
-		} else {
-			line = Component.translatable("screen.chestmemory.clan.status_ready").getString();
-		}
+		// Status line last, so a fresh message always wins over the standing hints. The
+		// standing fallback comes from refreshHeaderText(); this.status is an action's own
+		// message and changes with clicks, so it is read live.
+		String line = !this.status.isBlank() ? this.status : this.statusFallbackCache;
 		if (!line.isEmpty()) {
 			// Below the panel, like the chest screen's footer. Inside it the sentence fought
 			// the buttons for the same rows; out here it has the whole width and cannot
-			// collide with anything.
-			ChestGuiStyle.drawCentered(
+			// collide with anything. The shared helper pulls it back inside the panel on
+			// windows too short for a footer — at the minimum scaled height the panel ends
+			// at the screen edge, and this line is the only feedback most actions give.
+			ChestGuiStyle.drawStatusLine(
 				graphics,
 				this.font,
-				ChestGuiStyle.ellipsize(this.font, line, this.panelW),
+				line,
 				centerX,
 				this.panelTop + this.panelH + 6,
+				this.panelW,
+				this.height,
 				ChestGuiStyle.TEXT_MUTED
 			);
 		}
@@ -1278,8 +1569,12 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
-	/** Slot pitch, shared with the main screen's item grid so the two look alike. */
-	private static final int CELL = ChestGuiStyle.GRID_SLOT;
+	/**
+	 * Slot pitch, shared with the main screen's item grid so the two look alike. The gap
+	 * belongs in the pitch: this grid used to pack bare 18px cells edge to edge, so its
+	 * slot sprite borders collapsed into each other while the chest panel's stayed apart.
+	 */
+	private static final int CELL = ChestGuiStyle.GRID_SLOT + ChestGuiStyle.GRID_GAP;
 
 	/** One cell of the material grid — the id, the number to show, and how to paint it. */
 	private record MatCell(
@@ -1332,69 +1627,93 @@ public class ClanGatherScreen extends Screen {
 	) {
 		int y = this.tabsY + (this.searchOnGatherTab ? 44 : 22);
 
-		// Ordered the way a gatherer scans: ready to hand in first (chests cover the
-		// whole remainder), then partial stock, then nothing anywhere, done last —
-		// biggest remainder first inside each band.
-		List<java.util.Map.Entry<String, ClanSession.ClanMaterial>> rows =
-			new java.util.ArrayList<>(s.materials.entrySet());
-		rows.sort((a, b) -> {
-			int band = Integer.compare(clanBand(s, a.getKey()), clanBand(s, b.getKey()));
-			if (band != 0) {
-				return band;
-			}
-			return Integer.compare(s.remaining(b.getKey()), s.remaining(a.getKey()));
-		});
-
-		// Search filters the gather; general-memory matches are appended dimmed below.
-		String q = this.gatherQuery.trim().toLowerCase(java.util.Locale.ROOT);
-		if (!q.isEmpty()) {
-			rows.removeIf(e -> !matchesQuery(e.getKey(), q));
-		}
-
 		String me = this.minecraft != null ? ClanSessionManager.localUuid(this.minecraft) : "";
-		List<MatCell> cells = new java.util.ArrayList<>(rows.size());
-		for (var e : rows) {
-			ClanSession.ClanMaterial m = e.getValue();
-			int remaining = s.remaining(e.getKey());
-			boolean done = remaining <= 0;
-			boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
-			boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
-			// Traffic-light stock states — green means GO: the chests can close this item
-			// right now. Yellow is partial, red is nothing anywhere, and a finished item
-			// dims out with a green check instead of glowing. Claims ride the rim.
-			int stock = done ? 0 : chestStock(e.getKey());
-			int tint = done ? 0x99101010
-				: stock >= remaining ? 0x4430E060
-				: stock > 0 ? 0x44FFE040
-				: 0x44E03030;
-			int countColour = done ? 0xFFC8C8C8
-				: stock >= remaining ? 0xFF7FE08A
-				: stock > 0 ? 0xFFFFE066
-				: 0xFFFF9090;
-			int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;
-			String badge = done ? "✓" : null;
-			int badgeColour = done ? 0xFF7FE08A : 0;
-			if (!done && (mine || taken)) {
-				// Claimer's initial, same badge the chest panel uses — a glance tells who
-				// is on what without opening the roster.
-				badge = m.claimedName == null || m.claimedName.isBlank()
-					? "?" : m.claimedName.substring(0, 1).toUpperCase(java.util.Locale.ROOT);
-				badgeColour = mine ? 0xFFFFEE88 : 0xFFFFAAFF;
+		String q = this.gatherQuery.trim().toLowerCase(java.util.Locale.ROOT);
+		long now = System.currentTimeMillis();
+		// Rebuilt only when something that can change a cell actually changed: a new hub
+		// snapshot (adoptSession replaces the object — claims, deliveries, materials),
+		// the query, or the 500ms stock roll that can move a band. Every other frame
+		// repaints the list as it stands. See holdGridOrder for what happens to the
+		// ORDER while the pointer is over the tray.
+		if (s != this.clanCellsSession || !q.equals(this.clanCellsQuery)
+			|| now - this.clanCellsAt > 500L) {
+			// Ordered the way a gatherer scans: ready to hand in first (chests cover the
+			// whole remainder), then partial stock, then nothing anywhere, done last —
+			// biggest remainder first inside each band.
+			List<java.util.Map.Entry<String, ClanSession.ClanMaterial>> rows =
+				new java.util.ArrayList<>(s.materials.entrySet());
+			rows.sort((a, b) -> {
+				int band = Integer.compare(clanBand(s, a.getKey()), clanBand(s, b.getKey()));
+				if (band != 0) {
+					return band;
+				}
+				return Integer.compare(s.remaining(b.getKey()), s.remaining(a.getKey()));
+			});
+
+			// Search filters the gather; general-memory matches are appended dimmed below.
+			if (!q.isEmpty()) {
+				rows.removeIf(e -> !matchesQuery(e.getKey(), q));
 			}
-			cells.add(new MatCell(
-				e.getKey(), done ? 0 : remaining, tint, countColour, badge, badgeColour, border
-			));
+
+			List<MatCell> cells = new java.util.ArrayList<>(rows.size());
+			for (var e : rows) {
+				ClanSession.ClanMaterial m = e.getValue();
+				int remaining = s.remaining(e.getKey());
+				boolean done = remaining <= 0;
+				boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
+				boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
+				// Traffic-light stock states — green means GO: the chests can close this item
+				// right now. Yellow is partial, red is nothing anywhere, and a finished item
+				// dims out with a green check instead of glowing. Claims ride the rim. The
+				// colours are the shared palette: this grid and the chest panel had drifted
+				// apart (yellow here, orange there) for the very same state.
+				int stock = done ? 0 : chestStock(e.getKey());
+				int tint = done ? ChestGuiStyle.STOCK_DONE
+					: stock >= remaining ? ChestGuiStyle.STOCK_READY
+					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
+					: ChestGuiStyle.STOCK_NONE;
+				int countColour = done ? 0xFFC8C8C8
+					: stock >= remaining ? 0xFF7FE08A
+					: stock > 0 ? 0xFFFFE066
+					: 0xFFFF9090;
+				int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;
+				String badge = done ? "✓" : null;
+				int badgeColour = done ? 0xFF7FE08A : 0;
+				if (!done && (mine || taken)) {
+					// Claimer's initial, same badge the chest panel uses — a glance tells who
+					// is on what without opening the roster.
+					badge = m.claimedName == null || m.claimedName.isBlank()
+						? "?" : m.claimedName.substring(0, 1).toUpperCase(java.util.Locale.ROOT);
+					badgeColour = mine ? ChestGuiStyle.CLAIM_MINE : ChestGuiStyle.CLAIM_OTHER;
+				}
+				cells.add(new MatCell(
+					e.getKey(), done ? 0 : remaining, tint, countColour, badge, badgeColour, border
+				));
+			}
+			appendExternalMatches(cells, q, s.materials.keySet());
+			this.clanCells = holdGridOrder(
+				cells, this.clanCells, q.equals(this.clanCellsQuery), left, y, contentW
+			);
+			this.clanCellsSession = s;
+			this.clanCellsQuery = q;
+			this.clanCellsAt = now;
 		}
-		appendExternalMatches(cells, q, s.materials.keySet());
-		int hoverIdx = drawMaterialGrid(graphics, cells, left, y, contentW);
+		int hoverIdx = drawMaterialGrid(graphics, this.clanCells, left, y, contentW);
 
 		// The hovered cell explains itself in a vanilla tooltip at the cursor — the same
-		// reading gesture as the main panel. The bottom line keeps the standing summary.
-		if (hoverIdx >= 0 && hoverIdx < rows.size()) {
-			var e = rows.get(hoverIdx);
-			pushCellTooltip(graphics, clanCellTooltip(s, e.getKey(), e.getValue(), me));
-		} else if (hoverIdx >= rows.size() && hoverIdx - rows.size() < this.externalRows.size()) {
-			pushCellTooltip(graphics, externalCellTooltip(this.externalRows.get(hoverIdx - rows.size())));
+		// reading gesture as the main panel. Looked up by id, not index: the cached cells
+		// can hold an order the live lists no longer have.
+		if (hoverIdx >= 0 && hoverIdx < this.clanCells.size()) {
+			String hoverId = this.clanCells.get(hoverIdx).itemId();
+			ClanSession.ClanMaterial hoverMat = this.externalIds.contains(hoverId)
+				? null : s.material(hoverId);
+			com.chestmemory.client.data.ItemSummary ext =
+				hoverMat == null ? externalRowById(hoverId) : null;
+			if (hoverMat != null) {
+				pushCellTooltip(graphics, hoverId, () -> clanCellTooltip(s, hoverId, hoverMat, me));
+			} else if (ext != null) {
+				pushCellTooltip(graphics, hoverId, () -> externalCellTooltip(ext));
+			}
 		}
 
 		int online = 0;
@@ -1427,6 +1746,26 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
+	/** Solo schematic list — see {@link #soloPanelRows} for why it sits behind a roll. */
+	private List<com.chestmemory.client.data.ItemSummary> soloPanelList() {
+		long now = System.currentTimeMillis();
+		if (now - this.soloPanelRowsAt > 500L) {
+			this.soloPanelRowsAt = now;
+			// Filter-independent list: the Ё-panel filter is that panel's state, and hiding
+			// rows here because of it would look like lost materials.
+			this.soloPanelRows = this.minecraft == null
+				? java.util.List.of()
+				: com.chestmemory.client.litematica.BuildGatherSession.buildPanelList(
+					this.minecraft, "",
+					com.chestmemory.client.data.ListScope.WORLD_TOTAL,
+					com.chestmemory.client.data.DimensionChoice.ALL,
+					0,
+					com.chestmemory.client.litematica.BuildFilter.ALL
+				);
+		}
+		return this.soloPanelRows;
+	}
+
 	/**
 	 * Solo mode: the player's own schematic through the same grid. Progress counts what
 	 * the backpack and the staging chests already cover; a click aims the gather (routes
@@ -1434,68 +1773,86 @@ public class ClanGatherScreen extends Screen {
 	 */
 	private void drawSoloGather(GuiGraphicsExtractor graphics, int left, int centerX, int contentW) {
 		int y = this.tabsY + (this.searchOnGatherTab ? 44 : 22);
-		// Filter-independent list: the Ё-panel filter is that panel's state, and hiding
-		// rows here because of it would look like lost materials.
-		List<com.chestmemory.client.data.ItemSummary> rows = this.minecraft == null
-			? java.util.List.of()
-			: com.chestmemory.client.litematica.BuildGatherSession.buildPanelList(
-				this.minecraft, "",
-				com.chestmemory.client.data.ListScope.WORLD_TOTAL,
-				com.chestmemory.client.data.DimensionChoice.ALL,
-				0,
-				com.chestmemory.client.litematica.BuildFilter.ALL
-			);
-		int doneItems = 0;
-		int stocked = 0;
-		for (var r : rows) {
-			int missing = Math.max(0, r.neededForBuild());
-			if (missing <= 0) {
-				doneItems++;
-			} else if (r.totalCount() > 0) {
-				stocked++;
-			}
-		}
+		List<com.chestmemory.client.data.ItemSummary> rows = soloPanelList();
 		String focus = com.chestmemory.client.litematica.BuildGatherSession.currentItemId();
-
-		// Search filters the schematic list; memory matches are appended dimmed below.
-		java.util.Set<String> gatherIds = new java.util.HashSet<>();
-		for (var r : rows) {
-			gatherIds.add(r.itemId());
-		}
 		String q = this.gatherQuery.trim().toLowerCase(java.util.Locale.ROOT);
-		if (!q.isEmpty()) {
-			rows.removeIf(r -> !matchesQuery(r.itemId(), q));
-		}
+		// Rebuilt when the 500ms list refresh hands over a new object (identity check —
+		// soloPanelList replaces it), the query changes, or the target ring moves; the
+		// filtering, the cells and the legend numbers all come from the same pass so the
+		// caption can never disagree with the grid.
+		if (rows != this.soloCellsRows || !q.equals(this.soloCellsQuery)
+			|| !java.util.Objects.equals(focus, this.soloCellsFocus)) {
+			int doneItems = 0;
+			int stocked = 0;
+			java.util.Set<String> gatherIds = new java.util.HashSet<>();
+			java.util.Map<String, com.chestmemory.client.data.ItemSummary> byId =
+				new java.util.HashMap<>();
+			for (var r : rows) {
+				int missing = Math.max(0, r.neededForBuild());
+				if (missing <= 0) {
+					doneItems++;
+				} else if (r.totalCount() > 0) {
+					stocked++;
+				}
+				gatherIds.add(r.itemId());
+				byId.put(r.itemId(), r);
+			}
 
-		List<MatCell> cells = new java.util.ArrayList<>(rows.size());
-		for (var r : rows) {
-			int missing = Math.max(0, r.neededForBuild());
-			boolean done = missing <= 0;
-			boolean isFocus = r.itemId().equals(focus);
-			// Traffic light, same as the clan grid: green GO, yellow partial, red none,
-			// done dims out with a check. The gold ring marks the current target.
-			int stock = r.totalCount();
-			int tint = done ? 0x99101010
-				: stock >= missing ? 0x4430E060
-				: stock > 0 ? 0x44FFE040
-				: 0x44E03030;
-			int countColour = done ? 0xFFC8C8C8
-				: stock >= missing ? 0xFF7FE08A
-				: stock > 0 ? 0xFFFFE066
-				: 0xFFFF9090;
-			int border = isFocus ? 0xFFFFD56A : 0;
-			cells.add(new MatCell(
-				r.itemId(), done ? 0 : missing, tint, countColour,
-				done ? "✓" : null, done ? 0xFF7FE08A : 0, border
-			));
-		}
-		appendExternalMatches(cells, q, gatherIds);
-		int hoverIdx = drawMaterialGrid(graphics, cells, left, y, contentW);
+			// Search filters the schematic list; memory matches are appended dimmed below.
+			// Filtering works on a copy: the panel list is shared with the Info tab.
+			List<com.chestmemory.client.data.ItemSummary> shown = new java.util.ArrayList<>(rows);
+			if (!q.isEmpty()) {
+				shown.removeIf(r -> !matchesQuery(r.itemId(), q));
+			}
 
-		if (hoverIdx >= 0 && hoverIdx < rows.size()) {
-			pushCellTooltip(graphics, soloCellTooltip(rows.get(hoverIdx), focus));
-		} else if (hoverIdx >= rows.size() && hoverIdx - rows.size() < this.externalRows.size()) {
-			pushCellTooltip(graphics, externalCellTooltip(this.externalRows.get(hoverIdx - rows.size())));
+			List<MatCell> cells = new java.util.ArrayList<>(shown.size());
+			for (var r : shown) {
+				int missing = Math.max(0, r.neededForBuild());
+				boolean done = missing <= 0;
+				boolean isFocus = r.itemId().equals(focus);
+				// Traffic light, same as the clan grid: green GO, yellow partial, red none,
+				// done dims out with a check. The gold ring marks the current target.
+				int stock = r.totalCount();
+				int tint = done ? ChestGuiStyle.STOCK_DONE
+					: stock >= missing ? ChestGuiStyle.STOCK_READY
+					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
+					: ChestGuiStyle.STOCK_NONE;
+				int countColour = done ? 0xFFC8C8C8
+					: stock >= missing ? 0xFF7FE08A
+					: stock > 0 ? 0xFFFFE066
+					: 0xFFFF9090;
+				int border = isFocus ? 0xFFFFD56A : 0;
+				cells.add(new MatCell(
+					r.itemId(), done ? 0 : missing, tint, countColour,
+					done ? "✓" : null, done ? 0xFF7FE08A : 0, border
+				));
+			}
+			appendExternalMatches(cells, q, gatherIds);
+			this.soloCells = holdGridOrder(
+				cells, this.soloCells, q.equals(this.soloCellsQuery), left, y, contentW
+			);
+			this.soloRowById = byId;
+			this.soloLegendShown = shown.size();
+			this.soloLegendDone = doneItems;
+			this.soloLegendStocked = stocked;
+			this.soloCellsRows = rows;
+			this.soloCellsQuery = q;
+			this.soloCellsFocus = focus;
+		}
+		int hoverIdx = drawMaterialGrid(graphics, this.soloCells, left, y, contentW);
+
+		// Looked up by id, not index: the cached cells can hold their own order.
+		if (hoverIdx >= 0 && hoverIdx < this.soloCells.size()) {
+			String hoverId = this.soloCells.get(hoverIdx).itemId();
+			com.chestmemory.client.data.ItemSummary row = this.externalIds.contains(hoverId)
+				? null : this.soloRowById.get(hoverId);
+			com.chestmemory.client.data.ItemSummary ext =
+				row == null ? externalRowById(hoverId) : null;
+			if (row != null) {
+				pushCellTooltip(graphics, hoverId, () -> soloCellTooltip(row, focus));
+			} else if (ext != null) {
+				pushCellTooltip(graphics, hoverId, () -> externalCellTooltip(ext));
+			}
 		}
 		ChestGuiStyle.drawCentered(
 			graphics, this.font,
@@ -1503,7 +1860,7 @@ public class ClanGatherScreen extends Screen {
 				this.font,
 				Component.translatable(
 					"screen.chestmemory.clan.solo_legend",
-					rows.size(), doneItems, stocked
+					this.soloLegendShown, this.soloLegendDone, this.soloLegendStocked
 				).getString(),
 				contentW
 			),
@@ -1575,10 +1932,29 @@ public class ClanGatherScreen extends Screen {
 		);
 	}
 
-	/** Push a vanilla tooltip for the hovered cell — the panel's own reading gesture. */
-	private void pushCellTooltip(GuiGraphicsExtractor graphics, List<Component> lines) {
+	/**
+	 * Push a vanilla tooltip for the hovered cell — the panel's own reading gesture.
+	 * <p>
+	 * The lines are built only when the hovered id changes or twice a second —
+	 * ItemGridWidget's tooltipItemId / tooltipBuiltMs pattern, ported for its exact
+	 * reason: building walks the container list four times over (live count, nearest
+	 * distance, shulker and ender breakdowns), which used to run every frame for as
+	 * long as the cursor rested on one cell. Half a second of lag on the live numbers
+	 * is the same staleness the grid's stock tints accept.
+	 */
+	private void pushCellTooltip(
+		GuiGraphicsExtractor graphics,
+		String itemId,
+		java.util.function.Supplier<List<Component>> build
+	) {
+		long now = System.currentTimeMillis();
+		if (!itemId.equals(this.tooltipItemId) || now - this.tooltipBuiltMs > 500L) {
+			this.tooltipLines = build.get();
+			this.tooltipItemId = itemId;
+			this.tooltipBuiltMs = now;
+		}
 		graphics.setTooltipForNextFrame(
-			this.font, lines, java.util.Optional.empty(), this.hoverX, this.hoverY
+			this.font, this.tooltipLines, java.util.Optional.empty(), this.hoverX, this.hoverY
 		);
 	}
 
@@ -1952,15 +2328,9 @@ public class ClanGatherScreen extends Screen {
 		);
 		y += 20;
 
-		List<com.chestmemory.client.data.ItemSummary> rows = this.minecraft == null
-			? java.util.List.of()
-			: com.chestmemory.client.litematica.BuildGatherSession.buildPanelList(
-				this.minecraft, "",
-				com.chestmemory.client.data.ListScope.WORLD_TOTAL,
-				com.chestmemory.client.data.DimensionChoice.ALL,
-				0,
-				com.chestmemory.client.litematica.BuildFilter.ALL
-			);
+		// The same cached list the gather grid reads, so the two tabs cannot disagree —
+		// and the per-material container walk stops running once per frame per tab.
+		List<com.chestmemory.client.data.ItemSummary> rows = soloPanelList();
 		long total = 0;
 		long collected = 0;
 		int doneItems = 0;
@@ -2052,8 +2422,9 @@ public class ClanGatherScreen extends Screen {
 			Component.translatable("screen.chestmemory.clan.settings_chip").getString(),
 			ChestGuiStyle.TEXT_GOLD, schema
 		);
-		// The rows are widgets; what needs text is the one action that is NOT here.
-		int hintY = this.tabsY + 20 + 18 + 18 + 6 + 18 + 4 + 18 + 6 + 18 + 4 + 18 + 8;
+		// The rows are widgets; what needs text is the one action that is NOT here. The y
+		// comes from initHostSettings' own row cursor — a hand-summed offset chain here
+		// drifted the moment a settings row was added, landing the hint on a toggle.
 		ChestGuiStyle.drawCentered(
 			graphics, this.font,
 			ChestGuiStyle.ellipsize(
@@ -2061,7 +2432,7 @@ public class ClanGatherScreen extends Screen {
 				Component.translatable("screen.chestmemory.clan.settings_kick_hint").getString(),
 				contentW
 			),
-			centerX, hintY, ChestGuiStyle.TEXT_MUTED
+			centerX, this.hostSettingsHintY, ChestGuiStyle.TEXT_MUTED
 		);
 	}
 
@@ -2105,8 +2476,9 @@ public class ClanGatherScreen extends Screen {
 	}
 
 	/**
-	 * The material grid: 18px slots on the shared tray, scaled counts, a tint for state —
-	 * built from the same pieces as the chest panel, so the two read as one mod.
+	 * The material grid: 18px slots at the chest panel's 19px pitch, on the shared tray,
+	 * scaled counts, a tint for state — the same pieces AND the same layout as the chest
+	 * panel, so the two read as one mod.
 	 * Records geometry for click mapping and returns the hovered cell index, or -1.
 	 */
 	private int drawMaterialGrid(
@@ -2119,12 +2491,25 @@ public class ClanGatherScreen extends Screen {
 		int bottom = this.gridBottom > 0 ? this.gridBottom : this.panelTop + this.panelH - 50;
 		// The tray has a 2px border, and the scrollbar lives inside it.
 		int inner = contentW - 4;
-		int perRow = Math.max(1, (inner - 4) / CELL);
+		// Columns must fit the width clicks can actually reach: the scroll region is
+		// inner - 2 wide and its rowAt refuses the 6px scrollbar strip at the right edge,
+		// so a column drawn past that line would render but never respond. n slots span
+		// n·CELL minus the trailing gap, hence the gap comes back before dividing.
+		int usable = inner - 2 - 6;
+		int perRow = Math.max(1, (usable + ChestGuiStyle.GRID_GAP) / CELL);
 
-		this.materialIds = new java.util.ArrayList<>(cells.size());
-		for (MatCell c : cells) {
-			this.materialIds.add(c.itemId());
+		// The ids mirror the cells one to one, and the cells list object is replaced only
+		// when a cache upstream rebuilds — same object, same ids. Rebuilding the list here
+		// anyway was a fresh N-entry allocation per frame for identical content.
+		if (cells != this.gridIdsFor) {
+			java.util.List<String> ids = new java.util.ArrayList<>(cells.size());
+			for (MatCell c : cells) {
+				ids.add(c.itemId());
+			}
+			this.gridIdsFor = cells;
+			this.gridIdsCache = ids;
 		}
+		this.materialIds = this.gridIdsCache;
 		this.materialGridPerRow = perRow;
 
 		ChestGuiStyle.drawGridTray(graphics, left, top, contentW, bottom - top);
@@ -2229,12 +2614,20 @@ public class ClanGatherScreen extends Screen {
 		if (this.tab != TAB_GATHER || this.materialGridPerRow <= 0) {
 			return -1;
 		}
-		int row = this.materialScroll.rowAt(mx, my, CELL);
+		// The pitch leaves one gap pixel per row that belongs to no slot; rowAt treats the
+		// body as inclusive, so the slot's last pixel is GRID_SLOT - 1.
+		int row = this.materialScroll.rowAt(mx, my, ChestGuiStyle.GRID_SLOT - 1);
 		if (row < 0) {
 			return -1;
 		}
-		int col = (int) ((mx - this.materialGridLeft) / CELL);
+		int localX = (int) (mx - this.materialGridLeft);
+		int col = localX / CELL;
 		if (col < 0 || col >= this.materialGridPerRow) {
+			return -1;
+		}
+		// Same for the column: a click on the 1px seam between two slots must hit neither,
+		// not silently claim the cell to its left.
+		if (localX % CELL >= ChestGuiStyle.GRID_SLOT) {
 			return -1;
 		}
 		int idx = row * this.materialGridPerRow + col;
@@ -2242,6 +2635,10 @@ public class ClanGatherScreen extends Screen {
 	}
 
 
+
+	/** One member's claim, resolved once per session snapshot for the roster rows. */
+	private record MemberClaim(String itemId, String name, int delivered, int need) {
+	}
 
 	/**
 	 * Members tab: one plank per player with what they reserved and how much they brought in.
@@ -2253,6 +2650,32 @@ public class ClanGatherScreen extends Screen {
 		int top = this.tabsY + 22;
 		int bottom = this.panelTop + this.panelH - 30;
 		int rowH = 20;
+
+		// Member → claim, once per snapshot: finding it inline walked ALL materials per
+		// visible member per frame — O(members × materials), a display-name resolve
+		// inside — for an answer that cannot change until the hub replaces the session.
+		if (s != this.memberClaimsSession) {
+			java.util.Map<String, MemberClaim> claims = new java.util.HashMap<>();
+			for (var e : s.materials.entrySet()) {
+				ClanSession.ClanMaterial mat = e.getValue();
+				if (mat.claimedBy == null || mat.claimedBy.isBlank()) {
+					continue;
+				}
+				// putIfAbsent: the inline loop broke on the first claimed material, so a
+				// member with several claims keeps showing the earliest in map order.
+				claims.putIfAbsent(
+					mat.claimedBy.toLowerCase(java.util.Locale.ROOT),
+					new MemberClaim(
+						e.getKey(),
+						ChestMemoryStorage.itemDisplayName(e.getKey()),
+						Math.max(0, mat.delivered),
+						Math.max(0, mat.need)
+					)
+				);
+			}
+			this.memberClaims = claims;
+			this.memberClaimsSession = s;
+		}
 
 		if (s.members.isEmpty()) {
 			ChestGuiStyle.drawCentered(
@@ -2275,20 +2698,12 @@ public class ClanGatherScreen extends Screen {
 			boolean away = s.isMemberAway(m);
 
 			// What this member is holding, and how much of it already reached the warehouse.
-			String claimItem = null;
-			String claimId = null;
-			int claimDone = 0;
-			int claimNeed = 0;
-			for (var e : s.materials.entrySet()) {
-				ClanSession.ClanMaterial mat = e.getValue();
-				if (mat.claimedBy != null && m.uuid != null && mat.claimedBy.equalsIgnoreCase(m.uuid)) {
-					claimItem = ChestMemoryStorage.itemDisplayName(e.getKey());
-					claimId = e.getKey();
-					claimDone = Math.max(0, mat.delivered);
-					claimNeed = Math.max(0, mat.need);
-					break;
-				}
-			}
+			MemberClaim claim = m.uuid == null
+				? null : this.memberClaims.get(m.uuid.toLowerCase(java.util.Locale.ROOT));
+			String claimItem = claim != null ? claim.name() : null;
+			String claimId = claim != null ? claim.itemId() : null;
+			int claimDone = claim != null ? claim.delivered() : 0;
+			int claimNeed = claim != null ? claim.need() : 0;
 
 			int accent = away
 				? ChestGuiStyle.TEXT_ON_WOOD_MUTED
@@ -2339,6 +2754,10 @@ public class ClanGatherScreen extends Screen {
 		this.memberScroll.drawScrollbar(graphics);
 	}
 
+	/** One painted feed row: the dot colour, the flattened text, the age label. */
+	private record FeedRow(ClanEventLog.Kind kind, String text, String age) {
+	}
+
 	/** Feed tab: recent claims, deliveries and arrivals, newest first. */
 	private void drawFeed(GuiGraphicsExtractor graphics, int left, int contentW) {
 		int top = this.tabsY + 22;
@@ -2346,13 +2765,25 @@ public class ClanGatherScreen extends Screen {
 		int lineH = 11;
 
 		// The whole log, scrolled — it used to show only as many entries as happened to fit,
-		// and the rest were simply unreachable.
-		List<ClanEventLog.Entry> events = ClanEventLog.all();
+		// and the rest were simply unreachable. Copying it and flattening every row's
+		// Component ran per frame; the 500ms roll re-reads the log AND re-formats the age
+		// labels — a timer, because "2м" only has to tick, not track the frame rate.
+		long now = System.currentTimeMillis();
+		if (now - this.feedRowsAt > 500L) {
+			this.feedRowsAt = now;
+			List<ClanEventLog.Entry> events = ClanEventLog.all();
+			List<FeedRow> rows = new java.util.ArrayList<>(events.size());
+			for (ClanEventLog.Entry e : events) {
+				// Relative age on the right — "2м" reads faster than a clock time here.
+				rows.add(new FeedRow(e.kind(), e.text().getString(), ageLabel(now - e.at())));
+			}
+			this.feedRows = rows;
+		}
 		// Recessed panel behind the feed. Without it the light text sat on the light panel at
 		// 1.19:1 contrast — the "barely visible" the user reported. On this backing it is 10.8:1.
 		graphics.fill(left - 2, top - 3, left + contentW + 2, bottom + 1, ChestGuiStyle.WOOD_DARK);
 		graphics.fill(left - 1, top - 2, left + contentW + 1, bottom, ChestGuiStyle.ROW_WOOD);
-		if (events.isEmpty()) {
+		if (this.feedRows.isEmpty()) {
 			ChestGuiStyle.drawCentered(
 				graphics, this.font,
 				Component.translatable("screen.chestmemory.clan.no_events").getString(),
@@ -2362,11 +2793,10 @@ public class ClanGatherScreen extends Screen {
 			return;
 		}
 
-		this.feedScroll.layout(left, top, contentW, bottom, lineH, events.size());
+		this.feedScroll.layout(left, top, contentW, bottom, lineH, this.feedRows.size());
 		int rowW = this.feedScroll.rowWidth();
-		long now = System.currentTimeMillis();
 		for (int i = this.feedScroll.firstVisible(); i < this.feedScroll.lastVisible(); i++) {
-			ClanEventLog.Entry e = events.get(i);
+			FeedRow e = this.feedRows.get(i);
 			int y = this.feedScroll.rowY(i);
 			int dot = switch (e.kind()) {
 				case CLAIM -> 0xFFE0A83C;
@@ -2377,11 +2807,10 @@ public class ClanGatherScreen extends Screen {
 			};
 			ChestGuiStyle.drawEventDot(graphics, left + 1, y + 1, dot);
 
-			// Relative age on the right — "2м" reads faster than a clock time here.
-			String age = ageLabel(now - e.at());
+			String age = e.age();
 			int ageW = this.font.width(age);
 			String text = ChestGuiStyle.ellipsize(
-				this.font, e.text().getString(), rowW - 10 - ageW - 6
+				this.font, e.text(), rowW - 10 - ageW - 6
 			);
 			graphics.text(this.font, text, left + 8, y, ChestGuiStyle.TEXT_LIGHT, false);
 			graphics.text(
@@ -2411,13 +2840,9 @@ public class ClanGatherScreen extends Screen {
 		int bottom = this.listBottom > 0 ? this.listBottom : this.panelTop + this.panelH - 52;
 		int rowH = 20;
 
-		List<com.chestmemory.client.clan.ClanRoster.Entry> entries =
-			com.chestmemory.client.clan.ClanRoster.all();
-		this.listRowsTop = y;
-		this.listRowH = rowH + 2;
+		List<com.chestmemory.client.clan.ClanRoster.Entry> entries = rosterRows();
 		this.gatherScroll.layout(left, y, contentW, bottom, rowH + 2, entries.size());
 		int rowW = this.gatherScroll.rowWidth();
-		this.listCodes = new java.util.ArrayList<>();
 
 		if (entries.isEmpty()) {
 			// Centred in the space the list would have used, so it reads as an empty area
@@ -2488,7 +2913,6 @@ public class ClanGatherScreen extends Screen {
 					e.delivered() / (float) e.need()
 				);
 			}
-			this.listCodes.add(e.code());
 		}
 		this.gatherScroll.drawScrollbar(graphics);
 	}

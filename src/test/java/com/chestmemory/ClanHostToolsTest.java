@@ -31,6 +31,9 @@ class ClanHostToolsTest {
 	private static final String HUB_CLIENT =
 		"src/client/java/com/chestmemory/client/clan/ClanHubClient.java";
 	private static final String HUB = "hub/clan_hub.py";
+	/** Shared grid palette — both item grids read their state colours from here. */
+	private static final String STOCK_STYLE =
+		"src/client/java/com/chestmemory/client/gui/ChestGuiStyle.java";
 
 	@Nested
 	@DisplayName("The hub grew host-only commands")
@@ -179,9 +182,18 @@ class ClanHostToolsTest {
 			String src = read(CLAN_SCREEN);
 			int clanBody = src.indexOf("private void drawClanGather");
 			int soloBody = src.indexOf("private void drawSoloGather");
+			// The palette lives in ChestGuiStyle now, so the grids name the state instead of
+			// repeating a hex. Asserting on the name is what we actually care about — the two
+			// grids used to drift apart (orange here, yellow there) precisely because each
+			// carried its own literal, and a shared constant is what stops that recurring.
 			assertTrue(
-				src.indexOf("0x4430E060", clanBody) > 0 && src.indexOf("0x4430E060", soloBody) > 0,
+				src.indexOf("ChestGuiStyle.STOCK_READY", clanBody) > 0
+					&& src.indexOf("ChestGuiStyle.STOCK_READY", soloBody) > 0,
 				"both grids must mark items whose need is fully covered by chest stock"
+			);
+			assertTrue(
+				read(STOCK_STYLE).contains("STOCK_READY = 0x4430E060"),
+				"READY stays green — the colour moved, it did not change"
 			);
 			assertTrue(
 				src.contains("screen.chestmemory.clan.mat_ready_hint")
@@ -326,12 +338,19 @@ class ClanHostToolsTest {
 			for (int at : new int[]{clanBody, soloBody}) {
 				String body = src.substring(at, src.indexOf("\n\t}", at));
 				assertTrue(
-					body.contains("0x4430E060") && body.contains("0x44FFE040")
-						&& body.contains("0x44E03030") && body.contains("0x99101010"),
+					body.contains("ChestGuiStyle.STOCK_READY") && body.contains("ChestGuiStyle.STOCK_PARTIAL")
+						&& body.contains("ChestGuiStyle.STOCK_NONE") && body.contains("ChestGuiStyle.STOCK_DONE"),
 					"all four stock states need a colour"
 				);
 				assertTrue(body.contains("\"✓\""), "done cells carry the check badge");
 			}
+			// Both grids read one palette, so a retune can never desync them again.
+			String style = read(STOCK_STYLE);
+			assertTrue(
+				style.contains("STOCK_READY = 0x4430E060") && style.contains("STOCK_PARTIAL = 0x44FFE040")
+					&& style.contains("STOCK_NONE = 0x44E03030") && style.contains("STOCK_DONE = 0x99101010"),
+				"the four traffic-light values live in one place"
+			);
 			assertTrue(
 				src.contains("int border = mine ? 0xFFFFD56A : taken ? 0xFFB48CB4 : 0;")
 					&& src.contains("int border = isFocus ? 0xFFFFD56A : 0;"),

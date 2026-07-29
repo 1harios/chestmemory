@@ -38,6 +38,13 @@ echo "LHR_PID=$(cat lhr.pid)"
 echo "----- lhr.log -----"
 cat lhr.log
 echo "----- health local -----"
+# Token via curl config file (-K), not argv — argv is world-readable via ps on the
+# shared host this runs on.
 TOKEN=$(cat .clan_token)
-curl -sS -H "X-Clan-Token: $TOKEN" http://127.1.6.129:18787/v1/health || true
+CURL_AUTH="$PWD/.curl_auth"
+(
+  umask 077
+  printf 'header = "X-Clan-Token: %s"\n' "$TOKEN" >"$CURL_AUTH"
+)
+curl -sS -K "$CURL_AUTH" http://127.1.6.129:18787/v1/health || true
 echo

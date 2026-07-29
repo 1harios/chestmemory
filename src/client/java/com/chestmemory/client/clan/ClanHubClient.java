@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -24,23 +25,33 @@ public final class ClanHubClient {
 		.connectTimeout(Duration.ofSeconds(8))
 		.build();
 
+	/**
+	 * Error every request reports when the configured hub URL was refused (see
+	 * {@link #isAllowedHubUrl}). A constant so the manager can recognise it and show
+	 * the localized explanation instead of a raw string.
+	 */
+	public static final String ERR_INSECURE_URL = "insecure hub url (https required)";
+
 	/** One client per configuration — building a new one per call was pure allocation churn. */
 	private static volatile @Nullable ClanHubClient cached;
 
 	/**
-	 * Identity hint sent with every request as plain headers.
+	 * Compatibility hint sent as plain headers, NOT an identity mechanism.
 	 * <p>
-	 * The verified Mojang session is the real identity, but offline-mode launchers can
-	 * never complete that handshake — and without any identity the hub could not refresh
-	 * the member's heartbeat on polls, so their claims were silently released after the
-	 * timeout even though they were online the whole time. The hint closes that hole
-	 * while REQUIRE_AUTH is off; a verified session always wins over it on the hub.
+	 * Identity is the verified Mojang session ({@code X-Clan-Session}); since the hub
+	 * started requiring it by default, these headers carry no authority at all. The one
+	 * thing they still do: while an operator has explicitly switched verification off
+	 * (REQUIRE_AUTH=0, the mod-upgrade window), the hub honours them for non-host
+	 * heartbeats, so an offline-mode member's poll refreshes lastSeen and their claims
+	 * do not time out mid-game. Host actions ignore them unconditionally.
 	 */
 	private static volatile String hintUuid = "";
 	private static volatile String hintName = "";
 
 	private final String baseUrl;
 	private final String token;
+	/** URL configured but refused ({@link #isAllowedHubUrl}) — every request short-circuits. */
+	private final boolean rejectedUrl;
 
 	public ClanHubClient(String baseUrl, String token) {
 		String u = baseUrl == null ? "" : baseUrl.trim();
@@ -49,6 +60,42 @@ public final class ClanHubClient {
 		}
 		this.baseUrl = u;
 		this.token = token == null ? "" : token.trim();
+		this.rejectedUrl = !u.isEmpty() && !isAllowedHubUrl(u);
+	}
+
+	/**
+	 * True when the client will talk to this hub URL: {@code https://} anywhere, or
+	 * {@code http://} strictly on the local machine (localhost / 127.0.0.1 / [::1])
+	 * so a development hub still works.
+	 * <p>
+	 * Everything a request carries — the invite token, the Mojang-derived session
+	 * token, uuids, the whole session — would otherwise cross the network in cleartext,
+	 * and anyone who can edit the mod config could redirect all of it to their own
+	 * host and replay the session token against the real hub. Empty is "not
+	 * configured", which is a different state and not judged here.
+	 */
+	public static boolean isAllowedHubUrl(@Nullable String url) {
+		String u = url == null ? "" : url.trim();
+		if (u.isEmpty()) {
+			return false;
+		}
+		try {
+			URI uri = URI.create(u);
+			String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+			if ("https".equals(scheme)) {
+				return true;
+			}
+			if (!"http".equals(scheme)) {
+				return false;
+			}
+			String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+			if (host.startsWith("[") && host.endsWith("]")) {
+				host = host.substring(1, host.length() - 1);
+			}
+			return host.equals("localhost") || host.equals("127.0.0.1") || host.equals("::1");
+		} catch (Exception e) {
+			return false;
+		}
 	}
 
 	/** Shared instance for this configuration; rebuilt only when url/token change. */
@@ -169,6 +216,9 @@ public final class ClanHubClient {
 
 	/** Raw JSON GET, used by the auth handshake (no ClanSession parsing). */
 	private Result<JsonObject> rawGet(String path) {
+		if (rejectedUrl) {
+			return Result.err(ERR_INSECURE_URL);
+		}
 		try {
 			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
 				.timeout(Duration.ofSeconds(10))
@@ -181,6 +231,9 @@ public final class ClanHubClient {
 	}
 
 	private Result<JsonObject> rawPost(String path, JsonObject body) {
+		if (rejectedUrl) {
+			return Result.err(ERR_INSECURE_URL);
+		}
 		try {
 			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
 				.timeout(Duration.ofSeconds(12))
@@ -212,10 +265,27 @@ public final class ClanHubClient {
 			}
 		} catch (Exception ignored) {
 		}
-		return Result.err(msg, code);
+		return Result.err(msg, code, retryAfterSeconds(resp));
+	}
+
+	/** Seconds the hub asked us to wait (429 Retry-After), or 0 when not rate limited. */
+	private static int retryAfterSeconds(HttpResponse<String> resp) {
+		if (resp.statusCode() != 429) {
+			return 0;
+		}
+		try {
+			return Integer.parseInt(resp.headers().firstValue("Retry-After").orElse("").trim());
+		} catch (NumberFormatException e) {
+			// Both hub backends send plain seconds; anything else falls back to a default
+			// on the manager side.
+			return 0;
+		}
 	}
 
 	public Result<String> health() {
+		if (rejectedUrl) {
+			return Result.err(ERR_INSECURE_URL);
+		}
 		try {
 			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + "/v1/health"))
 				.timeout(Duration.ofSeconds(6))
@@ -225,13 +295,16 @@ public final class ClanHubClient {
 			if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
 				return Result.ok(resp.body());
 			}
-			return Result.err("HTTP " + resp.statusCode(), resp.statusCode());
+			return Result.err("HTTP " + resp.statusCode(), resp.statusCode(), retryAfterSeconds(resp));
 		} catch (Exception e) {
 			return Result.err(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
 		}
 	}
 
 	private Result<ClanSession> getReq(String path) {
+		if (rejectedUrl) {
+			return Result.err(ERR_INSECURE_URL);
+		}
 		try {
 			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
 				.timeout(Duration.ofSeconds(10))
@@ -244,6 +317,9 @@ public final class ClanHubClient {
 	}
 
 	private Result<ClanSession> post(String path, JsonObject body) {
+		if (rejectedUrl) {
+			return Result.err(ERR_INSECURE_URL);
+		}
 		try {
 			String json = GSON.toJson(body);
 			HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(baseUrl + path))
@@ -267,8 +343,10 @@ public final class ClanHubClient {
 		if (session != null) {
 			b.header("X-Clan-Session", session);
 		}
-		// Heartbeat hint for hubs running without strict auth (offline-mode servers):
-		// lets a plain poll refresh lastSeen, so claims stop timing out mid-game.
+		// Compatibility only, never identity: the hub verifies who we are via the
+		// session header above. These are read solely for non-host heartbeats on a
+		// hub whose operator explicitly disabled verification (REQUIRE_AUTH=0), so an
+		// offline-mode member's poll still refreshes lastSeen.
 		if (!hintUuid.isEmpty()) {
 			b.header("X-Clan-Uuid", hintUuid);
 			b.header("X-Clan-Name", hintName.isEmpty() ? "?" : hintName);
@@ -312,7 +390,7 @@ public final class ClanHubClient {
 		if (msg == null || msg.isBlank()) {
 			msg = "HTTP " + code;
 		}
-		return Result.err(msg, code);
+		return Result.err(msg, code, retryAfterSeconds(resp));
 	}
 
 	public static final class Result<T> {
@@ -321,24 +399,36 @@ public final class ClanHubClient {
 		public final @Nullable String error;
 		/** HTTP status, or 0 when the request never produced a response (network error). */
 		public final int status;
+		/** Retry-After seconds when {@link #status} is 429, else 0. */
+		public final int retryAfterSeconds;
 
-		private Result(boolean ok, @Nullable T value, @Nullable String error, int status) {
+		private Result(boolean ok, @Nullable T value, @Nullable String error, int status, int retryAfterSeconds) {
 			this.ok = ok;
 			this.value = value;
 			this.error = error;
 			this.status = status;
+			this.retryAfterSeconds = retryAfterSeconds;
 		}
 
 		public static <T> Result<T> ok(T v) {
-			return new Result<>(true, v, null, 200);
+			return new Result<>(true, v, null, 200, 0);
 		}
 
 		public static <T> Result<T> err(String e) {
-			return new Result<>(false, null, e, 0);
+			return new Result<>(false, null, e, 0, 0);
 		}
 
 		public static <T> Result<T> err(String e, int status) {
-			return new Result<>(false, null, e, status);
+			return new Result<>(false, null, e, status, 0);
+		}
+
+		public static <T> Result<T> err(String e, int status, int retryAfterSeconds) {
+			return new Result<>(false, null, e, status, retryAfterSeconds);
+		}
+
+		/** The hub told us to back off (rate limit). */
+		public boolean isRateLimited() {
+			return status == 429;
 		}
 
 		/** The hub authoritatively reported that this session no longer exists. */

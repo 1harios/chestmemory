@@ -122,6 +122,18 @@ public final class ContainerRecord {
 		return !isVirtual();
 	}
 
+	/**
+	 * Remove entries whose count cannot be used: null (legal JSON that Gson happily accepts,
+	 * and an unboxing NPE the moment anything adds it up) and non-positive values, which no
+	 * scan ever produces and which would only skew totals.
+	 */
+	void dropUnusableCounts() {
+		items.values().removeIf(count -> count == null || count <= 0);
+		if (shulkerItems != null) {
+			shulkerItems.values().removeIf(count -> count == null || count <= 0);
+		}
+	}
+
 	public Map<String, Integer> items() {
 		return items == null ? Collections.emptyMap() : items;
 	}

@@ -572,6 +572,15 @@ public class ChestMemoryScreen extends Screen {
 	}
 
 	@Override
+	public void onClose() {
+		// Let go of any profile being browsed: it is a second full container map held in the
+		// storage singleton, and it used to survive until the next tab switch, so one glance at
+		// another server doubled the mod's footprint for the rest of the session.
+		ChestMemoryStorage.get().releaseViewingProfile();
+		super.onClose();
+	}
+
+	@Override
 	public void tick() {
 		super.tick();
 		if (this.clearConfirmPending && --this.clearConfirmTicks <= 0) {

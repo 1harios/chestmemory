@@ -124,6 +124,11 @@ public final class ChestHighlighter {
 		routeOrder.clear();
 		routeFocusOrder = 0;
 		iconMarkers = List.of();
+		// Drop the memoised match list too: it pins the profile snapshot (and its records)
+		// in memory, which would keep a whole server profile alive after disconnecting.
+		matchesCache = List.of();
+		matchesCacheSnapshot = null;
+		matchesCacheItemId = null;
 	}
 
 	public static @Nullable String getHighlightedItemId() {
@@ -157,6 +162,10 @@ public final class ChestHighlighter {
 			if (pauseStartedMillis == 0L) {
 				pauseStartedMillis = net.minecraft.util.Util.getMillis();
 			}
+			// The world keeps rendering behind the pause menu, so returning before the
+			// warehouse pass made every warehouse outline blink out the moment the menu
+			// opened. Only the timed item highlight has a reason to sit out the pause.
+			drawStagingWarehouses(client, player);
 			return;
 		}
 		if (pauseStartedMillis != 0L) {
@@ -281,6 +290,20 @@ public final class ChestHighlighter {
 	}
 
 	/**
+	 * Memoised result of the non-gather branch of {@link #liveMatchesWithItem}. The tick
+	 * used to re-walk every record of the profile 20×/second for the whole 20-second
+	 * highlight; the snapshot list is identity-cached inside the storage and only replaced
+	 * when a container is actually scanned or forgotten, so its reference doubles as a
+	 * "did memory change" signal and the walk runs once per change instead of per tick.
+	 */
+	private static List<ContainerRecord> matchesCache = List.of();
+	private static @Nullable List<ContainerRecord> matchesCacheSnapshot;
+	private static @Nullable String matchesCacheItemId;
+	private static @Nullable String matchesCacheDimension;
+	private static @Nullable String matchesCacheWorldTag;
+	private static boolean matchesCacheAllDimensions;
+
+	/**
 	 * Containers in live memory that still hold the item.
 	 * @param allDimensions if false, only same dimension as the player
 	 */
@@ -289,14 +312,50 @@ public final class ChestHighlighter {
 		String playerDimension,
 		boolean allDimensions
 	) {
-		List<ContainerRecord> out = new ArrayList<>();
 		ChestMemoryStorage storage = ChestMemoryStorage.get();
 		// During gather: never glow build-site warehouse (staging) — those are “already collected”
 		boolean hideStaging = BuildGatherSession.isActive();
 		// A chest from the other world of a multiworld server sits at coordinates that also
 		// exist here; glowing it would point the player at a block that holds something else.
 		String currentTag = com.chestmemory.client.data.WorldFingerprint.current(Minecraft.getInstance());
-		for (ContainerRecord r : storage.liveContainersSnapshot()) {
+
+		if (hideStaging && allDimensions) {
+			// Gather mode maps exactly onto the storage's indexed query: it reads the
+			// item → containers reverse index instead of walking the whole profile, and
+			// applies the same staging / dimension / highlightable-position rules this
+			// branch needs. Its all-dimensions form skips the world-tag rule, though, so
+			// that one is re-applied here — without it a chest from the other world of a
+			// multiworld server would glow at coordinates that hold something else.
+			List<ContainerRecord> out = new ArrayList<>();
+			for (ContainerRecord r : storage.liveSourceHighlightableWithItem(itemId)) {
+				if (r.isWorldBlock() && com.chestmemory.client.data.WorldTags.provablyDifferent(
+					currentTag, r.worldTag())) {
+					continue;
+				}
+				out.add(r);
+			}
+			return out;
+		}
+
+		// Outside a gather, staging chests holding the item must keep glowing, and the
+		// indexed query excludes them unconditionally — so this branch keeps the full walk
+		// but memoises it on the snapshot's identity (see matchesCache). Only cache when
+		// staging is not being hidden: in the one-tick window where the gather flag flips
+		// between the caller reading it and this method reading it, a staging-filtered
+		// result could otherwise be served to a later non-gather tick with the same key.
+		boolean cacheable = !hideStaging;
+		List<ContainerRecord> snapshot = storage.liveContainersSnapshot();
+		if (cacheable
+			&& snapshot == matchesCacheSnapshot
+			&& itemId.equals(matchesCacheItemId)
+			&& allDimensions == matchesCacheAllDimensions
+			&& java.util.Objects.equals(playerDimension, matchesCacheDimension)
+			&& java.util.Objects.equals(currentTag, matchesCacheWorldTag)) {
+			return matchesCache;
+		}
+
+		List<ContainerRecord> out = new ArrayList<>();
+		for (ContainerRecord r : snapshot) {
 			if (r.countOf(itemId) <= 0) {
 				continue;
 			}
@@ -315,6 +374,15 @@ public final class ChestHighlighter {
 				out.add(r);
 			}
 		}
+
+		if (cacheable) {
+			matchesCacheSnapshot = snapshot;
+			matchesCacheItemId = itemId;
+			matchesCacheDimension = playerDimension;
+			matchesCacheWorldTag = currentTag;
+			matchesCacheAllDimensions = allDimensions;
+			matchesCache = out;
+		}
 		return out;
 	}
 
@@ -329,6 +397,23 @@ public final class ChestHighlighter {
 	}
 
 	/**
+	 * Merged local + clan staging keys for the warehouse pass. Building this fresh meant
+	 * two set copies per tick for a set that only changes when a mark is toggled, the
+	 * profile switches, or a clan sync lands. Those are caught by the cheap signals below;
+	 * addStagingAt can swap a legacy key for a tagged one in a single call (count stays
+	 * equal), which no cheap signal sees — the timed refresh bounds that staleness.
+	 */
+	private static java.util.Set<String> warehouseKeys = java.util.Set.of();
+	private static int warehouseKeysStagingCount = -1;
+	private static @Nullable Object warehouseKeysClanSession;
+	private static @Nullable String warehouseKeysWorldId;
+	private static long warehouseKeysRefreshedAt;
+	private static final long WAREHOUSE_KEYS_MAX_AGE_MS = 500L;
+	/** «Склад» label — resolving the translatable ran every tick for a constant string. */
+	private static @Nullable String warehouseLabel;
+	private static @Nullable String warehouseLabelLanguage;
+
+	/**
 	 * Warehouse (staging) chest glow — solo gather and clan.
 	 * Purple outline + «Склад» label. Disabled via settings.
 	 */
@@ -338,12 +423,29 @@ public final class ChestHighlighter {
 			return;
 		}
 
-		java.util.Set<String> keys = new java.util.LinkedHashSet<>(ChestMemoryStorage.get().stagingKeysSnapshot());
-		// Clan-shared warehouse (even if this client never opened those chests)
+		ChestMemoryStorage storage = ChestMemoryStorage.get();
+		// Clan-shared warehouse (even if this client never opened those chests). The hub
+		// sync replaces the whole session object, so its identity doubles as a change signal.
 		var clan = com.chestmemory.client.clan.ClanSessionManager.session();
-		if (clan != null && clan.stagingKeys != null) {
-			keys.addAll(clan.stagingKeys);
+		long now = net.minecraft.util.Util.getMillis();
+
+		int stagingCount = storage.stagingCount();
+		String worldId = storage.liveWorldId();
+		if (stagingCount != warehouseKeysStagingCount
+			|| clan != warehouseKeysClanSession
+			|| !java.util.Objects.equals(worldId, warehouseKeysWorldId)
+			|| now - warehouseKeysRefreshedAt >= WAREHOUSE_KEYS_MAX_AGE_MS) {
+			java.util.Set<String> merged = new java.util.LinkedHashSet<>(storage.stagingKeysSnapshot());
+			if (clan != null && clan.stagingKeys != null) {
+				merged.addAll(clan.stagingKeys);
+			}
+			warehouseKeys = merged;
+			warehouseKeysStagingCount = stagingCount;
+			warehouseKeysClanSession = clan;
+			warehouseKeysWorldId = worldId;
+			warehouseKeysRefreshedAt = now;
 		}
+		java.util.Set<String> keys = warehouseKeys;
 		// Empty → nothing to draw. Non-empty + setting on → glow for solo and clan alike.
 		if (keys.isEmpty()) {
 			return;
@@ -351,12 +453,21 @@ public final class ChestHighlighter {
 
 		String playerDim = ChestMemoryStorage.dimensionId(client.level);
 		Vec3 eye = player.getEyePosition();
-		long now = net.minecraft.util.Util.getMillis();
 		float pulse = 0.85F + 0.15F * (float) Math.sin(now / 350.0);
 		int rgb = ModSettings.get().warehouseColor();
 		int range = ModSettings.get().highlightRenderRange();
 
-		String label = Component.translatable("hud.chestmemory.warehouse_label").getString();
+		// The cached string is localized, so it follows the same invalidation the display
+		// name cache in ItemStackKeys uses: re-resolve only when the language changes.
+		String lang = client.getLanguageManager() != null
+			? client.getLanguageManager().getSelected()
+			: null;
+		String label = warehouseLabel;
+		if (label == null || !java.util.Objects.equals(lang, warehouseLabelLanguage)) {
+			label = Component.translatable("hud.chestmemory.warehouse_label").getString();
+			warehouseLabel = label;
+			warehouseLabelLanguage = lang;
+		}
 		int shown = 0;
 		for (String key : keys) {
 			if (shown >= MAX_LABELS) {

@@ -60,13 +60,20 @@ class ClanDeliveryTest {
 	@Nested
 	@DisplayName("Only what reached the warehouse counts for the clan")
 	class WarehouseIsTheTruth {
+		// The arithmetic moved into remainingNeedCounted so callers that already walked the
+		// inventory can pass the count in instead of every one of them re-walking it — the
+		// O(E²) fix. The public remainingNeed is now a thin wrapper, so the rule this class
+		// guards lives one level down. Same rule, same single subtraction, new home.
+		private static final String COUNTED =
+			"private static int remainingNeedCounted(String itemId, int inPlayerRaw)";
+
 		@Test
 		@DisplayName("A clan gather ignores the backpack")
 		void backpackDoesNotCount() throws Exception {
-			String src = body(read(GATHER), "public static int remainingNeed(String itemId, @Nullable LocalPlayer player)");
+			String src = body(read(GATHER), COUNTED);
 			assertTrue(
 				src.contains("boolean clanGather = com.chestmemory.client.clan.ClanSessionManager.isInActiveGather(itemId)")
-					&& src.contains("int inPlayer = clanGather ? 0 : countInPlayer(player, itemId)"),
+					&& src.contains("int inPlayer = clanGather ? 0 : inPlayerRaw"),
 				"carrying a stack must not finish a clan item: the report reads the warehouse, "
 					+ "so the gather advanced while the hub was told delivered = 0"
 			);
@@ -75,15 +82,41 @@ class ClanDeliveryTest {
 		@Test
 		@DisplayName("Solo gathering still counts the backpack")
 		void soloIsUnchanged() throws Exception {
-			String src = body(read(GATHER), "public static int remainingNeed(String itemId, @Nullable LocalPlayer player)");
+			String src = body(read(GATHER), COUNTED);
 			assertTrue(
-				src.contains("clanGather ? 0 : countInPlayer"),
+				src.contains("clanGather ? 0 : inPlayerRaw"),
 				"solo has no warehouse to require — carrying the material IS having it"
 			);
 			assertTrue(
 				src.contains("int covered = inPlayer + warehouse"),
 				"the solo path must still add the two together"
 			);
+			assertTrue(
+				body(read(GATHER), "public static int remainingNeed(String itemId, @Nullable LocalPlayer player)")
+					.contains("remainingNeedCounted(itemId, countInPlayer(player, itemId))"),
+				"the wrapper must still feed the real inventory count in"
+			);
+		}
+
+		@Test
+		@DisplayName("Deliveries are netted out exactly once")
+		void deliveriesSubtractOnce() throws Exception {
+			// The clan fallback list used to emit need-minus-delivered as its total, and
+			// remainingNeedCounted folded clanDelivered into `covered` on top of that: 100
+			// glass with 40 delivered reported 20 left, and at 50 delivered auto-advance
+			// called it done and walked the member off a half-missing item.
+			String clanList = body(
+				read("src/client/java/com/chestmemory/client/litematica/LitematicaAccess.java"),
+				"private static @Nullable List<LitematicaCompat.MaterialNeed> clanMaterials()"
+			);
+			assertTrue(
+				clanList.contains("Math.max(0, e.getValue().need)"),
+				"the clan list must carry the FULL need as total — netting is remainingNeed's job"
+			);
+			int need = 100;
+			int delivered = 40;
+			int covered = 0 + delivered;
+			assertEquals(60, need - covered, "one subtraction, not two");
 		}
 
 		@Test

@@ -60,6 +60,22 @@ public final class ContainerScanner {
 	private static @Nullable AbstractContainerMenu trackedMenu;
 	private static boolean trackedMenuHadContents;
 
+	/**
+	 * Change gate for the open-menu scan. Rebuilding every slot's key each tick (54 slots
+	 * on a double chest, 20×/second, doubled by nested shulkers) usually ended in
+	 * {@code rememberBlockContainer} answering "nothing changed". The signature below is a
+	 * cheap allocation-free stand-in: stateId catches every server sync, the per-slot
+	 * (index, item, count) mix catches client-predicted clicks. What it cannot see is a
+	 * component-only difference on the same item and count — swapping a shulker box for an
+	 * identically sized one of the same color in a single cursor click — so a low-rate
+	 * timed rescan backstops it instead of trusting the signature blindly.
+	 */
+	private static @Nullable AbstractContainerMenu gateMenu;
+	private static long gateSignature;
+	private static int gateLastScanTick;
+	/** Backstop cadence for changes the signature cannot see (component-only swaps). */
+	private static final int OPEN_MENU_RESCAN_TICKS = 20;
+
 	private ContainerScanner() {
 	}
 
@@ -80,14 +96,63 @@ public final class ContainerScanner {
 
 		Screen screen = ClientScreens.get(client);
 		if (screen instanceof AbstractContainerScreen<?> containerScreen) {
-			scanOpenScreen(client, containerScreen);
+			if (shouldScanOpenScreen(containerScreen)) {
+				scanOpenScreen(client, containerScreen);
+			}
 		} else {
 			// No container open — sticky ender flag no longer needed
 			LastInteractTracker.clearEnderChestPending();
 			stagingHandledThisOpen = null;
 			trackedMenu = null;
 			trackedMenuHadContents = false;
+			gateMenu = null;
 		}
+	}
+
+	/**
+	 * True when the open menu should be re-read this tick: first sight of the menu, the
+	 * cheap change signature moved (a sync arrived or the player clicked something), or
+	 * the timed backstop is due. Everything the signature reacts to is rescanned the same
+	 * tick it happens, so "took the last item, glow goes out" stays as immediate as the
+	 * old every-tick scan.
+	 */
+	private static boolean shouldScanOpenScreen(AbstractContainerScreen<?> screen) {
+		if (!(screen instanceof MenuAccess<?> access)) {
+			// scanOpenScreen no-ops on these; keep calling it so behavior stays identical
+			return true;
+		}
+		AbstractContainerMenu menu = access.getMenu();
+		long signature = menuSignature(menu);
+		if (menu == gateMenu
+			&& signature == gateSignature
+			&& tickCounter - gateLastScanTick < OPEN_MENU_RESCAN_TICKS) {
+			return false;
+		}
+		gateMenu = menu;
+		gateSignature = signature;
+		gateLastScanTick = tickCounter;
+		return true;
+	}
+
+	/**
+	 * Allocation-free fingerprint of a menu's visible stacks. Item instances are registry
+	 * singletons, so their identity hash is a stable stand-in for the item id without
+	 * building a key string. Deliberately covers all slots including the player's: a
+	 * shift-click moves items on both sides of the menu, and rescanning on a pure
+	 * player-inventory change merely costs one scan that concludes "nothing changed".
+	 */
+	private static long menuSignature(AbstractContainerMenu menu) {
+		long h = menu.getStateId();
+		for (int i = 0; i < menu.slots.size(); i++) {
+			ItemStack stack = menu.slots.get(i).getItem();
+			if (stack.isEmpty()) {
+				continue;
+			}
+			h = h * 31 + i;
+			h = h * 31 + System.identityHashCode(stack.getItem());
+			h = h * 31 + stack.getCount();
+		}
+		return h;
 	}
 
 	public static void onScreenClosed(Minecraft client, Screen screen) {
@@ -247,6 +312,24 @@ public final class ContainerScanner {
 		);
 	}
 
+	/**
+	 * Storage keys for inventory-shulker records, built once per slot index. The sweep
+	 * below runs every 40 ticks and calls forget() for every non-shulker slot, which used
+	 * to concatenate ~36 fresh key strings every 2 seconds just to be told "not present".
+	 */
+	private static String[] invShulkerKeys = new String[0];
+
+	private static String invShulkerKey(int slot) {
+		if (slot >= invShulkerKeys.length) {
+			String[] grown = new String[Math.max(slot + 1, 46)];
+			for (int i = 0; i < grown.length; i++) {
+				grown[i] = "virtual|inv_shulker_" + i;
+			}
+			invShulkerKeys = grown;
+		}
+		return invShulkerKeys[slot];
+	}
+
 	private static void scanInventoryShulkers(Minecraft client) {
 		if (client.player == null || client.level == null) {
 			return;
@@ -260,12 +343,12 @@ public final class ContainerScanner {
 				// Slot holds no shulker now. Any record left from a previous scan is stale:
 				// moving a shulker between slots used to leave a duplicate behind, and
 				// emptying the slot left a phantom whose contents kept being counted.
-				ChestMemoryStorage.get().forget("virtual|inv_shulker_" + i);
+				ChestMemoryStorage.get().forget(invShulkerKey(i));
 				continue;
 			}
 			ItemContainerContents contents = stack.get(DataComponents.CONTAINER);
 			if (contents == null) {
-				ChestMemoryStorage.get().forget("virtual|inv_shulker_" + i);
+				ChestMemoryStorage.get().forget(invShulkerKey(i));
 				continue;
 			}
 
@@ -282,7 +365,7 @@ public final class ContainerScanner {
 
 			// This scan repeats every 2s; an unchanged shulker used to re-dirty the profile
 			// and invalidate the snapshot cache each time.
-			ContainerRecord prev = ChestMemoryStorage.get().findLiveByKey("virtual|" + virtualId);
+			ContainerRecord prev = ChestMemoryStorage.get().findLiveByKey(invShulkerKey(i));
 			if (prev != null && prev.items().equals(items)
 				&& displayName.equals(prev.displayName())
 				&& dimension.equals(prev.dimension())) {

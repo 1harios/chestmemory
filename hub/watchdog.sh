@@ -30,6 +30,19 @@ export SESSION_TTL_SEC="${SESSION_TTL_SEC:-$((7*24*3600))}"
 
 mkdir -p "$DATA_DIR"
 
+# The token must never ride a curl command line: argv is world-readable in /proc on
+# a shared host, so `-H "X-Clan-Token: $TOKEN"` handed it to every account via `ps`.
+# curl reads the header from this 600-mode config file (-K) instead.
+CURL_AUTH="$HUB_DIR/.curl_auth"
+(
+  umask 077
+  if [ -n "${CLAN_TOKEN:-}" ]; then
+    printf 'header = "X-Clan-Token: %s"\n' "$CLAN_TOKEN" >"$CURL_AUTH"
+  else
+    : >"$CURL_AUTH"
+  fi
+)
+
 log() { echo "$(date -Is) $*" >>"$LOG"; }
 
 start_hub() {
@@ -63,8 +76,16 @@ start_tunnel() {
   URL="$(grep -Eo 'https://[a-zA-Z0-9.-]+\.loca\.lt' lt.log | head -1 || true)"
   if [ -n "$URL" ]; then
     echo "$URL" >lt.url
-    echo "URL=$URL" >PUBLIC.txt
-    echo "TOKEN=$CLAN_TOKEN" >>PUBLIC.txt
+    # URL only. The token used to land here too, at default umask — i.e. readable by
+    # every other account on the shared host. It stays in .clan_token (mode 600).
+    rm -f PUBLIC.txt
+    (
+      umask 077
+      {
+        echo "URL=$URL"
+        echo "TOKEN: see .clan_token (deliberately not written here)"
+      } >PUBLIC.txt
+    )
     log "tunnel $URL"
   else
     log "tunnel start failed — see lt.log"
@@ -77,8 +98,8 @@ while true; do
   start_tunnel
   # health
   if [ -n "${CLAN_TOKEN:-}" ]; then
-    curl -sS -m 3 -H "X-Clan-Token: $CLAN_TOKEN" "http://127.1.6.129:${PORT}/v1/health" >/dev/null 2>&1 \
-      || curl -sS -m 3 -H "X-Clan-Token: $CLAN_TOKEN" "http://127.0.0.1:${PORT}/v1/health" >/dev/null 2>&1 \
+    curl -sS -m 3 -K "$CURL_AUTH" "http://127.1.6.129:${PORT}/v1/health" >/dev/null 2>&1 \
+      || curl -sS -m 3 -K "$CURL_AUTH" "http://127.0.0.1:${PORT}/v1/health" >/dev/null 2>&1 \
       || log "health check failed"
   fi
   sleep 20

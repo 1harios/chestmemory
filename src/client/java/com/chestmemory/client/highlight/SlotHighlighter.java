@@ -16,6 +16,18 @@ import net.minecraft.world.item.ItemStack;
  * In gather mode shows how many more to take from each container slot.
  */
 public final class SlotHighlighter {
+	/**
+	 * Memoised {@link BuildGatherSession#remainingNeed(String)}: the call still walks all
+	 * 41 player-inventory slots, and this render runs every frame while a container is
+	 * open during a gather — 60+ inventory walks a second for a number that feeds a badge.
+	 * 250ms matches the staleness the gather's own material snapshot already has, so the
+	 * badge is never more out of date than the HUD.
+	 */
+	private static @org.jspecify.annotations.Nullable String needCacheItemId;
+	private static int needCacheValue;
+	private static long needCacheAtMillis;
+	private static final long NEED_CACHE_MAX_AGE_MS = 250L;
+
 	private SlotHighlighter() {
 	}
 
@@ -61,9 +73,17 @@ public final class SlotHighlighter {
 
 		var font = screen.getFont();
 
-		int stillNeed = BuildGatherSession.isActive()
-			? BuildGatherSession.remainingNeed(itemId)
-			: -1;
+		int stillNeed = -1;
+		if (BuildGatherSession.isActive()) {
+			if (itemId.equals(needCacheItemId) && now - needCacheAtMillis < NEED_CACHE_MAX_AGE_MS) {
+				stillNeed = needCacheValue;
+			} else {
+				stillNeed = BuildGatherSession.remainingNeed(itemId);
+				needCacheItemId = itemId;
+				needCacheValue = stillNeed;
+				needCacheAtMillis = now;
+			}
+		}
 		int remainingToMark = stillNeed > 0 ? stillNeed : 0;
 
 		for (Slot slot : menu.slots) {
