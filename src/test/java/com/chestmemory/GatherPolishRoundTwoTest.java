@@ -203,7 +203,13 @@ class GatherPolishRoundTwoTest {
 			assertTrue(hud.contains("gatherHudCompact()"), "the setting is read");
 			int compact = hud.indexOf("gatherHudCompact()");
 			String block = hud.substring(compact, Math.min(hud.length(), compact + 1200));
-			assertTrue(block.contains("r.isBar()"), "the overall bar survives the trim");
+			// Held by reference now, not found by scanning for the first bar. Once a per-item
+			// bar was added above the list-wide one, "the first bar" would have quietly meant
+			// the per-item figure — which the compact head line already spells out.
+			assertTrue(
+				block.contains("if (overall != null) {"),
+				"the list-wide bar survives the trim, and it is named rather than guessed"
+			);
 			assertTrue(
 				block.contains("slim.isEmpty()"),
 				"an empty compact HUD would be an invisible box with a border"

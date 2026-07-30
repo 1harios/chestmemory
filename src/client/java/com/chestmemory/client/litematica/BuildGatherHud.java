@@ -147,7 +147,18 @@ public final class BuildGatherHud {
 			}
 
 			// Aligned stat rows: label | value
-			rows.add(stat(font, "hud.chestmemory.lbl_need", formatCount(current.missing()),
+			// Remainder AND total, on one line. "Нужно ×1600" could not say whether 1600 was
+			// the whole job or the tail of 31096, and at that size the difference is the
+			// whole question. A total of zero means nothing recorded it — the schematic, the
+			// snapshot and the clan need were all silent — so the bare remainder stays.
+			String needVal = current.total() > 0
+				? Component.translatable(
+					"hud.chestmemory.val_need_of",
+					formatCount(current.missing()),
+					formatCount(current.total())
+				).getString()
+				: formatCount(current.missing());
+			rows.add(stat(font, "hud.chestmemory.lbl_need", needVal,
 				current.missing() > 0 ? 0xFFFFE066 : 0xFF70E090));
 			// The same number in stacks, and in boxes once there is a whole one. Standing at a
 			// chest, "×1600" is not the question — "how much do I take" is, and that is counted
@@ -183,15 +194,30 @@ public final class BuildGatherHud {
 			));
 		}
 
+		// This material's own progress. The list-wide bar below answers "how far through the
+		// build am I"; standing at a chest the question is "how far through the glass am I",
+		// and nothing on the HUD answered it.
+		if (current != null && current.total() > 0) {
+			rows.add(Row.bar(
+				current.done() / (float) current.total(),
+				Component.translatable(
+					"hud.chestmemory.item_progress",
+					(int) (100L * current.done() / current.total())
+				).getString()
+			));
+		}
+
 		// Overall progress of the whole list, not just the current material: the HUD could say
 		// "нужно ×1600" all evening with no sense of whether that was the last item or the
 		// first of forty.
 		int allNeed = BuildGatherSession.hudTotalNeed();
 		int allDone = BuildGatherSession.hudTotalDone();
+		Row overall = null;
 		if (allNeed > 0) {
-			rows.add(Row.bar(allDone / (float) allNeed, Component.translatable(
+			overall = Row.bar(allDone / (float) allNeed, Component.translatable(
 				"hud.chestmemory.overall", (int) (100L * allDone / allNeed)
-			).getString()));
+			).getString());
+			rows.add(overall);
 		}
 
 		// Only N — no P in HUD
@@ -206,16 +232,20 @@ public final class BuildGatherHud {
 		if (ModSettings.get().gatherHudCompact()) {
 			List<Row> slim = new ArrayList<>(2);
 			if (current != null) {
-				slim.add(new Row(
-					ellipsize(font, current.displayName() + "  " + formatCount(current.missing()), textMax),
-					0xFFFFFFFF, false
-				));
+				String head = current.total() > 0
+					? current.displayName() + "  " + Component.translatable(
+						"hud.chestmemory.val_need_of",
+						formatCount(current.missing()),
+						formatCount(current.total())
+					).getString()
+					: current.displayName() + "  " + formatCount(current.missing());
+				slim.add(new Row(ellipsize(font, head, textMax), 0xFFFFFFFF, false));
 			}
-			for (Row r : rows) {
-				if (r.isBar()) {
-					slim.add(r);
-					break;
-				}
+			// Explicitly the list-wide bar, not "whichever bar comes first": the head line
+			// above already carries this material's own numbers, so the useful bar here is
+			// the one about the whole build.
+			if (overall != null) {
+				slim.add(overall);
 			}
 			if (slim.isEmpty()) {
 				// Nothing to be compact about — say the one thing that is true.

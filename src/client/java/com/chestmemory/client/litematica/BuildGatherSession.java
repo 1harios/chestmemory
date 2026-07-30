@@ -56,8 +56,13 @@ public final class BuildGatherSession {
 
 	/** Display / progress order for HUD. */
 	private static final List<String> queue = new ArrayList<>();
-	/** Schematic totals snapshot. */
-	private static final Map<String, Integer> queueMissing = new HashMap<>();
+	/**
+	 * Schematic totals snapshot: how much the build wants of each material, gross.
+	 * <p>
+	 * Named queueMissing until it was read as a remainder one too many times — it
+	 * never held a remainder.
+	 */
+	private static final Map<String, Integer> queueTotals = new HashMap<>();
 	/** Manually skipped via N (within current phase). */
 	private static final Set<String> skipped = new HashSet<>();
 
@@ -68,7 +73,7 @@ public final class BuildGatherSession {
 	/** Rebuilt on tick, read by the HUD render path — volatile publish of an immutable snapshot. */
 	private static volatile List<HudLine> hudLines = List.of();
 	private static @Nullable String listName;
-	/** Material list the current queueMissing snapshot belongs to. */
+	/** Material list the current queueTotals snapshot belongs to. */
 	private static @Nullable String snapshotListName;
 	/**
 	 * Item clicked in the panel whose clan claim has not come back from the hub yet.
@@ -141,7 +146,7 @@ public final class BuildGatherSession {
 
 	private static void resetState() {
 		queue.clear();
-		queueMissing.clear();
+		queueTotals.clear();
 		skipped.clear();
 		queueIndex = 0;
 		currentItemId = null;
@@ -170,6 +175,32 @@ public final class BuildGatherSession {
 	}
 
 	// ── inventory / need ───────────────────────────────────────────────────
+
+	/**
+	 * Everything the task wants of this material, gross — not what is left of it.
+	 * <p>
+	 * The same chain, in the same order, that {@link #remainingNeed} subtracts from: the live
+	 * Litematica list — which already folds in a clan gather's materials — then the queue's
+	 * schematic snapshot, then the clan need on its own. Any other order would let the HUD and
+	 * the inventory hint print different totals for one material.
+	 * <p>
+	 * Zero means nothing recorded a requirement, and a caller should show the plain remainder
+	 * rather than a fraction over zero.
+	 */
+	public static int totalNeed(String itemId) {
+		if (itemId == null) {
+			return 0;
+		}
+		LitematicaCompat.MaterialNeed n = LitematicaAccess.missingMaterialsById().get(itemId);
+		if (n != null && n.total() > 0) {
+			return n.total();
+		}
+		int total = queueTotals.getOrDefault(itemId, 0);
+		if (total <= 0) {
+			total = com.chestmemory.client.clan.ClanSessionManager.clanNeed(itemId);
+		}
+		return Math.max(0, total);
+	}
 
 	public static int remainingNeed(String itemId) {
 		return remainingNeed(itemId, Minecraft.getInstance() != null ? Minecraft.getInstance().player : null);
@@ -215,7 +246,7 @@ public final class BuildGatherSession {
 			// Progress = inv + staging / clan delivered (not source chests)
 			return Math.max(0, n.total() - covered);
 		}
-		int snapTotal = queueMissing.getOrDefault(itemId, 0);
+		int snapTotal = queueTotals.getOrDefault(itemId, 0);
 		if (snapTotal <= 0) {
 			// Clan session may define need without local Litematica list
 			int clanNeed = com.chestmemory.client.clan.ClanSessionManager.clanNeed(itemId);
@@ -506,7 +537,7 @@ public final class BuildGatherSession {
 		currentRoute = List.of();
 		routeChestIndex = 0;
 		highlightPaused = false;
-		// Deliberately keeps: active, queue, queueMissing, skipped, listName, and the material
+		// Deliberately keeps: active, queue, queueTotals, skipped, listName, and the material
 		// list cache. Those describe the build, not the connection.
 	}
 
@@ -743,12 +774,12 @@ public final class BuildGatherSession {
 		String active = LitematicaAccess.activeListName();
 		if (!Objects.equals(active, snapshotListName)) {
 			snapshotListName = active;
-			queueMissing.clear();
+			queueTotals.clear();
 			skipped.clear();
 		}
 		for (LitematicaCompat.MaterialNeed n : LitematicaAccess.missingMaterials()) {
 			if (n.total() > 0) {
-				queueMissing.put(n.itemId(), n.total());
+				queueTotals.put(n.itemId(), n.total());
 			}
 		}
 	}
@@ -787,7 +818,7 @@ public final class BuildGatherSession {
 			out.add(new RankedItem(n.itemId(), need, inChests, band, dist, n.total()));
 		}
 
-		for (Map.Entry<String, Integer> e : queueMissing.entrySet()) {
+		for (Map.Entry<String, Integer> e : queueTotals.entrySet()) {
 			if (seen.contains(e.getKey())) {
 				continue;
 			}
@@ -997,7 +1028,7 @@ public final class BuildGatherSession {
 		}
 		queueIndex = Math.max(0, queue.indexOf(itemId));
 		currentItemId = itemId;
-		queueMissing.putIfAbsent(itemId, Math.max(1, remainingNeed(itemId, client != null ? client.player : null)));
+		queueTotals.putIfAbsent(itemId, Math.max(1, remainingNeed(itemId, client != null ? client.player : null)));
 		highlightCurrent(client, announce);
 	}
 
@@ -1022,7 +1053,7 @@ public final class BuildGatherSession {
 		List<ContainerRecord> world = filteredSources(currentItemId);
 		int need = remainingNeed(currentItemId);
 		if (need <= 0) {
-			need = queueMissing.getOrDefault(currentItemId, 1);
+			need = queueTotals.getOrDefault(currentItemId, 1);
 		}
 		currentRoute = ChestRoute.build(world, pos, dimension, currentItemId, Math.max(1, need));
 		if (currentRoute.isEmpty() && !world.isEmpty()) {
@@ -1293,7 +1324,7 @@ public final class BuildGatherSession {
 			}
 		}
 		if (total <= 0) {
-			total = queueMissing.getOrDefault(itemId, 0);
+			total = queueTotals.getOrDefault(itemId, 0);
 		}
 		if (total <= 0) {
 			total = com.chestmemory.client.clan.ClanSessionManager.clanNeed(itemId);
@@ -1313,7 +1344,8 @@ public final class BuildGatherSession {
 			inPlayer,
 			dist,
 			current,
-			inStaging
+			inStaging,
+			total
 		));
 	}
 
@@ -1328,10 +1360,25 @@ public final class BuildGatherSession {
 		int inPlayer,
 		double nearestDist,
 		boolean current,
-		int inStaging
+		int inStaging,
+		/**
+		 * Everything this material wants, not what is left of it.
+		 * <p>
+		 * The HUD had only {@code missing} and so could not say "1600 of 31096" — and at a
+		 * need of 31096 the difference between "1600 left" and "1600 wanted" is the whole
+		 * question. Derived from the same figure {@code missing} is subtracted from, so the
+		 * two can never contradict each other whichever source won: the schematic's own
+		 * count, the queue snapshot, or the clan gather's need.
+		 */
+		int total
 	) {
 		public boolean availableSomewhere() {
 			return inChests > 0 || inPlayer > 0 || inStaging > 0;
+		}
+
+		/** How much of this material is already covered — carried, staged or delivered. */
+		public int done() {
+			return Math.max(0, total - missing);
 		}
 	}
 }
