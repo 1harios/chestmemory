@@ -190,7 +190,13 @@ public final class SlotHighlighter {
 	) {
 		ItemStack icon = com.chestmemory.client.data.ItemStackKeys.toStack(itemId);
 		String name = com.chestmemory.client.data.ChestMemoryStorage.itemDisplayName(itemId);
-		String need = "↓ " + stillNeed;
+		// The same pair the HUD shows. "↓ 1600" over a chest does not say whether that is the
+		// whole job or the tail of 31096, and the answer changes how much you take.
+		int total = BuildGatherSession.totalNeed(itemId);
+		String need = total > stillNeed
+			? "↓ " + Component.translatable(
+				"hud.chestmemory.val_need_of", stillNeed, total).getString()
+			: "↓ " + stillNeed;
 		int per = Math.max(1, icon.isEmpty() ? 64 : icon.getMaxStackSize());
 		var bulk = com.chestmemory.client.data.BulkAmount.of(stillNeed, per);
 		String stacks = bulk.hasStack()

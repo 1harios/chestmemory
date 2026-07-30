@@ -49,7 +49,7 @@
 
 1. Minecraft **26.1.2** или **26.2** + Fabric Loader + Fabric API  
 2. (по желанию) **Jade**, **Litematica** под ту же версию игры  
-3. `build/libs/chestmemory-2.4.0.jar` → `mods` (старый jar удалить)  
+3. `build/libs/chestmemory-2.4.1.jar` → `mods` (старый jar удалить)  
 
 Один jar подходит для **26.1.2** и **26.2**.
 
