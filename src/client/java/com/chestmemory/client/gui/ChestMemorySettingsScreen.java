@@ -86,6 +86,32 @@ public class ChestMemorySettingsScreen extends Screen {
 	private static final int ROW_H = 20;
 	private static final int ROW_GAP = 4;
 
+	// ── Footer band: the Done button, and the signature under it ───────────
+	//
+	// This was three independent magic numbers that had to agree by hand — the viewport
+	// ended 32px above the panel's foot, the button sat 26 above it, the signature 9 — and
+	// they did not agree. drawSettingRow fills rows [y, y+h), so the button's last row was
+	// exactly the signature's first row, and the signature's descenders reached the frame
+	// with nothing to spare. Deriving all three positions from one set of paddings is the
+	// fix: only the paddings are chosen freely, so the parts cannot drift into each other.
+	/** Field edge → signature. */
+	private static final int FOOTER_PAD = 4;
+	/** One line of text. */
+	private static final int CREDITS_H = 9;
+	/** Same height as every settings row, so the footer reads as one of them. */
+	private static final int DONE_H = 18;
+	/** Signature → button; wide enough to hold the groove between them. */
+	private static final int FOOTER_GAP = 5;
+	/** Button → scrolling content. */
+	private static final int CONTENT_GAP = 6;
+
+	/** Panel foot → the signature's first row. */
+	private static final int CREDITS_UP = FOOTER_PAD + CREDITS_H;
+	/** Panel foot → the Done button's top row. */
+	private static final int DONE_UP = CREDITS_UP + FOOTER_GAP + DONE_H;
+	/** Panel foot → the end of the scrolling viewport. */
+	private static final int VIEW_BOTTOM_UP = DONE_UP + CONTENT_GAP;
+
 	public ChestMemorySettingsScreen(Screen parent) {
 		super(Component.translatable("screen.chestmemory.settings"));
 		this.parent = parent;
@@ -114,8 +140,8 @@ public class ChestMemorySettingsScreen extends Screen {
 		// the frame's engraved header groove, so the strip reads as part of the frame.
 		this.tabsY = this.panelTop + ChestGuiStyle.HEADER_H - 14;
 		this.viewTop = this.panelTop + ChestGuiStyle.HEADER_H + 5;
-		// Leave room for Done button
-		this.viewBottom = this.panelTop + this.panelH - 32;
+		// Leave room for the whole footer band, not just the button.
+		this.viewBottom = this.panelTop + this.panelH - VIEW_BOTTOM_UP;
 
 		int y = 0;
 		y = switch (lastTab) {
@@ -131,7 +157,7 @@ public class ChestMemorySettingsScreen extends Screen {
 
 		// Done — fixed footer in the same wooden style as the rows above it.
 		this.addRenderableWidget(new SettingRowButton(
-			this.contentLeft, this.panelTop + this.panelH - 26, this.contentW, 18,
+			this.contentLeft, this.panelTop + this.panelH - DONE_UP, this.contentW, DONE_H,
 			Component.translatable("screen.chestmemory.settings.done"),
 			this::onClose
 		));
@@ -729,6 +755,46 @@ public class ChestMemorySettingsScreen extends Screen {
 		ChestGuiStyle.drawChestPanel(graphics, this.panelLeft, this.panelTop, this.panelW, this.panelH);
 	}
 
+	/**
+	 * The band under the Done button: a groove, then one line of text.
+	 *
+	 * The line is shared. While a key is being rebound the prompt takes it over, because
+	 * that is the only thing worth reading at that moment — and because the prompt used to
+	 * be drawn 40px above the panel's foot, which put it inside the scrolling viewport, on
+	 * top of whichever row happened to be there.
+	 */
+	private void drawFooter(GuiGraphicsExtractor graphics) {
+		int centerX = this.panelLeft + this.panelW / 2;
+		int textY = this.panelTop + this.panelH - CREDITS_UP;
+
+		// Engraved groove, cut the same way as the one under the header, so the footer reads
+		// as part of the frame rather than as text that ran out of room.
+		int grooveY = textY - FOOTER_GAP + 1;
+		graphics.fill(
+			this.panelLeft + 6, grooveY, this.panelLeft + this.panelW - 6, grooveY + 1,
+			ChestGuiStyle.HEADER_LINE
+		);
+		graphics.fill(
+			this.panelLeft + 6, grooveY + 1, this.panelLeft + this.panelW - 6, grooveY + 2,
+			ChestGuiStyle.PLANK_SEAM_LIGHT
+		);
+
+		boolean rebinding = this.listeningKey != null;
+		String line = Component.translatable(rebinding
+			? "screen.chestmemory.settings.key_wait"
+			: "screen.chestmemory.credits").getString();
+		// Clipped to the content width: the signature fits today, but a longer translation
+		// would run over the frame, and drawCentered has no opinion about that.
+		ChestGuiStyle.drawCentered(
+			graphics,
+			this.font,
+			ChestGuiStyle.ellipsize(this.font, line, this.contentW),
+			centerX,
+			textY,
+			rebinding ? ChestGuiStyle.TEXT_TITLE : ChestGuiStyle.TEXT_ON_WOOD_MUTED
+		);
+	}
+
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
 		super.extractRenderState(graphics, mouseX, mouseY, a);
@@ -742,17 +808,7 @@ public class ChestMemorySettingsScreen extends Screen {
 			ChestGuiStyle.TEXT_TITLE
 		);
 
-		// Whose mod this is, at the foot of the settings sheet. Muted and centred: a signature
-		// belongs where someone looking for it will find it, not where it competes with a row
-		// the player came here to change.
-		ChestGuiStyle.drawCentered(
-			graphics,
-			this.font,
-			Component.translatable("screen.chestmemory.credits").getString(),
-			this.panelLeft + this.panelW / 2,
-			this.panelTop + this.panelH - 9,
-			ChestGuiStyle.TEXT_ON_WOOD_MUTED
-		);
+		drawFooter(graphics);
 
 		ChestGuiStyle.drawTabs(
 			graphics,
@@ -777,18 +833,6 @@ public class ChestMemorySettingsScreen extends Screen {
 				this.contentLeft,
 				sy,
 				ChestGuiStyle.TEXT_MUTED,
-				false
-			);
-		}
-
-		if (this.listeningKey != null) {
-			String tip = Component.translatable("screen.chestmemory.settings.key_wait").getString();
-			graphics.text(
-				this.font,
-				tip,
-				this.contentLeft,
-				this.panelTop + this.panelH - 40,
-				ChestGuiStyle.TEXT_TITLE,
 				false
 			);
 		}
