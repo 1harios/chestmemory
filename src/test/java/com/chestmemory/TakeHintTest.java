@@ -200,6 +200,96 @@ class TakeHintTest {
 		}
 	}
 
+	/**
+	 * The footer of the settings sheet, checked by arithmetic rather than by eye.
+	 * <p>
+	 * The signature shipped overlapping the Done button by exactly one pixel row and touching
+	 * the frame below it, because three hand-written offsets had to agree and did not.
+	 * Re-deriving them from the source and doing the sums here is the only way this stays
+	 * fixed: a future tweak to one padding cannot quietly re-create the collision.
+	 */
+	@Nested
+	@DisplayName("The settings footer fits")
+	class Footer {
+		/** Reads `private static final int NAME = 12;` back out of the screen. */
+		private int constant(String src, String name) {
+			var m = java.util.regex.Pattern
+				.compile("private static final int " + name + " = (\\d+);")
+				.matcher(src);
+			assertTrue(m.find(), "no such constant: " + name);
+			return Integer.parseInt(m.group(1));
+		}
+
+		@Test
+		@DisplayName("The button and the signature cannot share a pixel row")
+		void noOverlap() throws Exception {
+			String src = read(SETTINGS_SCREEN);
+			int pad = constant(src, "FOOTER_PAD");
+			int creditsH = constant(src, "CREDITS_H");
+			int doneH = constant(src, "DONE_H");
+			int gap = constant(src, "FOOTER_GAP");
+			int contentGap = constant(src, "CONTENT_GAP");
+
+			int creditsUp = pad + creditsH;
+			int doneUp = creditsUp + gap + doneH;
+			int viewBottomUp = doneUp + contentGap;
+
+			// Measured up from the panel's bottom edge. drawSettingRow fills rows [y, y+h),
+			// so the button's last occupied row is doneUp - doneH + 1 above the foot.
+			int buttonLastRow = doneUp - doneH + 1;
+			assertTrue(
+				buttonLastRow > creditsUp,
+				"the button's last row (" + buttonLastRow + " above the foot) must sit above the "
+					+ "signature's first (" + creditsUp + ") — at -26/-9 they were the same row"
+			);
+			assertTrue(
+				creditsH + pad == creditsUp && pad >= 3,
+				"the signature needs real clearance under it, not the 1px the frame left"
+			);
+			assertTrue(
+				viewBottomUp >= doneUp + 1,
+				"the scrolling viewport has to end above the button, or a row rides over it"
+			);
+		}
+
+		@Test
+		@DisplayName("All three positions come from the constants, not from fresh literals")
+		void derivedNotGuessed() throws Exception {
+			String src = read(SETTINGS_SCREEN);
+			assertTrue(src.contains("panelH - VIEW_BOTTOM_UP"), "viewport is derived");
+			assertTrue(src.contains("panelH - DONE_UP"), "button is derived");
+			assertTrue(src.contains("panelH - CREDITS_UP"), "signature is derived");
+			for (String old : new String[]{
+				"panelH - 32", "panelH - 26", "panelH - 9", "panelH - 40",
+			}) {
+				assertFalse(
+					src.contains(old),
+					"the hand-tuned offset " + old + " is what broke the layout"
+				);
+			}
+		}
+
+		@Test
+		@DisplayName("The rebind prompt shares the signature's line instead of covering a row")
+		void promptSharesTheLine() throws Exception {
+			String draw = body(read(SETTINGS_SCREEN), "private void drawFooter(");
+			assertTrue(
+				draw.contains("boolean rebinding = this.listeningKey != null;"),
+				"one line, two possible tenants"
+			);
+			assertTrue(
+				draw.contains("screen.chestmemory.settings.key_wait")
+					&& draw.contains("screen.chestmemory.credits"),
+				"both strings are chosen in the same place, so neither can be mispositioned"
+			);
+			assertTrue(
+				draw.contains("ChestGuiStyle.ellipsize(this.font, line, this.contentW)"),
+				"a longer translation must not run over the frame"
+			);
+			assertTrue(draw.contains("ChestGuiStyle.HEADER_LINE"), "the footer gets its own groove");
+		}
+	}
+
 	@Nested
 	@DisplayName("The mod is signed")
 	class Branding {
