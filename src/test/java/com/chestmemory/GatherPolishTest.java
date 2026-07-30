@@ -217,12 +217,24 @@ class GatherPolishTest {
 		void heartbeatsKeepItAlive() throws Exception {
 			String purge = pyBody(read(HUB), "def _purge_old(");
 			int loop = purge.indexOf("for m in members:");
-			int soloTtl = purge.indexOf("SOLO_SESSION_TTL_SEC");
-			assertTrue(loop > 0 && soloTtl > 0, "both the lastSeen scan and the solo TTL exist");
+			int shortLease = purge.indexOf("UNSTARTED_SESSION_TTL_SEC");
+			assertTrue(loop > 0 && shortLease > 0, "both the lastSeen scan and the short lease exist");
 			assertTrue(
-				loop < soloTtl,
-				"lastSeen must be counted for every session before the solo rule narrows the "
-					+ "TTL — inside the solo branch it only ever saved one-member gathers"
+				loop < shortLease,
+				"lastSeen must be counted for every session before the short lease narrows the "
+					+ "TTL — inside a narrowing branch it only ever saved some gathers"
+			);
+			// The rule that replaced the roster count. Member count was wrong both ways: a host
+			// who steps away leaves an empty roster on purpose, so a gather with real progress
+			// sat on the short lease, while a nameless test with the creator still listed got
+			// the long one. "Has anything been handed in" is the honest signal.
+			assertTrue(
+				purge.contains("if not _has_progress(s):"),
+				"the short lease keys off deliveries now, not off how many people are listed"
+			);
+			assertFalse(
+				purge.contains("len(members) <= 1"),
+				"the roster count is exactly the rule that got this wrong"
 			);
 			assertTrue(
 				read(HUB_PHP).contains("foreach ($members as $m) {"),

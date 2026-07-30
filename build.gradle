@@ -53,6 +53,11 @@ dependencies {
 	testImplementation platform("org.junit:junit-bom:5.11.3")
 	testImplementation "org.junit.jupiter:junit-jupiter"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+	// Client classes that are pure data handling — ClanSession and friends — so the tests
+	// that matter most can run the real method instead of grepping its source for a
+	// substring. Nothing here loads Minecraft: these types are plain fields and loops, and
+	// a test that touched a class needing the game would simply fail to link.
+	testImplementation sourceSets.client.output
 }
 
 test {

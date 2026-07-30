@@ -2917,7 +2917,10 @@ public class ClanGatherScreen extends Screen {
 
 
 	/** One member's claim, resolved once per session snapshot for the roster rows. */
-	private record MemberClaim(String itemId, String name, int delivered, int need) {
+	/** done = they hold no unfinished claim and this is the last thing they finished. */
+	private record MemberClaim(
+		String itemId, String name, int delivered, int need, boolean done
+	) {
 	}
 
 	/**
@@ -2942,6 +2945,14 @@ public class ClanGatherScreen extends Screen {
 				if (mat.excluded || mat.claimedBy == null || mat.claimedBy.isBlank()) {
 					continue;
 				}
+				// A finished material is not what anybody is working on, and skipping it is the fix
+				// for a row that froze: a collector who took glass, then cobblestone, and delivered
+				// all the glass kept being named on the glass, because it stayed claimed and stayed
+				// earliest. Newer hubs release the claim on the delivery that completes a material,
+				// but a gather created before that still carries the stale claims.
+				if (mat.need > 0 && mat.delivered >= mat.need) {
+					continue;
+				}
 				String who = mat.claimedBy.toLowerCase(java.util.Locale.ROOT);
 				// Earliest claim wins. A member who took glass and then stone is working the
 				// glass, and the hub's claimedAt is what says so — this used to keep whichever
@@ -2961,24 +2972,58 @@ public class ClanGatherScreen extends Screen {
 						e.getKey(),
 						ChestMemoryStorage.itemDisplayName(e.getKey()),
 						Math.max(0, mat.delivered),
-						Math.max(0, mat.need)
+						Math.max(0, mat.need),
+						false
 					)
 				);
 			}
-			// Our own row defers to the click order recorded locally, which is the same list
-			// the gather queue and the HUD walk. Even with timestamps agreeing, this keeps the
-			// panel from ever contradicting what the player is watching themselves collect.
+			// Somebody holding no unfinished claim still deserves an account of their evening:
+			// the last thing they finished, with a tick, rather than a blank that reads as a
+			// player standing around doing nothing.
+			for (ClanSession.ClanMember m : s.members) {
+				if (m.uuid == null || m.uuid.isBlank()) {
+					continue;
+				}
+				String key = m.uuid.toLowerCase(java.util.Locale.ROOT);
+				if (claims.containsKey(key)) {
+					continue;
+				}
+				String done = s.lastDoneOf(m.uuid);
+				ClanSession.ClanMaterial doneMat = done == null ? null : s.material(done);
+				if (doneMat != null) {
+					claims.put(key, new MemberClaim(
+						done,
+						ChestMemoryStorage.itemDisplayName(done),
+						Math.max(0, doneMat.delivered),
+						Math.max(0, doneMat.need),
+						true
+					));
+				}
+			}
+			// Our own row follows the gather queue — the same list the HUD and the take-hint
+			// walk — so the panel cannot contradict what the player is watching themselves
+			// collect. For everyone else the hub's claimedAt is the only thing available, and
+			// this used to read it for us too, which is how our own row could disagree with
+			// our own HUD.
 			if (this.minecraft != null) {
 				String me = ClanSessionManager.localUuid(this.minecraft)
 					.toLowerCase(java.util.Locale.ROOT);
-				String mine = ClanSessionManager.firstClaimOf(this.minecraft, me);
+				String mine =
+					com.chestmemory.client.litematica.BuildGatherSession.isActive()
+						? com.chestmemory.client.litematica.BuildGatherSession.currentItemId()
+						: null;
+				if (mine == null) {
+					mine = ClanSessionManager.firstClaimOf(this.minecraft, me);
+				}
 				ClanSession.ClanMaterial mineMat = mine == null ? null : s.material(mine);
-				if (mineMat != null) {
+				if (mineMat != null && !mineMat.excluded) {
+					boolean finished = mineMat.need > 0 && mineMat.delivered >= mineMat.need;
 					claims.put(me, new MemberClaim(
 						mine,
 						ChestMemoryStorage.itemDisplayName(mine),
 						Math.max(0, mineMat.delivered),
-						Math.max(0, mineMat.need)
+						Math.max(0, mineMat.need),
+						finished
 					));
 				}
 			}
@@ -3035,6 +3080,12 @@ public class ClanGatherScreen extends Screen {
 			if (away) {
 				right = Component.translatable("screen.chestmemory.clan.away").getString();
 				rightColour = ChestGuiStyle.TEXT_ON_WOOD_MUTED;
+			} else if (claimItem != null && claim != null && claim.done()) {
+				// Finished, not in progress: the counts would only repeat need twice.
+				right = Component.translatable(
+					"screen.chestmemory.clan.finished", claimItem
+				).getString();
+				rightColour = 0xFF7FE08A;
 			} else if (claimItem != null) {
 				right = Component.translatable(
 					"screen.chestmemory.clan.carrying", claimItem, claimDone, claimNeed
