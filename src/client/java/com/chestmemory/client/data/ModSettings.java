@@ -35,6 +35,16 @@ public final class ModSettings {
 	private boolean showDistanceLabels = true;
 	private boolean distanceOnAllChests = true;
 	private boolean highlightSlots = true;
+	/**
+	 * The take-this-much banner over an open container, separate from the slot tint above.
+	 * <p>
+	 * One switch used to govern both, which is the wrong pairing: the tint marks WHICH slots,
+	 * the banner says WHAT and HOW MUCH. Players who find the coloured slots enough still
+	 * want the count, and the reverse.
+	 */
+	private boolean gatherSlotHint = true;
+	/** Banner position: 0 = above the window, 1 = inside its top, 2 = below. */
+	private int gatherSlotHintPos = 0;
 	private int highlightRenderRange = 96;
 	/** Item icon billboard above glowing chests. */
 	private boolean showChestItemIcons = true;
@@ -270,6 +280,24 @@ public final class ModSettings {
 	}
 
 	// --- Highlight ---
+
+	public boolean gatherSlotHint() {
+		return gatherSlotHint;
+	}
+
+	public void toggleGatherSlotHint() {
+		this.gatherSlotHint = !gatherSlotHint;
+		save();
+	}
+
+	public int gatherSlotHintPos() {
+		return Math.max(0, Math.min(2, gatherSlotHintPos));
+	}
+
+	public void cycleGatherSlotHintPos() {
+		this.gatherSlotHintPos = (gatherSlotHintPos() + 1) % 3;
+		save();
+	}
 
 	public int highlightSeconds() {
 		return clamp(highlightSeconds, 5, 120, 20);

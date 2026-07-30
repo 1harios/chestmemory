@@ -4,7 +4,7 @@
 	"key.chestmemory.clear_highlight": "Снять подсветку сундуков",
 	"key.chestmemory.next_item": "Сбор: следующий предмет (N)",
 	"key.chestmemory.toggle_staging": "Склад стройки: режим выбора (P)",
-	"screen.chestmemory.title": "Память сундуков",
+	"screen.chestmemory.title": "Память сундуков · Sunshine's Dels",
 	"screen.chestmemory.grid": "Сетка предметов",
 	"screen.chestmemory.search": "Поиск",
 	"screen.chestmemory.search_hint": "Поиск...",
@@ -513,5 +513,15 @@
 	"screen.chestmemory.settings.row.hud_scale": "Размер худа сбора",
 	"screen.chestmemory.settings.row.hud_scale.desc": "Масштаб рамки сбора в процентах. Меньше — компактнее на большом экране.",
 	"screen.chestmemory.settings.row.hud_compact": "Компактный худ",
-	"screen.chestmemory.settings.row.hud_compact.desc": "Одна строка вместо рамки: текущий предмет и общий прогресс."
+	"screen.chestmemory.settings.row.hud_compact.desc": "Одна строка вместо рамки: текущий предмет и общий прогресс.",
+	"hint.chestmemory.here": "здесь: %s",
+	"hint.chestmemory.here_none": "здесь этого нет",
+	"screen.chestmemory.settings.row.slot_hint": "Подсказка над сундуком",
+	"screen.chestmemory.settings.row.slot_hint.desc": "Что и сколько брать при сборе: иконка, название, остаток и сколько есть в открытом сундуке.",
+	"screen.chestmemory.settings.row.slot_hint_pos": "Где показывать подсказку",
+	"screen.chestmemory.settings.row.slot_hint_pos.desc": "Над окном, внутри него или под ним — если мешает верхней части интерфейса.",
+	"screen.chestmemory.settings.hint_pos.above": "Над окном",
+	"screen.chestmemory.settings.hint_pos.inside": "Внутри окна",
+	"screen.chestmemory.settings.hint_pos.below": "Под окном",
+	"screen.chestmemory.credits": "Sunshine's Dels · автор Karandash"
 }

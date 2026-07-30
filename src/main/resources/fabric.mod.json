@@ -2,8 +2,8 @@
 	"schemaVersion": 1,
 	"id": "chestmemory",
 	"version": "${version}",
-	"name": "Chest Memory",
-	"description": "Remembers chest contents per world/server, search with the grave key (Ё on a Russian layout), highlights containers. Works on Fabric 26.1.2 and 26.2.",
+	"name": "Chest Memory — Sunshine's Dels",
+	"description": "Clan mod for Sunshine's Dels by Karandash. Remembers chest contents per world/server, search with the grave key (Ё on a Russian layout), highlights containers, and runs shared clan gathers for Litematica schematics. Works on Fabric 26.1.2 and 26.2.",
 	"authors": [
 		"Karandash"
 	],
@@ -44,5 +44,8 @@
 	"suggests": {
 		"jade": "*",
 		"litematica": "*"
+	},
+	"custom": {
+		"chestmemory:clan": "Sunshine's Dels"
 	}
 }

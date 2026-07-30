@@ -4,6 +4,7 @@ import com.chestmemory.client.data.ModSettings;
 import com.chestmemory.client.litematica.BuildGatherSession;
 import com.chestmemory.client.mixin.AbstractContainerScreenAccessor;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.MenuAccess;
 import net.minecraft.util.ARGB;
@@ -37,10 +38,24 @@ public final class SlotHighlighter {
 		int mouseX,
 		int mouseY
 	) {
-		if (!ModSettings.get().highlightSlots()) {
+		boolean wantTint = ModSettings.get().highlightSlots();
+		boolean wantHint = ModSettings.get().gatherSlotHint();
+		if (!wantTint && !wantHint) {
 			return;
 		}
+		// Two sources for "which item are we looking at", and they have different lifetimes.
+		//
+		// The highlight is a timer: it glows the chests in the world for highlightSeconds and
+		// then stops, which is right for a one-off "where is my redstone". The gather target is
+		// not a timer at all — it lasts until the material is collected. Everything here used to
+		// hang off the highlight alone, so half a minute into standing at a chest the slot tint
+		// and the count both vanished while the gather was still running, which read as the mod
+		// having given up.
 		String itemId = ChestHighlighter.getHighlightedItemId();
+		boolean fromHighlight = itemId != null;
+		if (itemId == null && BuildGatherSession.isActive()) {
+			itemId = BuildGatherSession.currentItemId();
+		}
 		if (itemId == null) {
 			return;
 		}
@@ -54,9 +69,12 @@ public final class SlotHighlighter {
 		int top = acc.chestmemory$getTopPos();
 
 		long now = System.currentTimeMillis();
-		float pulse = 0.8F + 0.2F * (float) Math.sin(now / 280.0);
+		// A timed highlight pulses and fades out as it expires — that fade is how the player
+		// knows it is about to stop. A gather target has nothing to fade towards, so it is
+		// marked steadily and a little dimmer, which also keeps the two states told apart.
+		float pulse = fromHighlight ? 0.8F + 0.2F * (float) Math.sin(now / 280.0) : 0.7F;
 		float remain = ChestHighlighter.remainingSeconds();
-		float fade = remain < 4.0F ? Math.max(0.25F, remain / 4.0F) : 1.0F;
+		float fade = fromHighlight && remain < 4.0F ? Math.max(0.25F, remain / 4.0F) : 1.0F;
 		// Softer fill so item icons and tooltips stay readable
 		int fillA = (int) (55 * pulse * fade);
 		int borderA = (int) (180 * pulse * fade);
@@ -86,7 +104,22 @@ public final class SlotHighlighter {
 		}
 		int remainingToMark = stillNeed > 0 ? stillNeed : 0;
 
+		// How much of it is in THIS container: the number that decides whether to keep walking
+		// or start carrying. The per-slot badges implied it; nobody wants to add them up.
+		int inThisContainer = 0;
 		for (Slot slot : menu.slots) {
+			if (slot.isActive() && !slot.getItem().isEmpty()
+				&& slot.container != null
+				&& !(slot.container instanceof net.minecraft.world.entity.player.Inventory)
+				&& com.chestmemory.client.data.ItemStackKeys.matches(slot.getItem(), itemId)) {
+				inThisContainer += slot.getItem().getCount();
+			}
+		}
+
+		for (Slot slot : menu.slots) {
+			if (!wantTint) {
+				break;
+			}
 			if (!slot.isActive()) {
 				continue;
 			}
@@ -131,18 +164,78 @@ public final class SlotHighlighter {
 			// Do not re-draw stack size — vanilla already does; re-drawing caused overlap mess
 		}
 
-		// Top-of-GUI hint: still need total
-		if (stillNeed > 0) {
-			String hint = "↓ " + stillNeed;
-			int hx = left + 8;
-			int hy = top - 10;
-			if (hy < 2) {
-				hy = top + 2;
-			}
-			graphics.fill(hx - 2, hy - 1, hx + font.width(hint) + 4, hy + 10, 0xCC101018);
-			graphics.text(font, hint, hx + 1, hy + 1, 0xFF000000, false);
-			int hintRgb = ModSettings.get().hudAccentColor();
-			graphics.text(font, hint, hx, hy, 0xFF000000 | hintRgb, false);
+		if (wantHint && stillNeed > 0) {
+			drawTakeHint(screen, graphics, font, left, top, itemId, stillNeed, inThisContainer);
 		}
+	}
+
+	/**
+	 * The take-this-much banner over an open container.
+	 * <p>
+	 * It used to be a bare «↓ 1600» — the one number the HUD already showed. Standing at a
+	 * chest the questions are different: what am I collecting, is there enough in THIS
+	 * container, and how much is that to carry. So: the item's own icon and name, the
+	 * remainder in stacks beside it, and a second line for what this container holds, coloured
+	 * by whether it covers the remainder.
+	 */
+	private static void drawTakeHint(
+		AbstractContainerScreen<?> screen,
+		GuiGraphicsExtractor graphics,
+		net.minecraft.client.gui.Font font,
+		int left,
+		int top,
+		String itemId,
+		int stillNeed,
+		int inThisContainer
+	) {
+		ItemStack icon = com.chestmemory.client.data.ItemStackKeys.toStack(itemId);
+		String name = com.chestmemory.client.data.ChestMemoryStorage.itemDisplayName(itemId);
+		String need = "↓ " + stillNeed;
+		int per = Math.max(1, icon.isEmpty() ? 64 : icon.getMaxStackSize());
+		var bulk = com.chestmemory.client.data.BulkAmount.of(stillNeed, per);
+		String stacks = bulk.hasStack()
+			? com.chestmemory.client.gui.BulkTooltip.stacksText(bulk)
+			: "";
+
+		String hereLine = inThisContainer > 0
+			? Component.translatable("hint.chestmemory.here", inThisContainer).getString()
+			: Component.translatable("hint.chestmemory.here_none").getString();
+		int hereColour = inThisContainer >= stillNeed ? 0xFF7FE08A
+			: inThisContainer > 0 ? 0xFFFFE066
+			: 0xFFFF9090;
+
+		// 18px for the icon, then the widest of the two text rows.
+		String topLine = name + "   " + need + (stacks.isEmpty() ? "" : "   " + stacks);
+		int textW = Math.max(font.width(topLine), font.width(hereLine));
+		int w = 18 + textW + 6;
+		int h = 22;
+
+		AbstractContainerScreenAccessor acc = (AbstractContainerScreenAccessor) screen;
+		int guiH = acc.chestmemory$getImageHeight();
+		int x = left;
+		int y = switch (ModSettings.get().gatherSlotHintPos()) {
+			case 1 -> top + 2;
+			case 2 -> top + guiH + 2;
+			default -> top - h - 2;
+		};
+		// Never off the top of the screen: above is the default and the window can already sit
+		// close to the edge on a small GUI scale.
+		if (y < 1) {
+			y = top + 2;
+		}
+		if (y + h > screen.height - 1) {
+			y = Math.max(1, screen.height - 1 - h);
+		}
+		// Nor off the right: a long item name on a narrow window pushed the box past the edge.
+		if (x + w > screen.width - 1) {
+			x = Math.max(1, screen.width - 1 - w);
+		}
+
+		graphics.fill(x, y, x + w, y + h, 0xE0101018);
+		int accentRgb = ModSettings.get().hudAccentColor();
+		graphics.fill(x, y, x + w, y + 1, 0xFF000000 | accentRgb);
+		graphics.item(icon, x + 2, y + 3);
+		graphics.text(font, topLine, x + 20, y + 3, 0xFFFFFFFF, true);
+		graphics.text(font, hereLine, x + 20, y + 13, hereColour, true);
 	}
 }

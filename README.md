@@ -1,4 +1,6 @@
-# Chest Memory (Fabric 26.1.2 / 26.2)
+# Chest Memory — Sunshine's Dels
+
+Клановый мод для **Sunshine's Dels**, автор **Karandash**. Fabric 26.1.2 / 26.2.
 
 Клиентский мод: память сундуков **по каждому миру и серверу**, панель **Ё**, подсветка, **Jade**, сбор для **Litematica**.
 
@@ -47,7 +49,7 @@
 
 1. Minecraft **26.1.2** или **26.2** + Fabric Loader + Fabric API  
 2. (по желанию) **Jade**, **Litematica** под ту же версию игры  
-3. `build/libs/chestmemory-2.2.0.jar` → `mods` (старый jar удалить)  
+3. `build/libs/chestmemory-2.3.0.jar` → `mods` (старый jar удалить)  
 
 Один jar подходит для **26.1.2** и **26.2**.
 

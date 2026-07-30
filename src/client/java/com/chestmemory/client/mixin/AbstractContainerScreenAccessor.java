@@ -11,4 +11,11 @@ public interface AbstractContainerScreenAccessor {
 
 	@Accessor("topPos")
 	int chestmemory$getTopPos();
+
+	/** Height of the window itself, so the take-hint can sit below it rather than over it. */
+	@Accessor("imageHeight")
+	int chestmemory$getImageHeight();
+
+	@Accessor("imageWidth")
+	int chestmemory$getImageWidth();
 }

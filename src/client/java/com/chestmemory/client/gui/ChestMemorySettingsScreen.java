@@ -217,7 +217,27 @@ public class ChestMemorySettingsScreen extends Screen {
 		return y;
 	}
 
+	private static String hintPosKey(int pos) {
+		return switch (pos) {
+			case 1 -> "screen.chestmemory.settings.hint_pos.inside";
+			case 2 -> "screen.chestmemory.settings.hint_pos.below";
+			default -> "screen.chestmemory.settings.hint_pos.above";
+		};
+	}
+
 	private int buildGatherTab(int y) {
+		y = addSwitch(y,
+			"screen.chestmemory.settings.row.slot_hint",
+			"screen.chestmemory.settings.row.slot_hint.desc",
+			() -> ModSettings.get().gatherSlotHint(),
+			() -> ModSettings.get().toggleGatherSlotHint(),
+			null);
+		y = addCycle(y,
+			"screen.chestmemory.settings.row.slot_hint_pos",
+			"screen.chestmemory.settings.row.slot_hint_pos.desc",
+			() -> Component.translatable(hintPosKey(ModSettings.get().gatherSlotHintPos())),
+			() -> ModSettings.get().cycleGatherSlotHintPos(),
+			() -> ModSettings.get().gatherSlotHint());
 		y = addSwitch(y,
 			"screen.chestmemory.settings.row.hud",
 			"screen.chestmemory.settings.row.hud.desc",
@@ -720,6 +740,18 @@ public class ChestMemorySettingsScreen extends Screen {
 			this.panelLeft + this.panelW / 2,
 			this.panelTop + 8,
 			ChestGuiStyle.TEXT_TITLE
+		);
+
+		// Whose mod this is, at the foot of the settings sheet. Muted and centred: a signature
+		// belongs where someone looking for it will find it, not where it competes with a row
+		// the player came here to change.
+		ChestGuiStyle.drawCentered(
+			graphics,
+			this.font,
+			Component.translatable("screen.chestmemory.credits").getString(),
+			this.panelLeft + this.panelW / 2,
+			this.panelTop + this.panelH - 9,
+			ChestGuiStyle.TEXT_ON_WOOD_MUTED
 		);
 
 		ChestGuiStyle.drawTabs(
