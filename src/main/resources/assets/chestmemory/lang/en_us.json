@@ -4,7 +4,7 @@
 	"key.chestmemory.clear_highlight": "Clear chest highlights",
 	"key.chestmemory.next_item": "Gather: next item (N)",
 	"key.chestmemory.toggle_staging": "Build warehouse: pick mode (P)",
-	"screen.chestmemory.title": "Chest Memory",
+	"screen.chestmemory.title": "Chest Memory · Sunshine's Dels",
 	"screen.chestmemory.grid": "Item grid",
 	"screen.chestmemory.search": "Search",
 	"screen.chestmemory.search_hint": "Search...",
@@ -513,5 +513,15 @@
 	"screen.chestmemory.settings.row.hud_scale": "Gather HUD size",
 	"screen.chestmemory.settings.row.hud_scale.desc": "Scale of the gather box, in percent. Smaller is tidier on a large screen.",
 	"screen.chestmemory.settings.row.hud_compact": "Compact HUD",
-	"screen.chestmemory.settings.row.hud_compact.desc": "One line instead of the box: current material and overall progress."
+	"screen.chestmemory.settings.row.hud_compact.desc": "One line instead of the box: current material and overall progress.",
+	"hint.chestmemory.here": "here: %s",
+	"hint.chestmemory.here_none": "none in here",
+	"screen.chestmemory.settings.row.slot_hint": "Hint over the container",
+	"screen.chestmemory.settings.row.slot_hint.desc": "What to take and how much: icon, name, the remainder, and what this container holds.",
+	"screen.chestmemory.settings.row.slot_hint_pos": "Hint position",
+	"screen.chestmemory.settings.row.slot_hint_pos.desc": "Above the window, inside it, or below — whichever stays out of the way.",
+	"screen.chestmemory.settings.hint_pos.above": "Above",
+	"screen.chestmemory.settings.hint_pos.inside": "Inside",
+	"screen.chestmemory.settings.hint_pos.below": "Below",
+	"screen.chestmemory.credits": "Sunshine's Dels · by Karandash"
 }
