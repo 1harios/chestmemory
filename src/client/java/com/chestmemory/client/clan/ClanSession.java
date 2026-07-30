@@ -104,6 +104,13 @@ public final class ClanSession {
 		/** Who last raised the delivered count — the hub records it on every increase. */
 		public @Nullable String lastDeliveredBy;
 		/**
+		 * When that last increase happened, on the hub's clock.
+		 * <p>
+		 * Orders "what did this member finish most recently", which is what the members
+		 * panel falls back to once they hold no unfinished claim.
+		 */
+		public long lastDeliveredAt;
+		/**
 		 * Struck off the gather by the host: nobody collects it, no claim may be taken on
 		 * it, and it counts toward neither need nor delivered.
 		 * <p>
@@ -178,12 +185,18 @@ public final class ClanSession {
 	}
 
 	/**
-	 * The claim this member took first, or null when they hold none.
+	 * The claim this member took first and has not finished, or null when they hold none.
 	 * <p>
 	 * Ordered by {@code claimedAt} so every client — the holder's HUD and everyone else's
 	 * members panel — names the same material. Materials from before the hub recorded
 	 * timestamps have {@code claimedAt == 0} and sort ahead of timed ones, which keeps
 	 * old sessions on their previous behaviour instead of reshuffling them.
+	 * <p>
+	 * Finished materials are skipped, and that is the fix for a panel that froze: a
+	 * collector who took glass, then cobblestone, and delivered all the glass was named on
+	 * the glass for the rest of the gather, because it stayed claimed and stayed earliest.
+	 * Newer hubs release the claim on the delivery that completes a material, but a gather
+	 * created before that still carries the stale claims, so the skip has to live here too.
 	 */
 	public @Nullable String firstClaimOf(@Nullable String uuid) {
 		if (uuid == null || uuid.isBlank()) {
@@ -196,10 +209,55 @@ public final class ClanSession {
 			if (m.excluded || m.claimedBy == null || !uuid.equalsIgnoreCase(m.claimedBy)) {
 				continue;
 			}
+			if (m.need > 0 && m.delivered >= m.need) {
+				continue;
+			}
 			long at = m.claimedAt > 0 ? m.claimedAt : 0L;
 			if (best == null || at < bestAt) {
 				best = e.getKey();
 				bestAt = at;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * The last material this member finished off, or null when they have finished none.
+	 * <p>
+	 * What the members panel shows once somebody holds no unfinished claim: "cobblestone ✔"
+	 * reads as an account of the evening, where a blank row reads as a player doing nothing.
+	 * <p>
+	 * Matched on {@code lastDeliveredBy}, which the hub records as a name rather than a
+	 * uuid, so the name is resolved from the roster instead of trusting the caller to pass
+	 * the right one.
+	 */
+	public @Nullable String lastDoneOf(@Nullable String uuid) {
+		if (uuid == null || uuid.isBlank()) {
+			return null;
+		}
+		String who = null;
+		for (ClanMember m : members) {
+			if (m.uuid != null && uuid.equalsIgnoreCase(m.uuid)) {
+				who = m.name;
+				break;
+			}
+		}
+		if (who == null || who.isBlank()) {
+			return null;
+		}
+		String best = null;
+		long bestAt = Long.MIN_VALUE;
+		for (Map.Entry<String, ClanMaterial> e : materials.entrySet()) {
+			ClanMaterial m = e.getValue();
+			if (m.excluded || m.need <= 0 || m.delivered < m.need) {
+				continue;
+			}
+			if (m.lastDeliveredBy == null || !who.equalsIgnoreCase(m.lastDeliveredBy)) {
+				continue;
+			}
+			if (best == null || m.lastDeliveredAt > bestAt) {
+				best = e.getKey();
+				bestAt = m.lastDeliveredAt;
 			}
 		}
 		return best;

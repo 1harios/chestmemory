@@ -73,7 +73,8 @@ public final class ClanEventLog {
 		return switch (kind) {
 			case "claim" -> Kind.CLAIM;
 			case "release", "release_all", "timeout" -> Kind.RELEASE;
-			case "deliver" -> Kind.DELIVER;
+			// Finishing a material off is the good end of a delivery, not a release.
+			case "deliver", "done" -> Kind.DELIVER;
 			case "join", "create" -> Kind.JOIN;
 			case "leave", "kick" -> Kind.LEAVE;
 			// Striking a material off is the host taking work away, which reads like a
@@ -97,6 +98,8 @@ public final class ClanEventLog {
 				Component.translatable("screen.chestmemory.clan.ev_release_all", who, e.n);
 			case "deliver" ->
 				Component.translatable("screen.chestmemory.clan.ev_deliver", who, e.n, item);
+			case "done" ->
+				Component.translatable("screen.chestmemory.clan.ev_done", who, item);
 			case "join" -> Component.translatable("screen.chestmemory.clan.ev_join", who);
 			case "leave" -> Component.translatable("screen.chestmemory.clan.ev_leave", who);
 			case "kick" -> Component.translatable("screen.chestmemory.clan.ev_kick", who);

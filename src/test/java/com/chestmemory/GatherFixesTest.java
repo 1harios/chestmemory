@@ -144,11 +144,12 @@ class GatherFixesTest {
 				pyBody(hub, "def _clear_claim(").contains("mat[\"claimedAt\"] = 0"),
 				"a released material must not keep a timestamp that outlives its claim"
 			);
-			// Seven calls: the stale sweep, unclaim, leave, kick, release-all — exclude, which
-			// releases the claim on a material it strikes off — and freeing a single claim. The
-			// def line itself is not a call, hence the -1 twice.
+			// Eight calls: the stale sweep, unclaim, leave, kick, release-all — exclude, which
+			// releases the claim on a material it strikes off — freeing a single claim, and the
+			// delivery that completes a material, since reserving something already collected
+			// says nothing to anyone. The def line itself is not a call, hence the -1 twice.
 			assertEquals(
-				7, hub.split("_clear_claim\\(", -1).length - 2,
+				8, hub.split("_clear_claim\\(", -1).length - 2,
 				"every release path shares the helper, or one of them forgets a field"
 			);
 			assertTrue(

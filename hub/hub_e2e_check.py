@@ -51,7 +51,9 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         failures.append(label)
 
 
-def call(method: str, path: str, token: str | None = None, body: dict | None = None):
+def call_full(method: str, path: str, token: str | None = None, body: dict | None = None):
+    """(status, body, headers). Headers matter for one check: a quota must not send
+    Retry-After, because that header is what made the mod report it as a rate limit."""
     req = urllib.request.Request(
         BASE + path, method=method,
         data=None if body is None else json.dumps(body).encode(),
@@ -62,9 +64,14 @@ def call(method: str, path: str, token: str | None = None, body: dict | None = N
         req.add_header("X-Clan-Session", token)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status, json.loads(resp.read().decode() or "{}")
+            return resp.status, json.loads(resp.read().decode() or "{}"), dict(resp.headers)
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode() or "{}")
+        return e.code, json.loads(e.read().decode() or "{}"), dict(e.headers)
+
+
+def call(method: str, path: str, token: str | None = None, body: dict | None = None):
+    status, payload, _ = call_full(method, path, token, body)
+    return status, payload
 
 
 srv = clan_hub.ThreadingHTTPServer(("127.0.0.1", PORT), clan_hub.Handler)
@@ -356,6 +363,110 @@ try:
     check("and can still be claimed, gaining a timestamp",
           st == 200 and legacy_claim["materials"]["minecraft:stone"]["claimedAt"] > 0,
           f"HTTP {st}")
+
+    # Everything below mutates the session store and the caps, so it runs last.
+
+    print("\n== finishing a material releases its claim ==")
+    # The bug: nothing released the claim when a delivery completed a material, so the
+    # members panel — which names a member's earliest claim — kept showing a collector on
+    # the glass they had already finished, for the rest of the gather.
+    _, made = call("POST", "/v1/sessions", "tok-host", {
+        "name": "Release on done", "materials": {"minecraft:glass": 10, "minecraft:stone": 10},
+    })
+    rc = made.get("code", "")
+    call("POST", f"/v1/sessions/{rc}/join", "tok-member", {})
+    call("POST", f"/v1/sessions/{rc}/claim", "tok-member", {"itemId": "minecraft:glass"})
+    st, part = call("POST", f"/v1/sessions/{rc}/deliver", "tok-member",
+                    {"itemId": "minecraft:glass", "amount": 4})
+    glass = part.get("materials", {}).get("minecraft:glass", {})
+    check("a partial delivery keeps the claim", glass.get("claimedBy") is not None,
+          f"HTTP {st} claimedBy={glass.get('claimedBy')}")
+    st, full = call("POST", f"/v1/sessions/{rc}/deliver", "tok-member",
+                    {"itemId": "minecraft:glass", "amount": 10})
+    glass = full.get("materials", {}).get("minecraft:glass", {})
+    check("the delivery that completes it releases the claim",
+          glass.get("claimedBy") is None and glass.get("claimedName") is None,
+          f"HTTP {st} claimedBy={glass.get('claimedBy')}")
+    check("and the count is kept, not reset",
+          glass.get("delivered") == 10, str(glass.get("delivered")))
+    check("with a 'done' event naming who finished it",
+          any(e.get("kind") == "done" and e.get("item") == "minecraft:glass"
+              for e in (full.get("events") or [])),
+          str([e.get("kind") for e in (full.get("events") or [])][-4:]))
+    check("lastDeliveredBy survives the release, so the panel can still credit them",
+          glass.get("lastDeliveredBy") == MEMBER_ID["name"], str(glass.get("lastDeliveredBy")))
+    check("lastDeliveredAt is recorded for ordering",
+          int(glass.get("lastDeliveredAt") or 0) > 0, str(glass.get("lastDeliveredAt")))
+    st, other = call("POST", f"/v1/sessions/{rc}/claim", "tok-host",
+                     {"itemId": "minecraft:glass"})
+    check("a finished material can be claimed again without complaint", st == 200, f"HTTP {st}")
+
+    print("\n== the open-gather cap is a quota, not a rate limit ==")
+    # What this pins: the cap used to reply 429. The mod reads 429 as "the hub asks you to
+    # slow down", so the host waited — and a quota does not drain with time. It has to be
+    # 409, must not carry Retry-After, and has to name the codes holding the slots, because
+    # taking a gather off your own list used to discard the secret needed to close it.
+    saved_cap = clan_hub.MAX_SESSIONS_PER_HOST
+    clan_hub.MAX_SESSIONS_PER_HOST = 2
+    try:
+        with clan_hub._lock:  # noqa: SLF001
+            clan_hub._sessions.clear()  # noqa: SLF001
+        held = []
+        for i in range(2):
+            _, made = call("POST", "/v1/sessions", "tok-host", {
+                "name": f"Quota {i}", "materials": {"minecraft:stone": 64},
+            })
+            held.append(made.get("code", ""))
+        st, refused, headers = call_full("POST", "/v1/sessions", "tok-host", {
+            "name": "Over the cap", "materials": {"minecraft:stone": 64},
+        })
+        check("over the cap the hub answers 409, not 429", st == 409, f"HTTP {st}")
+        check("with a reason the client can branch on",
+              refused.get("reason") == "host_session_limit", str(refused.get("reason")))
+        check("and no Retry-After, because waiting cannot help",
+              headers.get("Retry-After") is None, str(headers.get("Retry-After")))
+        check("the refusal names the codes holding the slots",
+              sorted(refused.get("codes") or []) == sorted(held), str(refused.get("codes")))
+        check("and reports open and max",
+              refused.get("open") == 2 and refused.get("max") == 2,
+              f"{refused.get('open')}/{refused.get('max')}")
+    finally:
+        clan_hub.MAX_SESSIONS_PER_HOST = saved_cap
+
+    print("\n== a gather's lease depends on whether anything was handed in ==")
+    # The old rule keyed off the roster and was wrong both ways: a host who steps away
+    # leaves an empty roster on purpose, so a gather with progress sat on the short lease,
+    # while a nameless test with the creator still listed got the long one.
+    with clan_hub._lock:  # noqa: SLF001
+        clan_hub._sessions.clear()  # noqa: SLF001
+    _, fresh = call("POST", "/v1/sessions", "tok-host",
+                    {"name": "Untouched", "materials": {"minecraft:stone": 64}})
+    idle_code = fresh.get("code", "")
+    _, started = call("POST", "/v1/sessions", "tok-host",
+                      {"name": "Worked on", "materials": {"minecraft:stone": 64}})
+    busy_code = started.get("code", "")
+    st, _ = call("POST", f"/v1/sessions/{busy_code}/deliver", "tok-host",
+                 {"itemId": "minecraft:stone", "amount": 1})
+    check("a delivery lands", st == 200, f"HTTP {st}")
+    with clan_hub._lock:  # noqa: SLF001
+        check("a gather with no deliveries counts as unstarted",
+              not clan_hub._has_progress(clan_hub._sessions[idle_code]))  # noqa: SLF001
+        check("one delivered stack makes it started",
+              clan_hub._has_progress(clan_hub._sessions[busy_code]))  # noqa: SLF001
+        # Age both past the short lease, well inside the long one.
+        stale = clan_hub._now() - (clan_hub.UNSTARTED_SESSION_TTL_SEC + 60) * 1000  # noqa: SLF001
+        for c in (idle_code, busy_code):
+            s = clan_hub._sessions[c]  # noqa: SLF001
+            s["updatedAt"] = stale
+            for m in s["members"]:
+                m["lastSeen"] = stale
+    clan_hub._purge_old(force=True)  # noqa: SLF001
+    with clan_hub._lock:  # noqa: SLF001
+        alive = set(clan_hub._sessions)  # noqa: SLF001
+    check("an untouched gather expires on the short lease", idle_code not in alive)
+    check("a gather with progress outlives it", busy_code in alive)
+    check("the long lease is a month by default",
+          clan_hub.SESSION_TTL_SEC >= 30 * 24 * 3600, str(clan_hub.SESSION_TTL_SEC))
 finally:
     srv.shutdown()
 

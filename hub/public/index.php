@@ -21,7 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 $configFile = __DIR__ . '/config.php';
 $config = is_file($configFile) ? require $configFile : [
     'token' => getenv('CLAN_TOKEN') ?: '',
-    'ttl_sec' => 7 * 24 * 3600,
+    'ttl_sec' => (int)(getenv('SESSION_TTL_SEC') ?: 30 * 24 * 3600),
     'data_dir' => __DIR__ . '/../data',
 ];
 
@@ -260,10 +260,10 @@ function purge(array &$sessions, int $ttlMs, string $dataDir): void
             $last = max($last, (int)($m['lastSeen'] ?? 0));
         }
         $ttl = $ttlMs;
-        if (count($members) <= 1) {
-            // A gather nobody else joined is usually a test or create-spam: short lease,
-            // but it has to be genuinely abandoned to lose it.
-            $ttl = min($ttl, SOLO_SESSION_TTL_SEC * 1000);
+        if (!has_progress($s)) {
+            // Nothing delivered yet: nothing here anyone would miss, so create-spam does
+            // not get to sit for a month. Any delivery moves it to the full lease.
+            $ttl = min($ttl, UNSTARTED_SESSION_TTL_SEC * 1000);
         }
         if ($last < $now - $ttl) {
             unset($sessions[$c]);
@@ -406,9 +406,18 @@ const MAX_BODY_BYTES = 512 * 1024;
  * loop filled the store (each session lives 7 days), and every request rereads and
  * rewrites the whole file.
  */
-const MAX_SESSIONS_TOTAL = 256;
-/** A busy clan runs a handful of parallel gathers; dozens from one host is a script. */
-const MAX_SESSIONS_PER_HOST = 4;
+/**
+ * Raised with the per-host cap: at 50 each, five hosts hit the old 256 and got
+ * "session limit reached" for no visible reason.
+ */
+define('MAX_SESSIONS_TOTAL', max(1, (int)(getenv('MAX_SESSIONS_TOTAL') ?: 512)));
+/**
+ * A busy clan runs a handful of parallel gathers; dozens from one host is a script.
+ *
+ * Configurable, and no longer 4: a host who builds regularly reaches four open gathers
+ * without doing anything unusual, and hitting the cap used to be reported as a rate limit.
+ */
+define('MAX_SESSIONS_PER_HOST', max(1, (int)(getenv('MAX_SESSIONS_PER_HOST') ?: 50)));
 const MAX_MEMBERS_PER_SESSION = 64;
 const MAX_MATERIALS_PER_SESSION = 400;
 /** stagingKeys grow by append from every member — uncapped, one scripted member
@@ -421,9 +430,32 @@ const MAX_EVENTS_PER_SESSION = 50;
 /** Real names and item ids stay well under these; longer is padding aimed at the store. */
 const MAX_NAME_LEN = 48;
 const MAX_ITEM_ID_LEN = 128;
-/** A gather nobody ever joined is a test, an aborted attempt — or create-spam. */
-const SOLO_SESSION_TTL_SEC = 24 * 3600;
+/**
+ * Lease for a gather nothing has been handed in to yet.
+ *
+ * Keyed off deliveries, not the roster: a host who steps away leaves an empty roster on
+ * purpose, so the old member-count rule put real gathers on the short lease and nameless
+ * tests on the long one. Mirrors UNSTARTED_SESSION_TTL_SEC in clan_hub.py.
+ */
+define('UNSTARTED_SESSION_TTL_SEC', (int)(
+    getenv('UNSTARTED_SESSION_TTL_SEC') ?: getenv('SOLO_SESSION_TTL_SEC') ?: 7 * 24 * 3600
+));
 const PURGE_INTERVAL_SEC = 60;
+
+/**
+ * True once anything has been delivered into this gather — the line between an abandoned
+ * test and work a clan would be upset to lose.
+ */
+function has_progress(array $sess): bool
+{
+    $materials = is_array($sess['materials'] ?? null) ? $sess['materials'] : [];
+    foreach ($materials as $mat) {
+        if (is_array($mat) && (int)($mat['delivered'] ?? 0) > 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 function read_body(): array
 {
@@ -781,14 +813,25 @@ if ($method === 'POST' && $path === '/v1/sessions') {
     if (count($sessions) >= MAX_SESSIONS_TOTAL) {
         respond(503, ['error' => 'session limit reached']);
     }
-    $mine = 0;
-    foreach ($sessions as $s) {
+    $mine = [];
+    foreach ($sessions as $code => $s) {
         if (strcasecmp((string)($s['hostUuid'] ?? ''), $hostUuid) === 0) {
-            $mine++;
+            $mine[] = $code;
         }
     }
-    if ($mine >= MAX_SESSIONS_PER_HOST) {
-        respond(429, ['error' => 'too many open sessions for this host (max ' . MAX_SESSIONS_PER_HOST . ')']);
+    if (count($mine) >= MAX_SESSIONS_PER_HOST) {
+        // 409, not 429: this is a quota, and 429 means "slow down and retry", which is
+        // what the mod told the host — so they waited, and a quota does not drain with
+        // time. The codes travel with the refusal because the host may no longer have
+        // them locally.
+        sort($mine);
+        respond(409, [
+            'error' => 'too many open sessions for this host (max ' . MAX_SESSIONS_PER_HOST . ')',
+            'reason' => 'host_session_limit',
+            'open' => count($mine),
+            'max' => MAX_SESSIONS_PER_HOST,
+            'codes' => $mine,
+        ]);
     }
     $code = gen_code($sessions);
     $now = now_ms();
@@ -934,6 +977,7 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
             $del = (int)($mat['delivered'] ?? 0);
             $newDelivered = min($need, max($del, $amount));
             if ($newDelivered !== $del) {
+                push_event($sess, 'deliver', $name, $item, $newDelivered - $del);
                 $mat['delivered'] = $newDelivered;
                 // Remember who actually raised the count — the client's activity
                 // feed used to guess the claim holder, which is often not the
@@ -941,6 +985,14 @@ if ($method === 'POST' && preg_match('#^/v1/sessions/([^/]+)/(join|claim|deliver
                 $mat['lastDeliveredBy'] = $name;
                 $mat['lastDeliveredAt'] = now_ms();
                 $changed = true;
+                // A finished material stops holding a reservation. Nothing released the
+                // claim here, and that froze the members panel on a collector's earliest
+                // claim long after they had finished it. Mirrors _deliver in clan_hub.py.
+                if ($newDelivered >= $need && ($mat['claimedBy'] ?? null)) {
+                    push_event($sess, 'done', (string)($mat['claimedName'] ?? $name),
+                               $item, $newDelivered);
+                    clear_claim($mat);
+                }
             }
             unset($mat);
         }

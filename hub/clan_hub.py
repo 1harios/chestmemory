@@ -44,11 +44,24 @@ CLAN_TOKEN = os.environ.get("CLAN_TOKEN", "").strip()
 #: the creator can prove itself with the hostSecret issued when the gather was made,
 #: so a host on an offline launcher keeps its tools.
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() not in ("0", "false", "no")
-SESSION_TTL_SEC = int(os.environ.get("SESSION_TTL_SEC", str(7 * 24 * 3600)))
-#: A gather nobody ever joined is usually a test, an aborted attempt — or create-spam.
-#: Letting each one sit for the full 7 days lets a scripted client accumulate them at
-#: zero cost to itself; a solo session the host stopped heartbeating dies in a day.
-SOLO_SESSION_TTL_SEC = int(os.environ.get("SOLO_SESSION_TTL_SEC", str(24 * 3600)))
+SESSION_TTL_SEC = int(os.environ.get("SESSION_TTL_SEC", str(30 * 24 * 3600)))
+#: Lease for a gather nothing has been handed in to yet.
+#:
+#: The short lease used to key off the roster — one member or fewer — and that rule was
+#: wrong in both directions. A host who steps away leaves an empty roster behind on
+#: purpose, so a real gather with progress in it was on the one-day lease; meanwhile a
+#: nameless test gather with the creator still listed sat on the long one.
+#:
+#: "Has anything been delivered" is the honest signal. A test never gets a delivery, and
+#: the first delivered stack is the moment a gather becomes something a clan would be
+#: annoyed to lose. Renewal is unchanged: any heartbeat or change resets the clock, so
+#: this only ever collects gathers genuinely nobody has touched.
+UNSTARTED_SESSION_TTL_SEC = int(
+    os.environ.get("UNSTARTED_SESSION_TTL_SEC")
+    # Old name, still honoured: an existing deploy may set it in its service file.
+    or os.environ.get("SOLO_SESSION_TTL_SEC")
+    or str(7 * 24 * 3600)
+)
 #: A member's claims are released after this long without a heartbeat.
 #:
 #: The client polls every ~3s while the game is running, and polling refreshes
@@ -69,9 +82,19 @@ MAX_BODY_BYTES = 512 * 1024
 # requests accumulate. POST /v1/sessions in a loop filled RAM and disk on the small
 # VPS deploy_vps.sh targets — each session lived 7 days and every mutation rewrote
 # the whole store.
-MAX_SESSIONS_TOTAL = 256
+#: Raised alongside the per-host cap: at 50 each, five hosts would have hit the old 256
+#: and got "session limit reached" for no reason they could see. Measured cost of the
+#: ceiling, since every mutation rewrites the whole store: a 40-material gather is ~5 KB,
+#: so 512 typical gathers are ~2.7 MB, and 512 at the 400-material maximum would be ~25 MB.
+#: The realistic clan sits in the first number.
+MAX_SESSIONS_TOTAL = max(1, int(os.environ.get("MAX_SESSIONS_TOTAL", "512")))
 #: A busy clan runs a handful of parallel gathers; dozens from one host is a script.
-MAX_SESSIONS_PER_HOST = 4
+#:
+#: Configurable, and no longer 4. A host who builds regularly reaches four open gathers
+#: without doing anything unusual, and until the reply below was fixed hitting the cap
+#: looked exactly like a rate limit — so the honest default is one that a person does not
+#: trip by accident, with the script case still bounded.
+MAX_SESSIONS_PER_HOST = max(1, int(os.environ.get("MAX_SESSIONS_PER_HOST", "50")))
 MAX_MEMBERS_PER_SESSION = 64
 MAX_MATERIALS_PER_SESSION = 400
 #: stagingKeys grow by append from every member, so without a cap one scripted
@@ -231,10 +254,11 @@ def _purge_old(force: bool = False) -> None:
         for m in members:
             last = max(last, int(m.get("lastSeen", 0) or 0))
         ttl = SESSION_TTL_SEC
-        if len(members) <= 1:
-            # A gather nobody else ever joined is usually a test or create-spam, so it
-            # still gets the short lease — it just has to be genuinely abandoned to lose it.
-            ttl = min(ttl, SOLO_SESSION_TTL_SEC)
+        if not _has_progress(s):
+            # Nothing has ever been handed in, so there is nothing here anyone would miss.
+            # Keeps create-spam from accumulating for a month at no cost to the spammer,
+            # without touching a gather somebody has actually worked on.
+            ttl = min(ttl, UNSTARTED_SESSION_TTL_SEC)
         if last < now - ttl * 1000:
             dead.append(c)
     if not dead:
@@ -242,6 +266,25 @@ def _purge_old(force: bool = False) -> None:
     for c in dead:
         _sessions.pop(c, None)
     _mark_dirty()
+
+
+def _has_progress(sess: dict[str, Any]) -> bool:
+    """
+    True once anything has been delivered into this gather.
+
+    The line between "a test somebody abandoned" and "work a clan would be upset to lose".
+    Excluded materials count: they were delivered before the host excluded them, and the
+    numbers are still in the log.
+    """
+    for mat in (sess.get("materials") or {}).values():
+        if not isinstance(mat, dict):
+            continue
+        try:
+            if int(mat.get("delivered") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _release_stale_claims(sess: dict[str, Any]) -> list[str]:
@@ -561,12 +604,22 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/v1/health"):
             with _lock:
                 n = len(_sessions)
+            # The effective limits ship with health for one practical reason: an env file
+            # left over from an earlier deploy silently overrides a new default, and there
+            # was no way to tell a hub that had picked up new settings from one that had
+            # not. None of this is secret — a member learns the caps by hitting them.
             self._send(200, {
                 "ok": True,
                 "sessions": n,
-                "version": 3,
+                "version": 4,
                 "persistent": True,
                 "dataFile": str(SESSIONS_FILE),
+                "limits": {
+                    "maxSessionsPerHost": MAX_SESSIONS_PER_HOST,
+                    "maxSessionsTotal": MAX_SESSIONS_TOTAL,
+                    "sessionTtlSec": SESSION_TTL_SEC,
+                    "unstartedTtlSec": UNSTARTED_SESSION_TTL_SEC,
+                },
             })
             return
         if path.startswith("/v1/sessions/"):
@@ -781,15 +834,29 @@ class Handler(BaseHTTPRequestHandler):
             if len(_sessions) >= MAX_SESSIONS_TOTAL:
                 self._send(503, {"error": "session limit reached"})
                 return
-            mine = sum(
-                1 for s in _sessions.values()
+            mine = [
+                code for code, s in _sessions.items()
                 if str(s.get("hostUuid") or "").lower() == host_uuid.lower()
-            )
-            if mine >= MAX_SESSIONS_PER_HOST:
-                self._send(
-                    429,
-                    {"error": "too many open sessions for this host (max %d)" % MAX_SESSIONS_PER_HOST},
-                )
+            ]
+            if len(mine) >= MAX_SESSIONS_PER_HOST:
+                # 409, not 429. This is a quota, and 429 means "you are going too fast, try
+                # again later" — which the mod dutifully reported as "the hub asks you to
+                # slow down", with a Retry-After the reply never carried. So the host waited,
+                # as told, and nothing changed: a quota does not drain with time. Worse, the
+                # client armed a global backoff on any 429, so an exhausted quota silenced
+                # every other hub action too.
+                #
+                # The codes travel with the refusal because the host may no longer have them:
+                # taking a gather off your own list used to discard its host secret, leaving
+                # gathers that held the quota and could never be closed.
+                self._send(409, {
+                    "error": "too many open sessions for this host (max %d)"
+                             % MAX_SESSIONS_PER_HOST,
+                    "reason": "host_session_limit",
+                    "open": len(mine),
+                    "max": MAX_SESSIONS_PER_HOST,
+                    "codes": sorted(mine),
+                })
                 return
             for _ in range(40):
                 code = _gen_code()
@@ -972,6 +1039,18 @@ class Handler(BaseHTTPRequestHandler):
                     m["lastDeliveredBy"] = name
                     m["lastDeliveredAt"] = _now()
                     changed = True
+                    # A finished material stops holding a reservation.
+                    #
+                    # Nothing released the claim here, and that is what froze the members
+                    # panel: it names a member's earliest claim, so a collector who took
+                    # glass and then cobblestone, and finished the glass, was shown on the
+                    # glass for the rest of the gather while their own HUD had moved on.
+                    # Reserving something already collected also says nothing to anyone —
+                    # there is no work left on it to keep for its holder.
+                    if new_delivered >= int(m.get("need", 0)) and m.get("claimedBy"):
+                        _event(sess, "done", str(m.get("claimedName") or name), item,
+                               new_delivered)
+                        _clear_claim(m)
             if known == 0:
                 self._send(404, {"error": "unknown item"})
                 return
