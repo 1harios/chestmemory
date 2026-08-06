@@ -360,6 +360,55 @@ public final class BuildGatherSession {
 		return total;
 	}
 
+	/**
+	 * What a route would actually find: stock, containers and the nearest one, over exactly
+	 * the set {@link #filteredSources} returns.
+	 *
+	 * @param count      items in reach
+	 * @param containers how many chests hold them
+	 * @param nearest    metres to the closest, or -1 when there is none
+	 */
+	public record Reachable(int count, int containers, double nearest) {
+		public boolean any() {
+			return count > 0;
+		}
+	}
+
+	/**
+	 * The one number a gather tooltip may quote, because it is the one a click obeys.
+	 * <p>
+	 * The panel used to read an ItemSummary built deliberately unfiltered — every world, no
+	 * range — while the click read the filtered sources. So a cell could promise "В сундуках
+	 * хватает" over stock that was 954m away in another world, and answer the click with
+	 * "нет в сундуках". Same list, same filter, one pass: the two cannot disagree any more.
+	 * <p>
+	 * One walk rather than three, which also retires the separate count and nearest-distance
+	 * passes the tooltip used to make over the same containers.
+	 */
+	public static Reachable reachable(String itemId) {
+		Minecraft mc = Minecraft.getInstance();
+		Vec3 pos = mc != null && mc.player != null ? mc.player.position() : null;
+		String dim = mc != null && mc.level != null ? ChestMemoryStorage.dimensionId(mc.level) : null;
+		int count = 0;
+		int containers = 0;
+		double best = -1;
+		for (ContainerRecord r : filteredSources(itemId)) {
+			int n = r.countOf(itemId);
+			if (n <= 0) {
+				continue;
+			}
+			count += n;
+			containers++;
+			double d = ChestMemoryStorage.distanceTo(r, pos, dim);
+			// A negative distance means "not reachable from here" — another dimension, or a
+			// record with no position. It must not become the nearest by being smallest.
+			if (d >= 0 && (best < 0 || d < best)) {
+				best = d;
+			}
+		}
+		return new Reachable(count, containers, best);
+	}
+
 	/** Chest-only stock for one item: how many, and across how many containers. */
 	private record ChestStock(int count, int containers) {
 	}
@@ -488,16 +537,23 @@ public final class BuildGatherSession {
 		if (startId == null) {
 			startId = bestIdForPhase(client, GatherPhase.CHESTS, null);
 		}
-		// User clicked a craft-only item while chests still have stuff — start chests, hint
+		// User clicked a craft-only item while chests still have stuff — start chests, hint.
+		//
+		// Two different reasons land here and they need different words. "Нет в сундуках"
+		// is true of a material nobody has; it is a lie about one sitting in another world,
+		// and it sends the player mining for something they already own. The filter is what
+		// put it out of reach, so the filter is what the message names.
 		if (startId != null
 			&& first != null
 			&& !first.equals(startId)
 			&& countInChestsLive(first) <= 0
 			&& client.player != null) {
-			client.player.sendSystemMessage(Component.translatable(
-				"message.chestmemory.build_chests_first",
-				ChestMemoryStorage.itemDisplayName(first)
-			));
+			String dim = client.level != null ? ChestMemoryStorage.dimensionId(client.level) : null;
+			int anywhere = countInChestsLive(first, DimensionChoice.ALL, dim);
+			String name = ChestMemoryStorage.itemDisplayName(first);
+			client.player.sendSystemMessage(anywhere > 0
+				? Component.translatable("message.chestmemory.build_out_of_reach", name, anywhere)
+				: Component.translatable("message.chestmemory.build_chests_first", name));
 		}
 		if (startId == null) {
 			// No chest stock at all — offer craft phase
