@@ -69,19 +69,30 @@ public final class BulkTooltip {
 	 * @param perStack the item's real maximum stack size, never assumed to be 64
 	 */
 	public static void append(List<Component> lines, int amount, int perStack) {
+		append(lines, amount, perStack,
+			"screen.chestmemory.tooltip.in_stacks", "screen.chestmemory.tooltip.in_boxes");
+	}
+
+	/**
+	 * The same breakdown under a caller's own labels.
+	 * <p>
+	 * A gather cell shows two of these — what to carry and what is lying in the chests — and
+	 * an unlabelled pair under both numbers gets read against the wrong one: "126 стаков"
+	 * beside a remainder of 5754 looks like broken arithmetic, when it is an exact reading of
+	 * the 8097 in the chests.
+	 */
+	public static void append(
+		List<Component> lines, int amount, int perStack, String stacksKey, String boxesKey
+	) {
 		if (amount <= 0) {
 			return;
 		}
 		BulkAmount bulk = BulkAmount.of(amount, perStack);
 		if (bulk.hasStack()) {
-			lines.add(Component.translatable(
-				"screen.chestmemory.tooltip.in_stacks", stacksText(bulk)
-			).withStyle(SUB));
+			lines.add(Component.translatable(stacksKey, stacksText(bulk)).withStyle(SUB));
 		}
 		if (bulk.hasBox()) {
-			lines.add(Component.translatable(
-				"screen.chestmemory.tooltip.in_boxes", boxesText(bulk)
-			).withStyle(SUB));
+			lines.add(Component.translatable(boxesKey, boxesText(bulk)).withStyle(SUB));
 		}
 	}
 }

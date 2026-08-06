@@ -73,12 +73,20 @@ class GatherPolishRoundTwoTest {
 		@Test
 		@DisplayName("The stock figure still follows the panel filter, so it cannot contradict the colour")
 		void stockFollowsFilter() throws Exception {
-			// The colour comes from chestStock, which goes through the single-argument
-			// countInChestsLive — the one that applies the panel's dimension and nearby filter.
-			// A tooltip built on any other basis could show 4800 next to a red cell.
+			// The colour comes from chestStock, which now reads the cached Reachable —
+			// summed over filteredSources, the same list countInChestsLive walked, and the
+			// same one a route walks. Count and nearest arrive together from one pass
+			// instead of two. A tooltip built on any other basis could show 4800 beside a
+			// red cell, which is exactly what it did.
+			String screen = read(SCREEN);
 			assertTrue(
-				body(read(SCREEN), "private int chestStock(").contains("BuildGatherSession::countInChestsLive"),
+				body(screen, "private int chestStock(").contains("return reach(itemId).count();"),
 				"the tooltip and the colour must read the same number"
+			);
+			assertTrue(
+				body(screen, "private com.chestmemory.client.litematica.BuildGatherSession.Reachable reach(")
+					.contains("BuildGatherSession::reachable"),
+				"and that number has to be the reachable one, not a whole-profile total"
 			);
 			String filtered = body(read(SESSION), "private static List<ContainerRecord> filteredSources(");
 			assertTrue(
