@@ -1965,7 +1965,9 @@ public class ClanGatherScreen extends Screen {
 				int missing = Math.max(0, r.neededForBuild());
 				if (missing <= 0) {
 					doneItems++;
-				} else if (r.totalCount() > 0) {
+				} else if (chestStock(r.itemId()) > 0) {
+					// Counted the same way the cells are tinted, or the caption would claim
+					// stock for materials the grid is showing red.
 					stocked++;
 				}
 				gatherIds.add(r.itemId());
@@ -1986,7 +1988,13 @@ public class ClanGatherScreen extends Screen {
 				boolean isFocus = r.itemId().equals(focus);
 				// Traffic light, same as the clan grid: green GO, yellow partial, red none,
 				// done dims out with a check. The gold ring marks the current target.
-				int stock = r.totalCount();
+				//
+				// Reachable stock, not the row's own count. Green means "click and go", so it
+				// has to be measured over the chests a route can reach: seven polished granite
+				// in another world lit the cell green and then refused the click. The row keeps
+				// its unfiltered count on purpose — that is what the tooltip's "в другом мире"
+				// line is for — but a colour is a promise about the click.
+				int stock = chestStock(r.itemId());
 				int tint = done ? ChestGuiStyle.STOCK_DONE
 					: stock >= missing ? ChestGuiStyle.STOCK_READY
 					: stock > 0 ? ChestGuiStyle.STOCK_PARTIAL
@@ -2591,7 +2599,7 @@ public class ClanGatherScreen extends Screen {
 			collected += Math.max(0, t - missing);
 			if (missing <= 0) {
 				doneItems++;
-			} else if (r.totalCount() > 0) {
+			} else if (chestStock(r.itemId()) > 0) {
 				stocked++;
 			}
 		}

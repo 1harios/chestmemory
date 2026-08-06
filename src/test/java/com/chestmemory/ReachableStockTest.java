@@ -145,6 +145,60 @@ class ReachableStockTest {
 	}
 
 	@Nested
+	@DisplayName("The colour is a promise about the click")
+	class Tint {
+		@Test
+		@DisplayName("A solo cell is tinted by what is in reach, not by what the world holds")
+		void soloTintUsesReach() throws Exception {
+			String screen = read(SCREEN);
+			int at = screen.indexOf("int stock = chestStock(r.itemId());");
+			assertTrue(
+				at > 0,
+				"green means click and go, so it must be measured over the reachable chests — "
+					+ "seven polished granite in another world lit the cell green and then "
+					+ "refused the click"
+			);
+			assertFalse(
+				screen.contains("int stock = r.totalCount();"),
+				"the row's own count includes worlds a route cannot enter"
+			);
+		}
+
+		@Test
+		@DisplayName("The clan grid already did this, and must keep doing it")
+		void clanTintUnchanged() throws Exception {
+			assertTrue(
+				read(SCREEN).contains("int stock = done ? 0 : chestStock(e.getKey());"),
+				"the two grids disagreeing about one state is what started this"
+			);
+		}
+
+		@Test
+		@DisplayName("The caption counts the same thing the cells are coloured by")
+		void captionAgreesWithGrid() throws Exception {
+			String screen = read(SCREEN);
+			assertFalse(
+				screen.contains("} else if (r.totalCount() > 0) {\n\t\t\t\t\tstocked++;"),
+				"'есть в сундуках 92' beside 92 red cells is the same lie, one line down"
+			);
+			assertEquals(
+				2, screen.split("chestStock\\(r\\.itemId\\(\\)\\) > 0", -1).length - 1,
+				"both tallies — the grid caption and the info tab — count reachable stock"
+			);
+		}
+
+		@Test
+		@DisplayName("The tooltip still reports what lies elsewhere, which is the point of the line")
+		void elsewhereStillShown() throws Exception {
+			String tip = body(read(SCREEN), "private List<Component> soloCellTooltip(");
+			assertTrue(
+				tip.contains("r.totalCount() > 0"),
+				"a red cell must still be able to say the world has seven of them"
+			);
+		}
+	}
+
+	@Nested
 	@DisplayName("Each breakdown says which number it belongs to")
 	class Labels {
 		@Test
