@@ -2044,9 +2044,12 @@ public final class ChestMemoryStorage {
 		} else {
 			return -1;
 		}
+		// Another dimension is not a distance, whatever kind of record this is. The
+		// isWorldBlock() qualifier used to let a non-block record — one carrying only a
+		// highlight position — be measured straight through the world boundary, producing a
+		// confident number of metres to somewhere unwalkable.
 		if (playerDimension != null && record.dimension() != null
-			&& !playerDimension.equals(record.dimension())
-			&& record.isWorldBlock()) {
+			&& !playerDimension.equals(record.dimension())) {
 			return -1;
 		}
 		double dx = playerPos.x - (x + 0.5);
