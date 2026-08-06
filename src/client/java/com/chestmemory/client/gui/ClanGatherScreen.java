@@ -2176,17 +2176,17 @@ public class ClanGatherScreen extends Screen {
 			lines.add(Component.translatable(
 				"screen.chestmemory.tooltip.gather_left", remaining
 			).withStyle(net.minecraft.ChatFormatting.GOLD));
-			// The same number restated in stacks and in boxes, directly under it: "how
-			// many shulkers do I bring" is what a bare five-digit remainder cannot answer.
-			BulkTooltip.append(lines, remaining, stackSizeOf(itemId));
 		} else {
 			lines.add(Component.translatable("screen.chestmemory.clan.mat_done")
 				.withStyle(net.minecraft.ChatFormatting.GREEN));
 		}
 		lines.add(Component.literal(stockLine(itemId))
 			.withStyle(net.minecraft.ChatFormatting.GRAY));
-		addStockDetail(lines, itemId, chestStock(itemId));
-		addWorldSplit(lines, itemId);
+		// Both breakdowns together, under the pair of numbers they describe: the remainder
+		// used to be restated up beside "Осталось" and the stock down here, unlabelled, which
+		// is how a reader ends up attaching one to the other.
+		addStockDetail(lines, itemId, chestStock(itemId), remaining);
+		addWorldSplit(lines, itemId, chestStock(itemId));
 		lines.add(Component.empty());
 		boolean mine = m.claimedBy != null && m.claimedBy.equals(me);
 		boolean taken = m.claimedBy != null && !m.claimedBy.isBlank() && !mine;
@@ -2249,17 +2249,23 @@ public class ClanGatherScreen extends Screen {
 				"screen.chestmemory.tooltip.gather_left", missing
 			).withStyle(net.minecraft.ChatFormatting.GOLD));
 		}
-		String dist = r.hasDistance()
+		// Reachable stock, not the row's own count. The rows are built unfiltered on purpose —
+		// hiding a material because it is far away would read as losing it — but a tooltip
+		// that quotes that number promises what a click cannot deliver: the click routes over
+		// the filtered sources, so "В сундуках хватает" appeared over 21 sand in another
+		// world and the click answered "нет в сундуках".
+		var reach = com.chestmemory.client.litematica.BuildGatherSession.reachable(r.itemId());
+		String dist = reach.nearest() >= 0
 			? Component.translatable(
-				"screen.chestmemory.clan.dist_m", (int) Math.round(r.nearestDistance())
+				"screen.chestmemory.clan.dist_m", (int) Math.round(reach.nearest())
 			).getString()
 			: "—";
 		lines.add(Component.translatable(
 			"screen.chestmemory.clan.hover_stock_solo",
-			r.totalCount(), dist, Math.max(0, r.inPlayer())
+			reach.count(), dist, Math.max(0, r.inPlayer())
 		).withStyle(net.minecraft.ChatFormatting.GRAY));
-		addStockDetail(lines, r.itemId(), r.totalCount());
-		addWorldSplit(lines, r.itemId());
+		addStockDetail(lines, r.itemId(), reach.count(), missing);
+		addWorldSplit(lines, r.itemId(), reach.count());
 		lines.add(Component.empty());
 		if (missing <= 0) {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_done")
@@ -2267,13 +2273,19 @@ public class ClanGatherScreen extends Screen {
 		} else if (r.itemId().equals(focus)) {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_focus")
 				.withStyle(net.minecraft.ChatFormatting.GOLD));
-		} else if (r.totalCount() >= missing) {
+		} else if (reach.count() >= missing) {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_ready")
 				.withStyle(net.minecraft.ChatFormatting.GREEN));
-		} else if (r.totalCount() > 0) {
+		} else if (reach.count() > 0) {
 			lines.add(Component.translatable(
-				"screen.chestmemory.clan.solo_hover_route", r.totalCount()
+				"screen.chestmemory.clan.solo_hover_route", reach.count()
 			).withStyle(net.minecraft.ChatFormatting.GRAY));
+		} else if (r.totalCount() > 0) {
+			// Nothing in reach, but the world has it. Saying "крафт или добыча" here sends a
+			// player mining for something they already own.
+			lines.add(Component.translatable(
+				"screen.chestmemory.clan.solo_hover_far", r.totalCount()
+			).withStyle(net.minecraft.ChatFormatting.YELLOW));
 		} else {
 			lines.add(Component.translatable("screen.chestmemory.clan.solo_hover_craft")
 				.withStyle(net.minecraft.ChatFormatting.GRAY));
@@ -2285,8 +2297,19 @@ public class ClanGatherScreen extends Screen {
 	 * What the chests hold, restated in stacks and boxes, plus how much of it already sits
 	 * inside shulkers or in the ender chest.
 	 */
-	private void addStockDetail(List<Component> lines, String itemId, int stock) {
-		BulkTooltip.append(lines, stock, stackSizeOf(itemId));
+	private void addStockDetail(List<Component> lines, String itemId, int stock, int need) {
+		int per = stackSizeOf(itemId);
+		// Two breakdowns, each saying which number it belongs to.
+		//
+		// One unlabelled pair used to sit under both "Осталось: 5754" and "В сундуках: 8097",
+		// describing the second. Read as the first it looks like broken arithmetic — 126
+		// stacks for 5754 hoppers — when 126 × 64 + 33 is exactly the 8097 in the chests.
+		// "How much do I carry" and "how much is lying there" are different questions and
+		// now get different labels.
+		BulkTooltip.append(lines, need, per,
+			"screen.chestmemory.tooltip.need_stacks", "screen.chestmemory.tooltip.need_boxes");
+		BulkTooltip.append(lines, stock, per,
+			"screen.chestmemory.tooltip.stock_stacks", "screen.chestmemory.tooltip.stock_boxes");
 		int inShulkers = com.chestmemory.client.data.WorldBreakdown.shulkerCount(
 			ChestMemoryStorage.get().liveContainersSnapshot(), itemId
 		);
@@ -2358,11 +2381,10 @@ public class ClanGatherScreen extends Screen {
 	 * be misleading: the item may exist in thousands, just not here. These lines say so, and
 	 * only when they add something: a figure equal to the one above is noise.
 	 */
-	private void addWorldSplit(List<Component> lines, String itemId) {
+	private void addWorldSplit(List<Component> lines, String itemId, int filtered) {
 		String dim = this.minecraft != null && this.minecraft.level != null
 			? ChestMemoryStorage.dimensionId(this.minecraft.level)
 			: null;
-		int filtered = chestStock(itemId);
 		int here = com.chestmemory.client.litematica.BuildGatherSession.countInChestsLive(
 			itemId, com.chestmemory.client.data.DimensionChoice.CURRENT, dim
 		);

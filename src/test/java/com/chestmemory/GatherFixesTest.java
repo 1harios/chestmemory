@@ -432,9 +432,18 @@ class GatherFixesTest {
 			// phrasing of the same fact pushed the numbers that differ further down.
 			assertFalse(tip.contains("gather_percent"), "one way of saying progress is enough");
 			assertTrue(tip.contains("gather_delivered"), "delivered over need stays");
+			// The restatement moved into addStockDetail, which now prints both breakdowns —
+			// what to carry and what is in the chests — each under its own label. One
+			// unlabelled pair sitting between the two numbers was being read against the
+			// wrong one: "126 стаков" under a remainder of 5754.
 			assertTrue(
-				tip.contains("BulkTooltip.append(lines, remaining,"),
-				"what is left must be restated in stacks and boxes right below it"
+				tip.contains("addStockDetail(lines, itemId, chestStock(itemId), remaining)"),
+				"what is left must still be restated in stacks and boxes, and be labelled as such"
+			);
+			String detail = body(screen, "private void addStockDetail(");
+			assertTrue(
+				detail.contains("BulkTooltip.append(lines, need, per,"),
+				"the remainder keeps its breakdown"
 			);
 			assertTrue(
 				body(screen, "private void addStockDetail(").contains("BulkTooltip.append("),
