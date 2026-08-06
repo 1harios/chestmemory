@@ -153,7 +153,9 @@ public class ClanGatherScreen extends Screen {
 	private int tabsLeft;
 	private int tabsWidth;
 	/** Live chest stock per item, briefly cached — the grid asks per cell per frame. */
-	private final java.util.Map<String, Integer> stockCache = new java.util.HashMap<>();
+	private final java.util.Map<String,
+		com.chestmemory.client.litematica.BuildGatherSession.Reachable> stockCache =
+		new java.util.HashMap<>();
 	private long stockCacheAt;
 	/**
 	 * Tab ids and labels the strip was last built for. tabAt runs every frame for the
@@ -1981,6 +1983,28 @@ public class ClanGatherScreen extends Screen {
 				shown.removeIf(r -> !matchesQuery(r.itemId(), q));
 			}
 
+			// Ordered by the same reading the colours give: ready first, then partial, then
+			// nothing in reach, done last — nearest first inside a band, then the biggest
+			// remainder. This is what the clan grid has always done.
+			//
+			// The list arrives sorted by BuildFilter.gatherPriority, which bands on the row's
+			// unfiltered count. Once the tint moved to reachable stock the two disagreed, and
+			// the grid showed partial, then green, then partial again — one order, a different
+			// colouring painted over it.
+			shown.sort(java.util.Comparator
+				.comparingInt(this::soloBand)
+				.thenComparingDouble((com.chestmemory.client.data.ItemSummary s) -> {
+					double d = chestNearest(s.itemId());
+					return d >= 0 ? d : Double.MAX_VALUE;
+				})
+				.thenComparing(java.util.Comparator
+					.comparingInt(com.chestmemory.client.data.ItemSummary::neededForBuild)
+					.reversed())
+				.thenComparing(
+					s -> ChestMemoryStorage.itemDisplayName(s.itemId()),
+					String.CASE_INSENSITIVE_ORDER
+				));
+
 			List<MatCell> cells = new java.util.ArrayList<>(shown.size());
 			for (var r : shown) {
 				int missing = Math.max(0, r.neededForBuild());
@@ -2094,6 +2118,23 @@ public class ClanGatherScreen extends Screen {
 	 * achievement worth seeing and a struck-off one is only worth finding when the host wants
 	 * it back.
 	 */
+	/**
+	 * Solo grid band: the same four states clanBand gives, read off the same reachable stock
+	 * the cell is tinted with. Kept beside its clan twin so a change to one is an obvious
+	 * omission in the other.
+	 */
+	private int soloBand(com.chestmemory.client.data.ItemSummary s) {
+		int missing = Math.max(0, s.neededForBuild());
+		if (missing <= 0) {
+			return 3;
+		}
+		int stock = chestStock(s.itemId());
+		if (stock >= missing) {
+			return 0;
+		}
+		return stock > 0 ? 1 : 2;
+	}
+
 	private int clanBand(ClanSession s, String itemId) {
 		if (s.isExcluded(itemId)) {
 			return 4;
@@ -2111,13 +2152,33 @@ public class ClanGatherScreen extends Screen {
 
 	/** Live chest stock, briefly cached — the grid asks for it per cell per frame. */
 	private int chestStock(String itemId) {
+		return reach(itemId).count();
+	}
+
+	/**
+	 * Metres to the nearest chest a route would actually visit, or -1 when there is none.
+	 * <p>
+	 * Not the row's own distance: that one applies the dimension filter and ignores the
+	 * range, so under "рядом" it happily reported 954 metres.
+	 */
+	private double chestNearest(String itemId) {
+		return reach(itemId).nearest();
+	}
+
+	/**
+	 * Count and nearest together, from one walk of the containers, cached for the same 500ms.
+	 * <p>
+	 * These were two separate passes over the same records — one for the tint, one for the
+	 * tooltip's metres — and the grid asks per cell per frame.
+	 */
+	private com.chestmemory.client.litematica.BuildGatherSession.Reachable reach(String itemId) {
 		long now = System.currentTimeMillis();
 		if (now - this.stockCacheAt > 500L) {
 			this.stockCache.clear();
 			this.stockCacheAt = now;
 		}
 		return this.stockCache.computeIfAbsent(
-			itemId, com.chestmemory.client.litematica.BuildGatherSession::countInChestsLive
+			itemId, com.chestmemory.client.litematica.BuildGatherSession::reachable
 		);
 	}
 
@@ -2262,7 +2323,7 @@ public class ClanGatherScreen extends Screen {
 		// that quotes that number promises what a click cannot deliver: the click routes over
 		// the filtered sources, so "В сундуках хватает" appeared over 21 sand in another
 		// world and the click answered "нет в сундуках".
-		var reach = com.chestmemory.client.litematica.BuildGatherSession.reachable(r.itemId());
+		var reach = reach(r.itemId());
 		String dist = reach.nearest() >= 0
 			? Component.translatable(
 				"screen.chestmemory.clan.dist_m", (int) Math.round(reach.nearest())

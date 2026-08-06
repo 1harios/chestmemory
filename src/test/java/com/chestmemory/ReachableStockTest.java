@@ -99,7 +99,9 @@ class ReachableStockTest {
 		@DisplayName("The solo tooltip quotes it — count, distance and verdict alike")
 		void tooltipUsesReach() throws Exception {
 			String tip = body(read(SCREEN), "private List<Component> soloCellTooltip(");
-			assertTrue(tip.contains("BuildGatherSession.reachable(r.itemId())"));
+			assertTrue(tip.contains("var reach = reach(r.itemId());"),
+				"through the shared 500ms cache, so the tooltip and the grid agree and the "
+					+ "containers are walked once");
 			assertTrue(tip.contains("reach.count(), dist,"), "the headline number");
 			assertTrue(tip.contains("reach.nearest() >= 0"), "and the metres beside it");
 			assertTrue(tip.contains("reach.count() >= missing"), "and the green verdict");
@@ -184,6 +186,40 @@ class ReachableStockTest {
 			assertEquals(
 				2, screen.split("chestStock\\(r\\.itemId\\(\\)\\) > 0", -1).length - 1,
 				"both tallies — the grid caption and the info tab — count reachable stock"
+			);
+		}
+
+		@Test
+		@DisplayName("The grid is ordered by the same band it is coloured by")
+		void orderMatchesColour() throws Exception {
+			String screen = read(SCREEN);
+			assertTrue(
+				screen.contains("shown.sort(java.util.Comparator")
+					&& screen.contains(".comparingInt(this::soloBand)"),
+				"partial, then green, then partial again is one order with a different "
+					+ "colouring painted over it"
+			);
+			String band = body(screen, "private int soloBand(");
+			assertTrue(
+				band.contains("int stock = chestStock(s.itemId());"),
+				"the band has to read the very number the tint reads"
+			);
+			String clan = body(screen, "private int clanBand(");
+			assertTrue(
+				clan.contains("int stock = chestStock(itemId);"),
+				"its clan twin reads the same, and the two must not drift apart again"
+			);
+		}
+
+		@Test
+		@DisplayName("Count and distance come from one walk, not two")
+		void oneWalk() throws Exception {
+			String screen = read(SCREEN);
+			assertTrue(screen.contains("private double chestNearest(String itemId) {"));
+			assertTrue(
+				body(screen, "private int chestStock(String itemId) {")
+					.contains("return reach(itemId).count();"),
+				"both read the cached Reachable rather than scanning the records apiece"
 			);
 		}
 
